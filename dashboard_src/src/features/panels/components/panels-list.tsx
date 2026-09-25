@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import PanelCard from './panel-card'
-import AddPanelPlaceholderModal from '../dialogs/add-panel-placeholder-modal'
+import AddPanelWizardModal from '../dialogs/add-panel-wizard-modal'
 import UpdatePanelModal from '../dialogs/update-panel-modal'
 import { useGetPanels, type PanelItem } from '../service/panels-api'
 
@@ -203,7 +203,7 @@ export default function PanelsList() {
       )}
 
       {/* Entry point modals */}
-      <AddPanelPlaceholderModal
+      <AddPanelWizardModal
         isOpen={isAddModalOpen}
         onOpenChange={setIsAddModalOpen}
       />

@@ -19,6 +19,7 @@ from . import (
     user_template,
     customer_auth,
     panel,
+    integration,
 )
 
 api_router = APIRouter()
@@ -42,6 +43,7 @@ routers = [
     hwid.router,
     customer_auth.router,
     panel.router,
+    integration.router,
 ]
 
 for router in routers:
