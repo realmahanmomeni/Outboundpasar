@@ -2,10 +2,11 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, joinedload
 
 from app.db import AsyncSession, get_db
-from app.db.models_oc import OCPanel
+from app.db.models import ProxyHost, Group
+from app.db.models_oc import OCPanel, OCPanelConfig, OCPanelGroup
 from app.routers.authentication import get_current_for_request, oauth2_scheme
 from app.utils.jwt import get_customer_payload
 
@@ -27,6 +28,22 @@ class OCPanelResponse(BaseModel):
     updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PanelHostResponse(BaseModel):
+    id: int
+    display_name: str
+    source_config_name: str
+    group_name: str | None
+    address: list[str]
+    is_disabled: bool
+    multiplier: float | None
+
+
+class PanelHostUpdate(BaseModel):
+    display_name: str | None = None
+    is_disabled: bool | None = None
+    multiplier: float | None = None
 
 
 async def get_current_user_context(
@@ -137,4 +154,139 @@ async def get_panel(
         last_sync_at=panel.last_sync_at,
         created_at=panel.created_at,
         updated_at=panel.updated_at,
+    )
+
+
+@router.get("/{panel_id}/hosts", response_model=list[PanelHostResponse])
+async def list_panel_hosts(
+    panel_id: int,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool] = Depends(get_current_user_context),
+):
+    identity, is_owner = user_context
+    panel = (await db.execute(select(OCPanel).where(OCPanel.id == panel_id))).scalar_one_or_none()
+    if not panel:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
+    if not is_owner and panel.purchaser_identity != identity:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    stmt = (
+        select(ProxyHost, OCPanelConfig, OCPanelGroup, Group)
+        .join(OCPanelConfig, ProxyHost.inbound_tag == OCPanelConfig.virtual_inbound_tag)
+        .outerjoin(OCPanelGroup, OCPanelConfig.panel_group_id == OCPanelGroup.id)
+        .outerjoin(Group, OCPanelGroup.local_group_id == Group.id)
+        .where(OCPanelConfig.panel_id == panel_id)
+        .order_by(ProxyHost.id.asc())
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    hosts = []
+    for host, config, oc_group, local_group in rows:
+        group_name = local_group.name if local_group else (oc_group.source_name if oc_group else None)
+        hosts.append(PanelHostResponse(
+            id=host.id,
+            display_name=host.remark,
+            source_config_name=config.source_name,
+            group_name=group_name,
+            address=list(host.address),
+            is_disabled=bool(host.is_disabled),
+            multiplier=float(host.multiplier_override) if host.multiplier_override is not None else None,
+        ))
+    return hosts
+
+
+@router.get("/{panel_id}/hosts/{host_id}", response_model=PanelHostResponse)
+async def get_panel_host(
+    panel_id: int,
+    host_id: int,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool] = Depends(get_current_user_context),
+):
+    identity, is_owner = user_context
+    panel = (await db.execute(select(OCPanel).where(OCPanel.id == panel_id))).scalar_one_or_none()
+    if not panel:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
+    if not is_owner and panel.purchaser_identity != identity:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    stmt = (
+        select(ProxyHost, OCPanelConfig, OCPanelGroup, Group)
+        .join(OCPanelConfig, ProxyHost.inbound_tag == OCPanelConfig.virtual_inbound_tag)
+        .outerjoin(OCPanelGroup, OCPanelConfig.panel_group_id == OCPanelGroup.id)
+        .outerjoin(Group, OCPanelGroup.local_group_id == Group.id)
+        .where(OCPanelConfig.panel_id == panel_id)
+        .where(ProxyHost.id == host_id)
+    )
+    result = await db.execute(stmt)
+    row = result.first()
+
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found in this panel")
+
+    host, config, oc_group, local_group = row
+    group_name = local_group.name if local_group else (oc_group.source_name if oc_group else None)
+    
+    return PanelHostResponse(
+        id=host.id,
+        display_name=host.remark,
+        source_config_name=config.source_name,
+        group_name=group_name,
+        address=list(host.address),
+        is_disabled=bool(host.is_disabled),
+        multiplier=float(host.multiplier_override) if host.multiplier_override is not None else None,
+    )
+
+
+@router.patch("/{panel_id}/hosts/{host_id}", response_model=PanelHostResponse)
+async def update_panel_host(
+    panel_id: int,
+    host_id: int,
+    update_data: PanelHostUpdate,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool] = Depends(get_current_user_context),
+):
+    identity, is_owner = user_context
+    panel = (await db.execute(select(OCPanel).where(OCPanel.id == panel_id))).scalar_one_or_none()
+    if not panel:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
+    if not is_owner and panel.purchaser_identity != identity:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    stmt = (
+        select(ProxyHost, OCPanelConfig, OCPanelGroup, Group)
+        .join(OCPanelConfig, ProxyHost.inbound_tag == OCPanelConfig.virtual_inbound_tag)
+        .outerjoin(OCPanelGroup, OCPanelConfig.panel_group_id == OCPanelGroup.id)
+        .outerjoin(Group, OCPanelGroup.local_group_id == Group.id)
+        .where(OCPanelConfig.panel_id == panel_id)
+        .where(ProxyHost.id == host_id)
+    )
+    result = await db.execute(stmt)
+    row = result.first()
+
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found in this panel")
+
+    host, config, oc_group, local_group = row
+
+    if update_data.display_name is not None:
+        host.remark = update_data.display_name
+    if update_data.is_disabled is not None:
+        host.is_disabled = update_data.is_disabled
+    if update_data.multiplier is not None:
+        host.multiplier_override = update_data.multiplier
+
+    await db.commit()
+    await db.refresh(host)
+
+    group_name = local_group.name if local_group else (oc_group.source_name if oc_group else None)
+    
+    return PanelHostResponse(
+        id=host.id,
+        display_name=host.remark,
+        source_config_name=config.source_name,
+        group_name=group_name,
+        address=list(host.address),
+        is_disabled=bool(host.is_disabled),
+        multiplier=float(host.multiplier_override) if host.multiplier_override is not None else None,
     )

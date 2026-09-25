@@ -11,12 +11,14 @@ import {
   ShieldAlert,
   User,
   UserCheck,
+  Monitor,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useGetPanel } from '../service/panels-api'
+import { PanelHostsList } from './panel-hosts-list'
 
 export default function PanelManage() {
   const { id } = useParams()
@@ -260,6 +262,22 @@ export default function PanelManage() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Hosts Management */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold flex items-center gap-2">
+                <Monitor className="h-5 w-5 text-primary" />
+                <span>Imported Hosts</span>
+              </CardTitle>
+              <CardDescription>
+                Manage local presentation and state of synchronized hosts.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <PanelHostsList panelId={panel.id} />
+            </CardContent>
+          </Card>
         </div>
       )}
     </div>

@@ -248,7 +248,7 @@ async def sync_configs_and_hosts(panel_id: int, req: SyncRequest, db: AsyncSessi
                 host = ProxyHost(
                     remark=c_name,
                     priority=0,
-                    address={"127.0.0.1"}, # placeholder for now
+                    address={"8.8.8.8"}, # Default to 8.8.8.8 per Phase 7
                     port=None,
                     path=None,
                     allowinsecure=None,
@@ -258,8 +258,6 @@ async def sync_configs_and_hosts(panel_id: int, req: SyncRequest, db: AsyncSessi
                 host.inbound = inbound
                 db.add(host)
                 hosts_created += 1
-            elif host.remark != c_name:
-                host.remark = c_name
                 
             pc = OCPanelConfig(
                 panel_id=panel.id,
@@ -275,11 +273,12 @@ async def sync_configs_and_hosts(panel_id: int, req: SyncRequest, db: AsyncSessi
             existing_configs[c_id] = pc
         else:
             pc = existing_configs[c_id]
+            old_source_name = pc.source_name
             pc.source_name = c_name
             pc.panel_group_id = local_group_id
             
             host = (await db.execute(select(ProxyHost).where(ProxyHost.inbound_tag == tag))).scalar_one_or_none()
-            if host and host.remark != c_name:
+            if host and host.remark == old_source_name and host.remark != c_name:
                 host.remark = c_name
             
     await db.commit()

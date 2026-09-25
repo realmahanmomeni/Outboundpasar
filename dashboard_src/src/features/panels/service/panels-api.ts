@@ -65,3 +65,38 @@ export const syncPanel = (panelId: number, data: { selected_group_ids: string[];
     method: 'POST',
     body: JSON.stringify(data)
   })
+
+export interface PanelHostItem {
+  id: number
+  display_name: string
+  source_config_name: string
+  group_name: string | null
+  address: string[]
+  is_disabled: boolean
+  multiplier: number | null
+}
+
+export interface PanelHostUpdateData {
+  display_name?: string
+  is_disabled?: boolean
+  multiplier?: number
+}
+
+export const getPanelHosts = (panelId: number | string): Promise<PanelHostItem[]> => {
+  return fetcher<PanelHostItem[]>(`/api/panels/${panelId}/hosts`)
+}
+
+export const updatePanelHost = (panelId: number | string, hostId: number, data: PanelHostUpdateData): Promise<PanelHostItem> => {
+  return fetcher<PanelHostItem>(`/api/panels/${panelId}/hosts/${hostId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data)
+  })
+}
+
+export const useGetPanelHosts = (panelId: number | string) => {
+  return useQuery<PanelHostItem[]>({
+    queryKey: ['/api/panels', String(panelId), 'hosts'],
+    queryFn: () => getPanelHosts(panelId),
+    enabled: Boolean(panelId),
+  })
+}
