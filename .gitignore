@@ -1,0 +1,43 @@
+# Runtime data and DB
+/var/
+/database/
+/runtime/
+*.sqlite
+*.db
+*.sqlite3
+
+# Secrets and environment
+.env
+.env.*
+secrets/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+env.bak/
+venv.bak/
+
+# Node/build cache
+node_modules/
+dist/
+build/
+.npm/
+
+# Temporary extraction data
+/source-extraction/
+
+# Logs
+logs/
+*.log
+
+# Generated files
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
