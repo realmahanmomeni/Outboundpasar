@@ -149,20 +149,41 @@ async def sync_user(db_user: User) -> None:
     if await _user_sync_blocked(db_user):
         return
 
-    proto_user = await serialize_user(db_user)
-    asyncio.create_task(_dispatch_user_update(proto_user))
+    proto_users = await serialize_user(db_user)
+    asyncio.create_task(_dispatch_users_update(proto_users))
 
 
 async def remove_user(user: UserNotificationResponse) -> None:
-    proto_user = _serialize_user_for_node(user.id, user.proxy_settings.dict())
-    asyncio.create_task(_dispatch_user_update(proto_user))
+    proto_users = _serialize_user_for_node(
+        user.id, user.proxy_settings.dict(), active_panel_ids=user.active_panel_ids
+    )
+    asyncio.create_task(_dispatch_users_update(proto_users))
 
 
 async def remove_users(users: list[User]) -> None:
     """Batch-remove users from nodes (serialized without inbounds so nodes drop them)."""
     if not users:
         return
-    proto_users = [_serialize_user_for_node(u.id, u.proxy_settings) for u in users]
+    
+    from sqlalchemy.ext.asyncio import async_object_session
+    from sqlalchemy import select
+    from app.db.models_oc import OCUserMapping
+    
+    session = async_object_session(users[0])
+    panel_mappings = {}
+    if session is not None:
+        user_ids = [u.id for u in users]
+        rows = (await session.execute(
+            select(OCUserMapping.user_id, OCUserMapping.panel_id).where(OCUserMapping.user_id.in_(user_ids))
+        )).all()
+        for r in rows:
+            panel_mappings.setdefault(r.user_id, []).append(r.panel_id)
+
+    proto_users = []
+    for u in users:
+        active_panels = panel_mappings.get(u.id, [])
+        proto_users.extend(_serialize_user_for_node(u.id, u.proxy_settings, active_panel_ids=active_panels))
+    
     asyncio.create_task(_dispatch_users_update(proto_users))
 
 

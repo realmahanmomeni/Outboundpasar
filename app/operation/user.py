@@ -412,6 +412,10 @@ class UserOperation(BaseOperation):
         return [user.subscription_url for user in users_list]
 
     async def validate_user(self, db_user: User, include_subscription_url: bool = True) -> UserNotificationResponse:
+        from sqlalchemy.ext.asyncio import async_object_session
+        from sqlalchemy import select
+        from app.db.models_oc import OCUserMapping
+
         lifetime_used_traffic = db_user.lifetime_used_traffic
         group_ids = list(db_user.group_ids or [])
         group_names = list(db_user.group_names or [])
@@ -419,6 +423,13 @@ class UserOperation(BaseOperation):
         user.lifetime_used_traffic = lifetime_used_traffic
         user.group_ids = group_ids
         user.group_names = group_names
+        
+        session = async_object_session(db_user)
+        if session is not None:
+            user.active_panel_ids = (await session.execute(
+                select(OCUserMapping.panel_id).where(OCUserMapping.user_id == db_user.id)
+            )).scalars().all()
+            
         if include_subscription_url:
             user.subscription_url = await self.generate_subscription_url(user)
         return user
@@ -1210,6 +1221,9 @@ class UserOperation(BaseOperation):
                 db_user.status = new_status
                 db_user.last_status_change = changed_at
                 changed_user_ids.append(db_user.id)
+
+                from app.node.oc_sync import enqueue_oc_user_sync
+                await enqueue_oc_user_sync(db, db_user)
 
             await db.commit()
         except Exception:

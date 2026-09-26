@@ -210,7 +210,7 @@ export default function PanelManage() {
                 </div>
                 <div className="flex justify-between py-1 border-b text-xs">
                   <span className="text-muted-foreground">Default Traffic Multiplier</span>
-                  <span className="font-medium">{panel.default_multiplier}x</span>
+                  <span className="font-medium">{panel.multiplier}x</span>
                 </div>
                 <div className="flex justify-between py-1 border-b text-xs">
                   <span className="text-muted-foreground">Test User</span>

@@ -102,7 +102,7 @@ export default function PanelCard({ panel, onManage, onUpdate }: PanelCardProps)
               <Percent className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
               <div className="min-w-0">
                 <span className="text-muted-foreground block text-[11px]">{t('panels.multiplier', { defaultValue: 'Multiplier' })}</span>
-                <span className="font-medium text-foreground">{panel.default_multiplier}x</span>
+                <span className="font-medium text-foreground">{panel.multiplier}x</span>
               </div>
             </div>
           </div>

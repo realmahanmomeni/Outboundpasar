@@ -1,6 +1,7 @@
+from decimal import Decimal
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload, joinedload
 
@@ -12,7 +13,6 @@ from app.utils.jwt import get_customer_payload
 
 router = APIRouter(prefix="/api/panels", tags=["Panels"])
 
-
 class OCPanelResponse(BaseModel):
     id: int
     integration_id: int
@@ -20,7 +20,7 @@ class OCPanelResponse(BaseModel):
     source_panel_id: str
     purchaser_identity: str
     sync_status: str | None = None
-    default_multiplier: float = 1.0
+    multiplier: float = 1.0
     configs_count: int = 0
     test_user_id: str | None = None
     last_sync_at: datetime | None = None
@@ -30,6 +30,10 @@ class OCPanelResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PanelUpdate(BaseModel):
+    multiplier: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+
+
 class PanelHostResponse(BaseModel):
     id: int
     display_name: str
@@ -37,13 +41,12 @@ class PanelHostResponse(BaseModel):
     group_name: str | None
     address: list[str]
     is_disabled: bool
-    multiplier: float | None
+    multiplier: float
 
 
 class PanelHostUpdate(BaseModel):
     display_name: str | None = None
     is_disabled: bool | None = None
-    multiplier: float | None = None
 
 
 async def get_current_user_context(
@@ -113,7 +116,7 @@ async def list_panels(
             source_panel_id=p.source_panel_id,
             purchaser_identity=p.purchaser_identity,
             sync_status=p.sync_status,
-            default_multiplier=float(p.default_multiplier) if p.default_multiplier is not None else 1.0,
+            multiplier=float(p.multiplier) if p.multiplier is not None else 1.0,
             configs_count=len(p.configs) if p.configs else 0,
             test_user_id=p.test_user_id,
             last_sync_at=p.last_sync_at,
@@ -148,7 +151,47 @@ async def get_panel(
         source_panel_id=panel.source_panel_id,
         purchaser_identity=panel.purchaser_identity,
         sync_status=panel.sync_status,
-        default_multiplier=float(panel.default_multiplier) if panel.default_multiplier is not None else 1.0,
+        multiplier=float(panel.multiplier) if panel.multiplier is not None else 1.0,
+        configs_count=len(panel.configs) if panel.configs else 0,
+        test_user_id=panel.test_user_id,
+        last_sync_at=panel.last_sync_at,
+        created_at=panel.created_at,
+        updated_at=panel.updated_at,
+    )
+
+
+@router.patch("/{panel_id}", response_model=OCPanelResponse)
+async def update_panel(
+    panel_id: int,
+    update_data: PanelUpdate,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool] = Depends(get_current_user_context),
+):
+    identity, is_owner = user_context
+    stmt = select(OCPanel).options(selectinload(OCPanel.configs)).where(OCPanel.id == panel_id)
+    result = await db.execute(stmt)
+    panel = result.scalar_one_or_none()
+
+    if not panel:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
+
+    if not is_owner and panel.purchaser_identity != identity:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this panel")
+
+    if update_data.multiplier is not None:
+        panel.multiplier = float(update_data.multiplier)
+
+    await db.commit()
+    await db.refresh(panel)
+
+    return OCPanelResponse(
+        id=panel.id,
+        integration_id=panel.integration_id,
+        name=panel.name,
+        source_panel_id=panel.source_panel_id,
+        purchaser_identity=panel.purchaser_identity,
+        sync_status=panel.sync_status,
+        multiplier=float(panel.multiplier) if panel.multiplier is not None else 1.0,
         configs_count=len(panel.configs) if panel.configs else 0,
         test_user_id=panel.test_user_id,
         last_sync_at=panel.last_sync_at,
@@ -191,7 +234,7 @@ async def list_panel_hosts(
             group_name=group_name,
             address=list(host.address),
             is_disabled=bool(host.is_disabled),
-            multiplier=float(host.multiplier_override) if host.multiplier_override is not None else None,
+            multiplier=float(panel.multiplier),
         ))
     return hosts
 
@@ -234,7 +277,7 @@ async def get_panel_host(
         group_name=group_name,
         address=list(host.address),
         is_disabled=bool(host.is_disabled),
-        multiplier=float(host.multiplier_override) if host.multiplier_override is not None else None,
+        multiplier=float(panel.multiplier),
     )
 
 
@@ -273,8 +316,6 @@ async def update_panel_host(
         host.remark = update_data.display_name
     if update_data.is_disabled is not None:
         host.is_disabled = update_data.is_disabled
-    if update_data.multiplier is not None:
-        host.multiplier_override = update_data.multiplier
 
     await db.commit()
     await db.refresh(host)
@@ -288,5 +329,5 @@ async def update_panel_host(
         group_name=group_name,
         address=list(host.address),
         is_disabled=bool(host.is_disabled),
-        multiplier=float(host.multiplier_override) if host.multiplier_override is not None else None,
+        multiplier=float(panel.multiplier),
     )

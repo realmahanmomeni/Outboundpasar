@@ -127,6 +127,7 @@ class UserNotificationResponse(User):
     subscription_url: str = Field(default="")
     admin: AdminContactInfo | None = Field(default=None)
     group_names: list[str] | None = Field(default_factory=list)
+    active_panel_ids: list[int] = Field(default_factory=list, exclude=True)
     model_config = ConfigDict(from_attributes=True)
 
     @field_validator("used_traffic", "lifetime_used_traffic", "data_limit", mode="before")

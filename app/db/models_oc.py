@@ -39,7 +39,7 @@ class OCPanel(Base, CreatedAtUTCMixin):
     source_panel_id: Mapped[str] = mapped_column(String(256), nullable=False)
     purchaser_identity: Mapped[str] = mapped_column(String(256), nullable=False)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
-    default_multiplier: Mapped[float] = mapped_column(Numeric(6, 4), default=1.0000)
+    multiplier: Mapped[float] = mapped_column(Numeric(precision=32, scale=2), default=1.00)
     test_user_id: Mapped[str | None] = mapped_column(String(256), default=None, nullable=True)
     sync_status: Mapped[str | None] = mapped_column(String(64), default=None, nullable=True)
     last_sync_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)
@@ -109,7 +109,11 @@ class OCUserMapping(Base, CreatedAtUTCMixin):
     external_user_id: Mapped[str] = mapped_column(String(256), nullable=False)
     last_cumulative_traffic: Mapped[int] = mapped_column(BigInteger, default=0)
     last_synced_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)
+    last_synced_configs: Mapped[list[str] | None] = mapped_column(JSON(none_as_null=True), default=None)
     status: Mapped[str] = mapped_column(String(64), default="active")
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
+    )
     
     user: Mapped[User] = relationship(init=False)
     panel: Mapped[OCPanel] = relationship(back_populates="user_mappings", init=False)
@@ -129,6 +133,7 @@ class OCSyncState(Base, CreatedAtUTCMixin):
     max_attempts: Mapped[int] = mapped_column(default=3)
     last_error: Mapped[str | None] = mapped_column(String(2048), nullable=True, default=None)
     next_retry_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)
+    revision: Mapped[int] = mapped_column(default=1)
     updated_at: Mapped[dt] = mapped_column(
         DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
     )

@@ -52,7 +52,6 @@ async def run_tests():
                 status=[],
                 alpn=[],
                 is_disabled=False,
-                multiplier_override=1.0,
                 allowinsecure=False
             )
             host.inbound = inbound
@@ -109,20 +108,17 @@ async def run_tests():
             # 4. Test Update
             update_data = PanelHostUpdate(
                 display_name="My Custom Name",
-                is_disabled=True,
-                multiplier=2.5
+                is_disabled=True
             )
             updated = await update_panel_host(panel.id, host_id, update_data, db, owner_ctx)
             assert updated.display_name == "My Custom Name"
             assert updated.is_disabled == True
-            assert updated.multiplier == 2.5
             assert updated.source_config_name == "Original Config Name" # Unchanged
             
             # Verify in DB
             db_host = (await db.execute(select(ProxyHost).where(ProxyHost.id == host_id))).scalar_one()
             assert db_host.remark == "My Custom Name"
             assert db_host.is_disabled == True
-            assert float(db_host.multiplier_override) == 2.5
             assert "8.8.8.8" in db_host.address
 
             print("ALL TESTS PASSED.")

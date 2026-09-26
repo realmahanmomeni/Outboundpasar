@@ -8,7 +8,7 @@ export interface PanelItem {
   source_panel_id: string
   purchaser_identity: string
   sync_status: string | null
-  default_multiplier: number
+  multiplier: number
   configs_count: number
   test_user_id: string | null
   last_sync_at: string | null
@@ -22,6 +22,13 @@ export const getPanels = (): Promise<PanelItem[]> => {
 
 export const getPanel = (id: number | string): Promise<PanelItem> => {
   return fetcher<PanelItem>(`/api/panels/${id}`)
+}
+
+export const updatePanel = (id: number | string, data: { multiplier?: number; name?: string }): Promise<PanelItem> => {
+  return fetcher<PanelItem>(`/api/panels/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data)
+  })
 }
 
 export const useGetPanels = () => {
@@ -73,13 +80,12 @@ export interface PanelHostItem {
   group_name: string | null
   address: string[]
   is_disabled: boolean
-  multiplier: number | null
+  multiplier: number
 }
 
 export interface PanelHostUpdateData {
   display_name?: string
   is_disabled?: boolean
-  multiplier?: number
 }
 
 export const getPanelHosts = (panelId: number | string): Promise<PanelHostItem[]> => {

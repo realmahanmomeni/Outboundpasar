@@ -8,8 +8,14 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { AlertCircle, RefreshCw, Server, ShieldAlert } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { AlertCircle, RefreshCw, Server, ShieldAlert, Loader2 } from 'lucide-react'
 import type { PanelItem } from '../service/panels-api'
+import { updatePanel } from '../service/panels-api'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { toast } from 'sonner'
+import { useQueryClient } from '@tanstack/react-query'
 
 interface UpdatePanelModalProps {
   panel: PanelItem | null
@@ -23,8 +29,44 @@ export default function UpdatePanelModal({
   onOpenChange,
 }: UpdatePanelModalProps) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const [multiplier, setMultiplier] = useState<string>('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  
+  useEffect(() => {
+    if (panel && isOpen) {
+      setMultiplier(panel.multiplier.toString())
+    }
+  }, [panel, isOpen])
 
   if (!panel) return null
+
+  const handleUpdate = async () => {
+    try {
+      setIsSubmitting(true)
+      const num = parseFloat(multiplier)
+      if (isNaN(num) || num <= 0) {
+         toast.error("Multiplier must be a positive number")
+         setIsSubmitting(false)
+         return
+      }
+      if (multiplier.includes('.') && multiplier.split('.')[1].length > 2) {
+         toast.error("Multiplier cannot have more than 2 decimal places")
+         setIsSubmitting(false)
+         return
+      }
+
+      await updatePanel(panel.id, { multiplier: num })
+      toast.success(t('panels.updateSuccess', { defaultValue: 'Panel updated successfully' }))
+      queryClient.invalidateQueries({ queryKey: ['/api/panels'] })
+      queryClient.invalidateQueries({ queryKey: ['/api/panels', String(panel.id)] })
+      onOpenChange(false)
+    } catch (e: any) {
+      toast.error(e.message || "Failed to update panel")
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
@@ -60,29 +102,35 @@ export default function UpdatePanelModal({
               <span className="font-medium">{panel.configs_count}</span>
             </div>
             <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">{t('panels.multiplier', { defaultValue: 'Multiplier' })}:</span>
-              <span className="font-medium">{panel.default_multiplier}x</span>
+              <span className="text-muted-foreground">{t('panels.multiplier', { defaultValue: 'Current Multiplier' })}:</span>
+              <span className="font-medium">{panel.multiplier}x</span>
             </div>
           </div>
 
-          <div className="flex items-start gap-2.5 rounded-md border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-            <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <p className="font-semibold">
-                {t('panels.updateNotice', {
-                  defaultValue: 'Panel update synchronization will be available in Phase 11.',
-                })}
-              </p>
-              <p className="text-muted-foreground">
-                In Phase 4, no external configs are fetched and no hosts are modified. No fake success notifications will be emitted.
-              </p>
-            </div>
+          <div className="space-y-2 pt-2 border-t">
+            <Label className="text-xs">{t('panels.purchasedPanelMultiplier', { defaultValue: 'Purchased Panel Multiplier' })}</Label>
+            <Input 
+              value={multiplier}
+              onChange={(e) => setMultiplier(e.target.value)}
+              placeholder="1.0"
+              type="number"
+              step="0.01"
+              min="0.01"
+              disabled={isSubmitting}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Must be greater than 0, up to 2 decimal places. Affects traffic accounting for all hosts.
+            </p>
           </div>
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Close
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSubmitting}>
+            Cancel
+          </Button>
+          <Button onClick={handleUpdate} disabled={isSubmitting}>
+            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Save
           </Button>
         </DialogFooter>
       </DialogContent>

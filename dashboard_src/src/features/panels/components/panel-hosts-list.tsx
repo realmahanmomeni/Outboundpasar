@@ -24,9 +24,8 @@ export function PanelHostsList({ panelId }: { panelId: string | number }) {
   const { data: hosts, isLoading, isError } = useGetPanelHosts(panelId)
   
   const [editingId, setEditingId] = useState<number | null>(null)
-  const [editForm, setEditForm] = useState<{ display_name: string; multiplier: string }>({
-    display_name: '',
-    multiplier: '1'
+  const [editForm, setEditForm] = useState<{ display_name: string }>({
+    display_name: ''
   })
 
   const updateMutation = useMutation({
@@ -44,18 +43,13 @@ export function PanelHostsList({ panelId }: { panelId: string | number }) {
   const handleEdit = (host: PanelHostItem) => {
     setEditingId(host.id)
     setEditForm({
-      display_name: host.display_name,
-      multiplier: host.multiplier !== null ? String(host.multiplier) : '1'
+      display_name: host.display_name
     })
   }
 
   const handleSave = (hostId: number) => {
     const data: any = {
       display_name: editForm.display_name
-    }
-    const mult = parseFloat(editForm.multiplier)
-    if (!isNaN(mult)) {
-      data.multiplier = mult
     }
     updateMutation.mutate({ hostId, data })
   }
@@ -141,17 +135,7 @@ export function PanelHostsList({ panelId }: { panelId: string | number }) {
                   </div>
                 </TableCell>
                 <TableCell>
-                  {isEditing ? (
-                    <Input
-                      value={editForm.multiplier}
-                      onChange={(e) => setEditForm({ ...editForm, multiplier: e.target.value })}
-                      type="number"
-                      step="0.1"
-                      className="h-8 w-20"
-                    />
-                  ) : (
-                    <span>{host.multiplier !== null ? `${host.multiplier}x` : 'N/A'}</span>
-                  )}
+                  {host.multiplier !== null ? `${host.multiplier}x` : 'N/A'}
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2">

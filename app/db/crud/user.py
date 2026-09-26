@@ -26,6 +26,7 @@ from app.db.models import (
     users_groups_association,
 )
 from app.models.proxy import ProxyTable
+from app.node.oc_sync import enqueue_oc_user_sync
 from app.models.stats import (
     Period,
     UserCountMetric,
@@ -962,6 +963,9 @@ async def create_user(
     if new_user.next_plan:
         db_user.next_plan = NextPlan(user_id=db_user.id, **new_user.next_plan.model_dump())
         db.add(db_user.next_plan)
+
+    await enqueue_oc_user_sync(db, db_user)
+
     if commit:
         await db.commit()
         await refresh_and_load_user(db, db_user)
@@ -1004,6 +1008,9 @@ async def create_users_bulk(
         db.add_all(next_plans)
         await db.flush()
 
+    for db_user in db_users:
+        await enqueue_oc_user_sync(db, db_user)
+
     if commit:
         await db.commit()
         for user in db_users:
@@ -1033,6 +1040,8 @@ async def remove_user(db: AsyncSession, db_user: User) -> User:
     """
     await release_users_allocations(db, [db_user])
     await _delete_user_dependencies(db, [db_user.id])
+    db_user.status = UserStatus.disabled  # Force status disabled to queue OC DELETE
+    await enqueue_oc_user_sync(db, db_user)
     await db.execute(delete(User).where(User.id == db_user.id))
     await db.commit()
     return db_user
@@ -1053,6 +1062,9 @@ async def remove_users(db: AsyncSession, db_users: list[User]):
 
     await release_users_allocations(db, db_users)
     await _delete_user_dependencies(db, user_ids)
+    for db_user in db_users:
+        db_user.status = UserStatus.disabled
+        await enqueue_oc_user_sync(db, db_user)
     await db.execute(delete(User).where(User.id.in_(user_ids)))
     await db.commit()
 
@@ -1161,6 +1173,8 @@ async def modify_user(
         await delete_user_passed_notification_reminders(db, id, ReminderType.data_usage, usage_percentage)
     if remove_expiration_reminder:
         await delete_user_passed_notification_reminders(db, id, ReminderType.expiration_date, days_left)
+
+    await enqueue_oc_user_sync(db, db_user)
 
     if commit:
         await db.commit()
@@ -1308,6 +1322,8 @@ async def reset_user_by_next(db: AsyncSession, db_user: User, *, clean_chart_dat
     if clean_chart_data:
         await clear_user_node_usages(db, db_user.id)
     db_user.status = UserStatus.active
+
+    await enqueue_oc_user_sync(db, db_user)
 
     await db.commit()
     await refresh_and_load_user(db, db_user)

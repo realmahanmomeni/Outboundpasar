@@ -41,7 +41,7 @@ async def setup_test_data(db):
         source_panel_id="40",
         purchaser_identity="Mahan",
         name="test-Panel 40 - Mahan #1",
-        default_multiplier=1.5,
+        multiplier=1.5,
         sync_status="connected",
     )
     db.add(panel_mahan_1)
@@ -54,7 +54,7 @@ async def setup_test_data(db):
         source_panel_id="40",
         purchaser_identity="Mahan",
         name="test-Panel 40 - Mahan #2",
-        default_multiplier=2.0,
+        multiplier=2.0,
         sync_status="pending",
     )
     db.add(panel_mahan_2)
@@ -65,7 +65,7 @@ async def setup_test_data(db):
         source_panel_id="40",
         purchaser_identity="Ali",
         name="test-Panel 40 - Ali",
-        default_multiplier=1.0,
+        multiplier=1.0,
         sync_status=None,  # Not connected
     )
     db.add(panel_ali)
@@ -164,8 +164,8 @@ async def run_tests():
             print("   [x] Config count accurately reflects imported configs.")
 
             # Multiplier
-            assert p_m1.default_multiplier == 1.5, f"Expected 1.5, got {p_m1.default_multiplier}"
-            assert p_m2.default_multiplier == 2.0, f"Expected 2.0, got {p_m2.default_multiplier}"
+            assert p_m1.multiplier == 1.5, f"Expected 1.5, got {p_m1.multiplier}"
+            assert p_m2.multiplier == 2.0, f"Expected 2.0, got {p_m2.multiplier}"
             print("   [x] Multiplier accurately displayed.")
 
             # Honest Status
