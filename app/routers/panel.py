@@ -10,6 +10,7 @@ from app.db.models import ProxyHost, Group
 from app.db.models_oc import OCPanel, OCPanelConfig, OCPanelGroup
 from app.routers.authentication import get_current_for_request, oauth2_scheme
 from app.utils.jwt import get_customer_payload
+from app.node.oc_sync import sync_panel_from_outbound_center
 
 router = APIRouter(prefix="/api/panels", tags=["Panels"])
 
@@ -47,6 +48,10 @@ class PanelHostResponse(BaseModel):
 class PanelHostUpdate(BaseModel):
     display_name: str | None = None
     is_disabled: bool | None = None
+
+class SyncPanelResponse(BaseModel):
+    status: str
+    message: str
 
 
 async def get_current_user_context(
@@ -198,6 +203,27 @@ async def update_panel(
         created_at=panel.created_at,
         updated_at=panel.updated_at,
     )
+
+@router.post("/{panel_id}/sync", response_model=SyncPanelResponse)
+async def sync_panel(
+    panel_id: int,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool] = Depends(get_current_user_context),
+):
+    identity, is_owner = user_context
+    panel = (await db.execute(select(OCPanel).where(OCPanel.id == panel_id))).scalar_one_or_none()
+
+    if not panel:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
+
+    if not is_owner and panel.purchaser_identity != identity:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this panel")
+
+    try:
+        await sync_panel_from_outbound_center(db, panel_id)
+        return SyncPanelResponse(status="success", message="Panel synchronized successfully")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 @router.get("/{panel_id}/hosts", response_model=list[PanelHostResponse])

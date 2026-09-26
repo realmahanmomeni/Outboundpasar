@@ -59,7 +59,8 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
                 select(OCPanelConfig.source_config_id)
                 .where(
                     OCPanelConfig.panel_id == panel_id,
-                    OCPanelConfig.virtual_inbound_tag.in_(tags)
+                    OCPanelConfig.virtual_inbound_tag.in_(tags),
+                    OCPanelConfig.source_missing == False
                 )
             )).scalars().all()
         else:
@@ -134,3 +135,138 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
                         status="pending"
                     )
                     db_session.add(job)
+
+async def sync_panel_from_outbound_center(db_session: AsyncSession, panel_id: int):
+    """
+    Synchronizes an already imported panel with Outbound Center.
+    Handles metadata, groups, and configs updates securely.
+    """
+    from sqlalchemy.orm import selectinload
+    from app.db.models_oc import OCPanel, OCPanelGroup, OCPanelConfig
+    from app.db.models import ProxyInbound, ProxyHost
+    from app.routers.integration import call_oc_api
+
+    panel = (await db_session.execute(
+        select(OCPanel)
+        .options(
+            selectinload(OCPanel.integration),
+            selectinload(OCPanel.groups),
+            selectinload(OCPanel.configs)
+        )
+        .where(OCPanel.id == panel_id)
+    )).scalar_one_or_none()
+
+    if not panel:
+        raise ValueError(f"Panel {panel_id} not found")
+        
+    integration = panel.integration
+    if not integration or not integration.is_active:
+        raise ValueError(f"Integration not active for panel {panel_id}")
+
+    # A. Panel metadata sync
+    panel_data = await call_oc_api(integration, "GET", f"/v1/integration/panels/{panel.source_panel_id}")
+    if panel_data:
+        panel.sync_status = "connected" if panel_data.get("status") == "active" else panel_data.get("status")
+
+    # B. Group sync
+    group_data = await call_oc_api(integration, "GET", f"/v1/integration/panels/{panel.source_panel_id}/groups")
+    oc_groups = group_data.get("groups", [])
+    
+    existing_groups = {g.source_group_id: g for g in panel.groups}
+    oc_group_ids = set()
+    
+    for g_data in oc_groups:
+        g_id = g_data["id"]
+        g_name = g_data["name"]
+        oc_group_ids.add(g_id)
+        
+        if g_id in existing_groups:
+            existing_groups[g_id].source_name = g_name
+        else:
+            new_group = OCPanelGroup(
+                panel_id=panel.id,
+                source_group_id=g_id,
+                source_name=g_name,
+                is_selected=False  # Safe default for new groups
+            )
+            db_session.add(new_group)
+            panel.groups.append(new_group)
+            existing_groups[g_id] = new_group
+
+    await db_session.flush()
+
+    # C. Config sync
+    config_data = await call_oc_api(integration, "GET", f"/v1/integration/panels/{panel.source_panel_id}/configs")
+    oc_configs = config_data.get("configs", [])
+    
+    existing_configs = {c.source_config_id: c for c in panel.configs}
+    oc_config_ids = set()
+    
+    for c_data in oc_configs:
+        c_id = c_data["id"]
+        c_name = c_data["name"]
+        oc_config_ids.add(c_id)
+        
+        mapping = c_data.get("group_mapping", {})
+        is_supported = mapping.get("supported", False)
+        mapped_groups = mapping.get("groups", [])
+        
+        local_group_id = None
+        if is_supported and mapped_groups:
+            for g_id in mapped_groups:
+                if g_id in existing_groups:
+                    local_group_id = existing_groups[g_id].id
+                    break
+        
+        tag = f"oc_{panel.id}_{c_id}"
+        
+        if c_id in existing_configs:
+            pc = existing_configs[c_id]
+            old_source_name = pc.source_name
+            pc.source_name = c_name
+            pc.panel_group_id = local_group_id
+            pc.source_missing = False
+            
+            host = (await db_session.execute(select(ProxyHost).where(ProxyHost.inbound_tag == tag))).scalar_one_or_none()
+            if host and host.remark == old_source_name and host.remark != c_name:
+                host.remark = c_name
+        else:
+            inbound = (await db_session.execute(select(ProxyInbound).where(ProxyInbound.tag == tag))).scalar_one_or_none()
+            if not inbound:
+                inbound = ProxyInbound(tag=tag)
+                db_session.add(inbound)
+                await db_session.flush()
+                
+            host = (await db_session.execute(select(ProxyHost).where(ProxyHost.inbound_tag == tag))).scalar_one_or_none()
+            if not host:
+                host = ProxyHost(
+                    remark=c_name,
+                    priority=0,
+                    address={"8.8.8.8"},
+                    port=None,
+                    path=None,
+                    allowinsecure=None,
+                    alpn=[],
+                    status=[]
+                )
+                host.inbound = inbound
+                db_session.add(host)
+                
+            pc = OCPanelConfig(
+                panel_id=panel.id,
+                source_config_id=c_id,
+                source_name=c_name,
+                panel_group_id=local_group_id,
+                virtual_inbound_tag=tag,
+                source_missing=False
+            )
+            db_session.add(pc)
+            panel.configs.append(pc)
+            existing_configs[c_id] = pc
+            
+    for c_id, pc in existing_configs.items():
+        if c_id not in oc_config_ids:
+            pc.source_missing = True
+
+    await db_session.commit()
+
