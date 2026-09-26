@@ -154,6 +154,7 @@ async def sync_panel_from_outbound_center(db_session: AsyncSession, panel_id: in
             selectinload(OCPanel.configs)
         )
         .where(OCPanel.id == panel_id)
+        .with_for_update()
     )).scalar_one_or_none()
 
     if not panel:
