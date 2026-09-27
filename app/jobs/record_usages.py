@@ -19,6 +19,8 @@ from app.db import GetDB
 from app.db.base import engine
 from app.db.models import Admin, Node, NodeUsage, NodeUserUsage, System, User
 from app.node import node_manager
+from app.node.oc_usage import record_oc_user_usages
+from app.node.user import parse_xray_identity
 from app.operation.admin_sync import enforce_admin_limits_now
 from app.utils.logger import get_logger
 from config import job_settings, runtime_settings, usage_settings
@@ -474,10 +476,12 @@ def _process_users_stats_response(stats_response):
     validated_params = []
     invalid_uids = []
     for uid, value in params.items():
-        try:
-            validated_params.append({"uid": int(uid), "value": value})
-        except ValueError, TypeError:
+        parsed = parse_xray_identity(uid)
+        if parsed is None:
             invalid_uids.append(uid)
+        else:
+            user_id, panel_id = parsed
+            validated_params.append({"uid": user_id, "panel_id": panel_id, "value": value})
 
     return validated_params, invalid_uids
 
@@ -619,32 +623,36 @@ async def calculate_admin_usage(users_usage: list) -> tuple[dict, set[int]]:
     return admin_usage, set(user_admin_map.keys())
 
 
-async def calculate_users_usage(api_params: dict, usage_coefficient: dict) -> list:
-    """Aggregate user usage across nodes with coefficients applied."""
+async def calculate_users_usage(
+    api_params: dict,
+    usage_coefficient: dict,
+    panel_multipliers: dict[int, float] | None = None,
+) -> list:
+    """Aggregate user usage across nodes with coefficients and panel multipliers applied."""
     if not api_params:
         return []
 
+    panel_multipliers = panel_multipliers or {}
     users_usage: dict[int, int] = defaultdict(int)
     for node_id, params in api_params.items():
         if not params:
             continue
         coeff = usage_coefficient.get(node_id, 1)
         for param in params:
-            users_usage[int(param["uid"])] += int(param["value"] * coeff)
+            panel_id = param.get("panel_id")
+            panel_mult = panel_multipliers.get(panel_id, 1.0) if panel_id else 1.0
+            users_usage[int(param["uid"])] += int(param["value"] * coeff * panel_mult)
 
     return [{"uid": uid, "value": value} for uid, value in users_usage.items()]
 
 
-async def _record_user_usages_impl():
-    """
-    Internal implementation of record_user_usages.
-    Separated to allow timeout wrapper.
-    """
+async def _record_node_user_usages_impl():
+    """Internal implementation of native node user usage recording."""
     job_start_time = time.time()
     nodes: tuple[int, PasarGuardNode] = await node_manager.get_healthy_nodes()
 
     if not nodes:
-        logger.debug("No healthy nodes found, skipping user usage recording")
+        logger.debug("No healthy nodes found, skipping native user usage recording")
         return
 
     logger.debug(f"Starting user usage recording for {len(nodes)} nodes")
@@ -667,7 +675,16 @@ async def _record_user_usages_impl():
             usage_coefficient[node_id] = coeff
             api_params[node_id] = stats
 
-        users_usage = await calculate_users_usage(api_params, usage_coefficient)
+        panel_multipliers: dict[int, float] = {}
+        try:
+            from app.db.models_oc import OCPanel
+            async with GetDB() as db:
+                p_rows = (await db.execute(select(OCPanel.id, OCPanel.multiplier))).all()
+                panel_multipliers = {row[0]: float(row[1]) for row in p_rows if row[1] is not None}
+        except Exception as exc:
+            logger.debug("Could not load OCPanel multipliers for node stats: %s", exc)
+
+        users_usage = await calculate_users_usage(api_params, usage_coefficient, panel_multipliers)
         if not users_usage:
             logger.debug("No user usage to record")
             return
@@ -741,6 +758,25 @@ async def _record_user_usages_impl():
         job_duration = time.time() - job_start_time
         logger.exception(f"User usage recording failed after {job_duration:.2f}s")
         raise
+
+
+async def _record_user_usages_impl():
+    """
+    Internal implementation of record_user_usages.
+    Coordinates both native node user usage recording and Outbound Center usage collection
+    with mutual failure isolation.
+    """
+    # 1. Native Node Usage Recording
+    try:
+        await _record_node_user_usages_impl()
+    except Exception:
+        logger.exception("Native node user usage recording failed")
+
+    # 2. Outbound Center Usage Recording
+    try:
+        await record_oc_user_usages()
+    except Exception:
+        logger.exception("Outbound Center user usage recording failed")
 
 
 async def record_user_usages():

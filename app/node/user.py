@@ -24,6 +24,31 @@ def get_panel_xray_identity(user_id: int, panel_id: int) -> str:
     return f"{user_id}_p{panel_id}"
 
 
+def parse_xray_identity(identity: str | int) -> tuple[int, int | None] | None:
+    """
+    Parse an Xray email identity into (user_id, panel_id).
+
+    Supports:
+      - Native numeric IDs: '123' or 123 -> (123, None)
+      - Panel-scoped IDs: '123_p92' -> (123, 92)
+
+    Returns None if identity does not match valid format.
+    """
+    if isinstance(identity, int):
+        return (identity, None)
+
+    raw = str(identity).strip()
+    if raw.isdigit():
+        return (int(raw), None)
+
+    if "_p" in raw:
+        parts = raw.split("_p")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            return (int(parts[0]), int(parts[1]))
+
+    return None
+
+
 def _bucket_inbounds(inbounds: list[str], active_panel_ids: list[int] | None = None) -> dict[int | None, list[str]]:
     """
     Group inbound tags into native (None) and panel_id (int) buckets.
