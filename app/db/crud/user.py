@@ -657,13 +657,13 @@ async def remove_expired_users(
 
 
 async def get_active_to_expire_users(db: AsyncSession) -> list[User]:
-    stmt = _review_user_select_stmt().where(User.status == UserStatus.active).where(User.is_expired)
+    stmt = _review_user_select_stmt().where(User.status.in_([UserStatus.active, UserStatus.on_hold])).where(User.is_expired)
 
     return list((await db.execute(stmt)).unique().scalars().all())
 
 
 async def get_active_to_limited_users(db: AsyncSession) -> list[User]:
-    stmt = _review_user_select_stmt().where(User.status == UserStatus.active).where(User.is_limited)
+    stmt = _review_user_select_stmt().where(User.status.in_([UserStatus.active, UserStatus.on_hold])).where(User.is_limited)
 
     return list((await db.execute(stmt)).unique().scalars().all())
 
@@ -1194,6 +1194,7 @@ async def modify_user(
     if modify.hwid_limit is not None:
         db_user.hwid_limit = modify.hwid_limit
 
+    await db_user.awaitable_attrs.next_plan
     if modify.next_plan is not None:
         db_user.next_plan = NextPlan(
             user_id=db_user.id,
@@ -1269,6 +1270,8 @@ async def reset_user_data_usage(
     if db_user.status == UserStatus.limited:
         db_user.status = UserStatus.active
 
+    await enqueue_oc_user_sync(db, db_user)
+
     if commit:
         await db.commit()
         await refresh_and_load_user(db, db_user)
@@ -1295,6 +1298,7 @@ async def bulk_reset_user_data_usage(
             await clear_user_node_usages(db, db_user.id)
         if db_user.status == UserStatus.limited:
             db_user.status = UserStatus.active
+        await enqueue_oc_user_sync(db, db_user)
     if commit:
         await db.commit()
         for user in users:

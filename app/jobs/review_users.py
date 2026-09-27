@@ -60,6 +60,10 @@ async def apply_status_changes(db: AsyncSession, users: list[User], status: User
         if status in (UserStatus.expired, UserStatus.limited):
             await update_users_status(db, plain_users, status)
         await sync_users(plain_users)
+        from app.node.oc_sync import enqueue_oc_user_sync
+        for db_user in plain_users:
+            await enqueue_oc_user_sync(db, db_user)
+        await db.commit()
         for db_user in plain_users:
             await _notify_status_change(db_user, status)
 
@@ -82,14 +86,14 @@ async def apply_status_changes(db: AsyncSession, users: list[User], status: User
 
 async def expire_users_job():
     async with GetDB() as db:
-        if expired_users := await get_active_to_expire_users(db):
-            await apply_status_changes(db, expired_users, UserStatus.expired)
+        from app.operation.access_control import expired_users_enforce
+        await expired_users_enforce(db, logger=logger)
 
 
 async def limit_users_job():
     async with GetDB() as db:
-        if limited_users := await get_active_to_limited_users(db):
-            await apply_status_changes(db, limited_users, UserStatus.limited)
+        from app.operation.access_control import limit_exceeded_users
+        await limit_exceeded_users(db, logger=logger)
 
 
 async def on_hold_to_active_users_job():

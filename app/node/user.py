@@ -98,11 +98,9 @@ async def serialize_user(user: User, allowed_protocols: frozenset[ProxyProtocol]
 
     user_settings = user.proxy_settings
     inbounds = None
-    status = user.__dict__.get("status")
-    if status is None:
-        status = await user.awaitable_attrs.status
+    from app.operation.access_control import check_user_access_allowed
 
-    if status in (UserStatus.active, UserStatus.on_hold):
+    if await check_user_access_allowed(user):
         inbounds = _inbounds_from_loaded_groups(user)
         if inbounds is None:
             inbounds = await user.inbounds()
@@ -209,6 +207,8 @@ async def core_users(
         .outerjoin(Admin, Admin.id == User.admin_id)
         .outerjoin(AdminRole, AdminRole.id == Admin.role_id)
         .where(User.status.in_([UserStatus.active, UserStatus.on_hold]))
+        .where(~User.is_expired)
+        .where(~User.is_limited)
         .where(
             or_(
                 Admin.id.is_(None),
@@ -262,9 +262,11 @@ async def serialize_users_for_node(
         for r in rows:
             panel_mappings.setdefault(r.user_id, []).append(r.panel_id)
 
+    from app.operation.access_control import is_user_access_allowed
+
     for user in users:
         inbounds_list = []
-        if user.status in [UserStatus.active, UserStatus.on_hold]:
+        if is_user_access_allowed(user):
             loaded_inbounds = _inbounds_from_loaded_groups(user)
             if loaded_inbounds is None:
                 inbounds_list = await user.inbounds()

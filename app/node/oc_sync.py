@@ -12,14 +12,10 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
     Enqueue synchronization events (Create, Update, Delete) to Outbound Center
     by diffing the user's active virtual inbounds against their current mappings.
     """
-    from app.db.models import UserStatus
+    from app.operation.access_control import check_user_access_allowed
 
-    # Determine user status
-    status = db_user.__dict__.get("status")
-    if status is None:
-        status = await db_user.awaitable_attrs.status
-
-    if status in (UserStatus.active, UserStatus.on_hold):
+    # Determine user access
+    if await check_user_access_allowed(db_user, db_session):
         inbounds = _inbounds_from_loaded_groups(db_user)
         if inbounds is None:
             inbounds = await db_user.inbounds()

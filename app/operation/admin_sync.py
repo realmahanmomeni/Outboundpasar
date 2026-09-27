@@ -30,6 +30,8 @@ async def sync_admin_users_for_block_transition(
     if was_blocked == is_blocked:
         return 0
 
+    from app.node.oc_sync import enqueue_oc_user_sync
+
     if is_blocked:
         users = await get_users(
             db,
@@ -37,9 +39,15 @@ async def sync_admin_users_for_block_transition(
             admin=admin,
         )
         await sync_remove_users(users)
+        for user in users:
+            await enqueue_oc_user_sync(db, user)
+        await db.commit()
     else:
         users = await get_users(db, query=UserListQuery(), admin=admin, load_admin_role=True)
         await sync_users(users)
+        for user in users:
+            await enqueue_oc_user_sync(db, user)
+        await db.commit()
 
     return len(users)
 

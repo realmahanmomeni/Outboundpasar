@@ -213,6 +213,15 @@ async def account_mapping_usage(mapping_id: int, remote_cumulative: int) -> int:
                 await db.execute(admin_stmt)
 
         await db.commit()
+
+        if accounted_delta > 0:
+            try:
+                from app.operation.access_control import enforce_user_limits_now
+
+                await enforce_user_limits_now(user_ids=[mapping.user_id], logger=logger)
+            except Exception:
+                logger.exception("Failed to enforce user limits after accounting mapping usage")
+
         return accounted_delta
 
 
@@ -301,6 +310,12 @@ async def record_oc_user_usages(session: aiohttp.ClientSession | None = None) ->
                 await enforce_admin_limits_now(logger=logger)
             except Exception:
                 logger.exception("Failed to enforce admin limits after OC usage collection")
+            try:
+                from app.operation.access_control import enforce_user_limits_now
+
+                await enforce_user_limits_now(logger=logger)
+            except Exception:
+                logger.exception("Failed to enforce user limits after OC usage collection")
 
     finally:
         if owns_session:

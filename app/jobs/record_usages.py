@@ -714,6 +714,11 @@ async def _record_node_user_usages_impl():
                 for batch in _chunked(valid_users_usage, batch_size):
                     await safe_execute(user_stmt, batch)
             logger.debug(f"Updated {len(valid_users_usage)} users")
+            try:
+                from app.operation.access_control import enforce_user_limits_now
+                await enforce_user_limits_now(user_ids=valid_user_ids, logger=logger)
+            except Exception:
+                logger.exception("Failed to enforce user limits after usage recording")
 
         # Update Admin table with concurrency control
         if admin_usage:
