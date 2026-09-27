@@ -35,16 +35,20 @@ def parse_xray_identity(identity: str | int) -> tuple[int, int | None] | None:
     Returns None if identity does not match valid format.
     """
     if isinstance(identity, int):
-        return (identity, None)
+        return (identity, None) if identity > 0 else None
 
     raw = str(identity).strip()
     if raw.isdigit():
-        return (int(raw), None)
+        val = int(raw)
+        return (val, None) if val > 0 else None
 
     if "_p" in raw:
         parts = raw.split("_p")
         if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            return (int(parts[0]), int(parts[1]))
+            user_id = int(parts[0])
+            panel_id = int(parts[1])
+            if user_id > 0 and panel_id > 0:
+                return (user_id, panel_id)
 
     return None
 

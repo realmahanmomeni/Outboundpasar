@@ -46,10 +46,18 @@ async def fetch_oc_user_usage(
                 if status == 200:
                     try:
                         data = await resp.json()
-                        upload_bytes = int(data.get("upload_bytes") or 0)
-                        download_bytes = int(data.get("download_bytes") or 0)
-                        total_bytes = int(data.get("total_bytes") or 0)
-                        cumulative = max(total_bytes, upload_bytes + download_bytes)
+                        upload_bytes = max(0, int(data.get("upload_bytes") or 0))
+                        download_bytes = max(0, int(data.get("download_bytes") or 0))
+                        total_bytes = max(0, int(data.get("total_bytes") or 0))
+                        cumulative = max(0, total_bytes, upload_bytes + download_bytes)
+                        max_safe = 9_223_372_036_854_775_807
+                        if cumulative > max_safe:
+                            logger.warning(
+                                "Cumulative traffic %s for %s exceeds max safe limit; capping",
+                                cumulative,
+                                external_user_id,
+                            )
+                            cumulative = max_safe
                         return cumulative
                     except (ValueError, TypeError, KeyError) as exc:
                         logger.warning(
@@ -135,13 +143,22 @@ async def account_mapping_usage(mapping_id: int, remote_cumulative: int) -> int:
         if mapping.status != "active":
             return 0
 
+        if remote_cumulative < 0:
+            logger.warning(
+                "Negative cumulative traffic %s for mapping %s ignored",
+                remote_cumulative,
+                mapping.id,
+            )
+            return 0
+
         previous = mapping.last_cumulative_traffic or 0
-        multiplier = float(mapping.panel.multiplier) if (mapping.panel and mapping.panel.multiplier is not None) else 1.0
+        panel_mult = float(mapping.panel.multiplier) if (mapping.panel and mapping.panel.multiplier is not None and mapping.panel.multiplier > 0) else 1.0
+        multiplier = panel_mult if panel_mult > 0 else 1.0
 
         if remote_cumulative > previous:
             # Monotonic increase
             raw_delta = remote_cumulative - previous
-            accounted_delta = int(raw_delta * multiplier)
+            accounted_delta = max(0, int(raw_delta * multiplier))
 
             mapping.last_cumulative_traffic = remote_cumulative
             mapping.updated_at = dt.now(UTC)
@@ -159,8 +176,8 @@ async def account_mapping_usage(mapping_id: int, remote_cumulative: int) -> int:
 
         elif remote_cumulative < previous:
             # Remote reset detected
-            raw_delta = remote_cumulative
-            accounted_delta = int(raw_delta * multiplier)
+            raw_delta = max(0, remote_cumulative)
+            accounted_delta = max(0, int(raw_delta * multiplier))
 
             logger.warning(
                 "Remote reset detected for mapping %s (user %s, panel %s): previous=%s, current=%s, accounted_delta=%s (x%s)",

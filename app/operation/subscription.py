@@ -105,7 +105,13 @@ class SubscriptionOperation(BaseOperation):
     @staticmethod
     async def validated_user(db_user: User) -> UsersResponseWithInbounds:
         user = UsersResponseWithInbounds.model_validate(db_user.__dict__)
-        user.inbounds = await db_user.inbounds()
+        from app.operation.access_control import check_user_access_allowed
+
+        if await check_user_access_allowed(db_user):
+            user.inbounds = await db_user.inbounds()
+        else:
+            user.inbounds = []
+
         user.expire = db_user.expire
         user.lifetime_used_traffic = db_user.lifetime_used_traffic
 

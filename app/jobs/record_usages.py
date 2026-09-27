@@ -470,8 +470,9 @@ def _process_users_stats_response(stats_response):
     Returns tuple: (validated_params, invalid_uids) for logging outside thread.
     """
     params = defaultdict(int)
-    for stat in filter(attrgetter("value"), stats_response.stats):
-        params[stat.name] += stat.value
+    for stat in stats_response.stats:
+        if stat.value and stat.value > 0:
+            params[stat.name] += stat.value
 
     validated_params = []
     invalid_uids = []
@@ -639,8 +640,12 @@ async def calculate_users_usage(
             continue
         coeff = usage_coefficient.get(node_id, 1)
         for param in params:
+            if param.get("value", 0) <= 0:
+                continue
             panel_id = param.get("panel_id")
             panel_mult = panel_multipliers.get(panel_id, 1.0) if panel_id else 1.0
+            if panel_mult <= 0:
+                panel_mult = 1.0
             users_usage[int(param["uid"])] += int(param["value"] * coeff * panel_mult)
 
     return [{"uid": uid, "value": value} for uid, value in users_usage.items()]

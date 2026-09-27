@@ -46,7 +46,11 @@ async def process_oc_sync():
                         raise ValueError(f"Panel {panel_id} not found or integration disabled")
 
                     token = await decrypt_secret(panel.integration.api_token_encrypted)
-                    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                    headers = {
+                        "X-Integration-Token": token,
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    }
                     
                     # Snapshot original intent
                     original_payload = job.payload.copy() if job.payload else None

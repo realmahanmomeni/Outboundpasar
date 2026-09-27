@@ -100,6 +100,51 @@ async def get_current_user_context(
     return (admin.username, is_owner)
 
 
+async def get_current_admin_user_context(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: str | None = Depends(oauth2_scheme),
+) -> tuple[str, bool]:
+    """
+    Returns (identity, is_owner) for mutating operations (PATCH, POST).
+    Disallows customer tokens and requires nodes:update permission for non-owner admins.
+    """
+    if token:
+        cust_payload = await get_customer_payload(token)
+        if cust_payload and "account_id" in cust_payload:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Customer accounts cannot modify panel settings",
+            )
+
+    try:
+        admin = await get_current_for_request(request, db, token)
+    except HTTPException:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not admin:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    is_owner = admin.is_owner
+    if not is_owner:
+        from app.operation.permissions import PermissionDenied, enforce_permission
+
+        try:
+            enforce_permission(admin, "nodes", "update")
+        except PermissionDenied as e:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+    return (admin.username, is_owner)
+
+
 @router.get("", response_model=list[OCPanelResponse])
 async def list_panels(
     db: AsyncSession = Depends(get_db),
@@ -170,7 +215,7 @@ async def update_panel(
     panel_id: int,
     update_data: PanelUpdate,
     db: AsyncSession = Depends(get_db),
-    user_context: tuple[str, bool] = Depends(get_current_user_context),
+    user_context: tuple[str, bool] = Depends(get_current_admin_user_context),
 ):
     identity, is_owner = user_context
     stmt = select(OCPanel).options(selectinload(OCPanel.configs)).where(OCPanel.id == panel_id)
@@ -208,7 +253,7 @@ async def update_panel(
 async def sync_panel(
     panel_id: int,
     db: AsyncSession = Depends(get_db),
-    user_context: tuple[str, bool] = Depends(get_current_user_context),
+    user_context: tuple[str, bool] = Depends(get_current_admin_user_context),
 ):
     identity, is_owner = user_context
     panel = (await db.execute(select(OCPanel).where(OCPanel.id == panel_id))).scalar_one_or_none()
@@ -313,7 +358,7 @@ async def update_panel_host(
     host_id: int,
     update_data: PanelHostUpdate,
     db: AsyncSession = Depends(get_db),
-    user_context: tuple[str, bool] = Depends(get_current_user_context),
+    user_context: tuple[str, bool] = Depends(get_current_admin_user_context),
 ):
     identity, is_owner = user_context
     panel = (await db.execute(select(OCPanel).where(OCPanel.id == panel_id))).scalar_one_or_none()
