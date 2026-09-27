@@ -212,14 +212,21 @@ class UserOperation(BaseOperation):
 
     @staticmethod
     async def generate_subscription_url(user: UserNotificationResponse):
-        salt = secrets.token_hex(8)
         settings = await subscription_settings()
-        url_prefix = (
-            user.admin.sub_domain.replace("*", salt)
+        raw_prefix = (
+            user.admin.sub_domain
             if user.admin and user.admin.sub_domain
-            else (settings.url_prefix).replace("*", salt)
+            else settings.url_prefix
         )
-        token = await create_subscription_token(user.id)
+        if "*" in raw_prefix:
+            salt = secrets.token_hex(8)
+            url_prefix = raw_prefix.replace("*", salt)
+        else:
+            url_prefix = raw_prefix
+
+        token = getattr(user, "sub_token", None)
+        if not token:
+            token = await create_subscription_token(user.id)
         return f"{url_prefix}/{subscription_env_settings.path}/{token}"
 
     async def _generate_usernames(

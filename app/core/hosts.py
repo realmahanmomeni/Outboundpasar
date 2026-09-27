@@ -73,6 +73,8 @@ def _normalize_finalmask_link(final_mask_settings: FinalMask | dict | str | None
 async def _prepare_subscription_inbound_data(
     host: BaseHost,
     down_settings: SubscriptionInboundData | None = None,
+    oc_config: Any | None = None,
+    proxies: dict | None = None,
 ) -> SubscriptionInboundData:
     """
     Prepare host data - creates small config instances ONCE.
@@ -81,6 +83,42 @@ async def _prepare_subscription_inbound_data(
     """
     # Get inbound configuration
     inbound_config = await core_manager.get_inbound_by_tag(host.inbound_tag)
+    if not inbound_config:
+        source_payload = oc_config.source_payload if (oc_config and isinstance(oc_config.source_payload, dict)) else {}
+        protocol = oc_config.protocol if (oc_config and oc_config.protocol) else (source_payload.get("protocol") or source_payload.get("type"))
+        if not protocol and oc_config and oc_config.source_name:
+            name_lower = oc_config.source_name.lower()
+            for p in ("vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria"):
+                if p in name_lower or (p == "shadowsocks" and "ss" in name_lower):
+                    protocol = p
+                    break
+        if not protocol and proxies:
+            for p in ("vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria"):
+                if p in proxies:
+                    protocol = p
+                    break
+        protocol = protocol or "vless"
+
+        network = (oc_config.network if (oc_config and oc_config.network) else (source_payload.get("network") or source_payload.get("transport"))) or "tcp"
+        inbound_port = oc_config.port if (oc_config and oc_config.port) else source_payload.get("port")
+        inbound_path = host.path or source_payload.get("path") or ""
+        inbound_tls = source_payload.get("tls") or ("tls" if (host.port or inbound_port) == 443 else "none")
+
+        inbound_config = {
+            "protocol": protocol.lower(),
+            "network": network.lower(),
+            "port": inbound_port or host.port or 443,
+            "path": inbound_path,
+            "tls": inbound_tls,
+            "sni": source_payload.get("sni") or [],
+            "host": source_payload.get("host") or [],
+            "pbk": source_payload.get("pbk", ""),
+            "sid": source_payload.get("sid", ""),
+            "sids": source_payload.get("sids", []),
+            "spx": source_payload.get("spx", ""),
+            "alpn": source_payload.get("alpn", []),
+        }
+
     protocol = inbound_config["protocol"]
 
     ts = host.transport_settings

@@ -172,7 +172,7 @@ def apply_custom_format_variables(format_variables: dict, custom_variables: list
             continue
         try:
             format_variables[key] = raw_value.format_map(base_variables)
-        except ValueError, KeyError:
+        except (ValueError, KeyError):
             format_variables[key] = raw_value
 
     return format_variables
@@ -182,7 +182,7 @@ def _format_dynamic_value(value, format_variables: dict):
     if isinstance(value, str):
         try:
             return value.format_map(format_variables)
-        except ValueError, KeyError:
+        except (ValueError, KeyError):
             return value
     if isinstance(value, list):
         return [_format_dynamic_value(item, format_variables) for item in value]
@@ -272,6 +272,53 @@ def setup_format_variables(user: UsersResponseWithInbounds, custom_variables: li
 
 async def filter_hosts(hosts: list[SubscriptionInboundData], user_status: UserStatus) -> list[SubscriptionInboundData]:
     return [host for host in hosts if not host.status or user_status in host.status]
+
+
+async def resolve_oc_virtual_hosts(
+    oc_tags: list[str],
+    user_status: UserStatus,
+    proxies: dict,
+) -> list[SubscriptionInboundData]:
+    """
+    Resolve OC virtual inbounds from the database for the given authorized tags.
+    Respects source_missing, locally_hidden, and host is_disabled flags.
+    """
+    if not oc_tags:
+        return []
+
+    from app.db import GetDB
+    from app.db.models import ProxyHost
+    from app.db.models_oc import OCPanelConfig
+    from app.models.host import BaseHost
+    from app.core.hosts import _prepare_subscription_inbound_data
+    from sqlalchemy import or_, select
+
+    oc_hosts: list[SubscriptionInboundData] = []
+    async with GetDB() as db:
+        stmt = (
+            select(ProxyHost, OCPanelConfig)
+            .join(OCPanelConfig, ProxyHost.inbound_tag == OCPanelConfig.virtual_inbound_tag)
+            .where(
+                OCPanelConfig.virtual_inbound_tag.in_(oc_tags),
+                OCPanelConfig.source_missing.is_(False),
+                OCPanelConfig.locally_hidden.is_(False),
+                or_(ProxyHost.is_disabled.is_(False), ProxyHost.is_disabled.is_(None)),
+            )
+            .order_by(ProxyHost.priority.asc(), ProxyHost.id.asc())
+        )
+        result = await db.execute(stmt)
+        rows = result.all()
+
+        for host, config in rows:
+            if host.status and user_status not in host.status:
+                continue
+
+            host_base = BaseHost.model_validate(host)
+            sub_data = await _prepare_subscription_inbound_data(host_base, oc_config=config, proxies=proxies)
+            if sub_data:
+                oc_hosts.append(sub_data)
+
+    return oc_hosts
 
 
 async def process_host(
@@ -425,6 +472,10 @@ async def process_inbounds_and_tags(
     proxy_settings = user.proxy_settings.dict()
     proxy_settings["_user_id"] = user.id
     hosts = await filter_hosts(list((await host_manager.get_hosts()).values()), user.status)
+    oc_tags = [t for t in (user.inbounds or []) if t.startswith("oc_")]
+    if oc_tags:
+        oc_hosts = await resolve_oc_virtual_hosts(oc_tags, user.status, proxy_settings)
+        hosts.extend(oc_hosts)
     if randomize_order and len(hosts) > 1:
         random.shuffle(hosts)
 

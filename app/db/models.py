@@ -1,4 +1,5 @@
 import os
+import secrets
 from datetime import UTC, datetime as dt
 from enum import Enum
 from typing import Any
@@ -199,6 +200,12 @@ class User(Base, CreatedAtUTCMixin):
         Index("idx_users_admin_created", "admin_id", "created_at"),
     )
     username: Mapped[str] = mapped_column(CaseSensitiveString(128), unique=True, index=True)
+    sub_token: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        default_factory=lambda: secrets.token_hex(16),
+    )
     node_usages: Mapped[list[NodeUserUsage]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",

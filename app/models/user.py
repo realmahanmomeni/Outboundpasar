@@ -125,6 +125,7 @@ class UserNotificationResponse(User):
     edit_at: OptionalAwareDatetime = Field(default=None)
     online_at: OptionalAwareDatetime = Field(default=None)
     subscription_url: str = Field(default="")
+    sub_token: str | None = Field(default=None)
     admin: AdminContactInfo | None = Field(default=None)
     group_names: list[str] | None = Field(default_factory=list)
     active_panel_ids: list[int] = Field(default_factory=list, exclude=True)
@@ -146,6 +147,7 @@ class SubscriptionUserResponse(UserResponse):
     note: str | None = Field(None, exclude=True)
     auto_delete_in_days: int | None = Field(None, exclude=True)
     subscription_url: str | None = Field(None, exclude=True)
+    sub_token: str | None = Field(default=None, exclude=True)
     ip: str | None = Field(default=None)
     model_config = ConfigDict(from_attributes=True)
 

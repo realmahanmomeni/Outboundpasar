@@ -141,7 +141,7 @@ class SubscriptionOperation(BaseOperation):
 
         try:
             return profile_title.format_map(format_variables)
-        except ValueError, KeyError:
+        except (ValueError, KeyError):
             # Invalid format string, return original title
             return profile_title
 
@@ -153,7 +153,7 @@ class SubscriptionOperation(BaseOperation):
 
         try:
             return sub_settings.announce.format_map(format_variables)
-        except ValueError, KeyError:
+        except (ValueError, KeyError):
             return sub_settings.announce
 
     @staticmethod
@@ -164,7 +164,7 @@ class SubscriptionOperation(BaseOperation):
 
         try:
             return sub_settings.announce_url.format_map(format_variables)
-        except ValueError, KeyError:
+        except (ValueError, KeyError):
             return sub_settings.announce_url
 
     @staticmethod
@@ -273,7 +273,7 @@ class SubscriptionOperation(BaseOperation):
                 return ""
             try:
                 return header_value.format_map(format_variables)
-            except ValueError, KeyError:
+            except (ValueError, KeyError):
                 return header_value
 
         if isinstance(value, (dict, list, tuple, bool, int, float)):

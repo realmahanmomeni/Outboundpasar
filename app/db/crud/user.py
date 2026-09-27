@@ -1,3 +1,4 @@
+import secrets
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -266,6 +267,46 @@ async def get_user_by_id(
         join_groups=join_groups,
         load_lifetime_used_traffic=load_lifetime_used_traffic,
     ).where(User.id == user_id)
+
+    if admin_id is not None:
+        stmt = stmt.where(User.admin_id == admin_id)
+
+    return (await db.execute(stmt)).unique().scalar_one_or_none()
+
+
+async def get_user_by_sub_token(
+    db: AsyncSession,
+    sub_token: str,
+    *,
+    load_admin: bool = True,
+    load_admin_role: bool = False,
+    load_next_plan: bool = True,
+    load_usage_logs: bool = True,
+    load_groups: bool = True,
+    join_groups: bool = False,
+    load_lifetime_used_traffic: bool = False,
+    admin_id: int | None = None,
+) -> User | None:
+    """
+    Retrieves a user by sub_token.
+
+    Args:
+        db (AsyncSession): Database session.
+        sub_token (str): The persistent subscription token of the user.
+        admin_id: If provided, only return the user if they belong to this admin.
+
+    Returns:
+        Optional[User]: The user object if found, else None.
+    """
+    stmt = _build_user_select_stmt(
+        load_admin=load_admin,
+        load_admin_role=load_admin_role,
+        load_next_plan=load_next_plan,
+        load_usage_logs=load_usage_logs,
+        load_groups=load_groups,
+        join_groups=join_groups,
+        load_lifetime_used_traffic=load_lifetime_used_traffic,
+    ).where(User.sub_token == sub_token)
 
     if admin_id is not None:
         stmt = stmt.where(User.admin_id == admin_id)
@@ -944,7 +985,8 @@ async def create_user(
         User: Created user object.
     """
     db_user = User(
-        **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout"})
+        **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout"}),
+        sub_token=secrets.token_hex(16),
     )
     db_user.admin = admin
     db_user.groups = groups
@@ -984,7 +1026,8 @@ async def create_users_bulk(
     db_users: list[User] = []
     for new_user in new_users:
         db_user = User(
-            **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout"})
+            **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout"}),
+            sub_token=secrets.token_hex(16),
         )
         db_user.admin = admin
         db_user.groups = list(groups)
@@ -1342,6 +1385,7 @@ async def revoke_user_sub(db: AsyncSession, db_user: User, *, proxy_settings: di
         User: The updated user object.
     """
     db_user.sub_revoked_at = datetime.now(UTC)
+    db_user.sub_token = secrets.token_hex(16)
     db_user.proxy_settings = proxy_settings if proxy_settings is not None else build_revoked_proxy_settings(db_user)
     await db.commit()
     await refresh_and_load_user(db, db_user)
@@ -1364,6 +1408,7 @@ async def bulk_revoke_user_sub(
     revoked_at = datetime.now(UTC)
     for user in users:
         user.sub_revoked_at = revoked_at
+        user.sub_token = secrets.token_hex(16)
         user.proxy_settings = (
             proxy_settings_by_user_id.get(user.id)
             if proxy_settings_by_user_id is not None and user.id in proxy_settings_by_user_id

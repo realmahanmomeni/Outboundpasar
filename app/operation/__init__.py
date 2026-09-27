@@ -19,7 +19,7 @@ from app.db.crud import (
 )
 from app.db.crud.admin import get_admin_by_id
 from app.db.crud.group import get_groups_by_ids
-from app.db.crud.user import get_user_by_id
+from app.db.crud.user import get_user_by_id, get_user_by_sub_token
 from app.db.models import Admin as DBAdmin, ClientTemplate, CoreConfig, Group, Node, ProxyHost, User, UserTemplate
 from app.models.admin import AdminDetails
 from app.models.group import BulkGroup
@@ -151,31 +151,36 @@ class BaseOperation:
         load_groups: bool = True,
         load_lifetime_used_traffic: bool = False,
     ) -> User:
-        sub = await get_subscription_payload(token)
+        load_kwargs = {
+            "load_admin": load_admin,
+            "load_admin_role": load_admin_role,
+            "load_next_plan": load_next_plan,
+            "load_usage_logs": load_usage_logs,
+            "load_groups": load_groups,
+            "load_lifetime_used_traffic": load_lifetime_used_traffic,
+        }
 
-        db_user = None
+        # First: Attempt stable-token lookup: User.sub_token == token
+        db_user = await get_user_by_sub_token(db, token, **load_kwargs)
+        if db_user:
+            return db_user
+
+        # Second: If the token is not a stable token, preserve existing legacy HMAC token validation behavior
+        sub = await get_subscription_payload(token)
         if sub:
-            load_kwargs = {
-                "load_admin": load_admin,
-                "load_admin_role": load_admin_role,
-                "load_next_plan": load_next_plan,
-                "load_usage_logs": load_usage_logs,
-                "load_groups": load_groups,
-                "load_lifetime_used_traffic": load_lifetime_used_traffic,
-            }
             if sub.get("user_id"):
                 db_user = await get_user_by_id(db, sub["user_id"], **load_kwargs)
             elif sub.get("username"):
                 db_user = await get_user(db, sub["username"], **load_kwargs)
 
-        if (
-            not db_user
-            or db_user.created_at.astimezone(UTC) > sub["created_at"]
-            or (db_user.sub_revoked_at and db_user.sub_revoked_at.astimezone(UTC) > sub["created_at"])
-        ):
-            await self.raise_error(message="Not Found", code=404)
+            if (
+                db_user
+                and db_user.created_at.astimezone(UTC) <= sub["created_at"]
+                and (not db_user.sub_revoked_at or db_user.sub_revoked_at.astimezone(UTC) <= sub["created_at"])
+            ):
+                return db_user
 
-        return db_user
+        await self.raise_error(message="Not Found", code=404)
 
     async def get_validated_user(
         self,
