@@ -3,6 +3,7 @@ import { useCommandPaletteStore, type CommandCreateTarget } from '@/hooks/use-co
 import { useAdmin } from '@/hooks/use-admin'
 import useDirDetection from '@/hooks/use-dir-detection'
 import { useTheme } from '@/app/providers/theme-provider'
+import { showLegacyNativeInfraInNav } from '@/constants/oc-product-ui'
 import { canReadResourcePage, hasPermission, isOwner } from '@/utils/rbac'
 import { selectCoreEditorHasActualChanges } from '@/features/core-editor/kit/core-editor-change-state'
 import { useCoreEditorStore } from '@/features/core-editor/state/core-editor-store'
@@ -47,7 +48,7 @@ const createRoutes: Record<CommandCreateTarget, string> = {
   user: '/users',
   group: '/groups',
   host: '/hosts',
-  node: '/nodes',
+  node: showLegacyNativeInfraInNav() ? '/nodes' : '/panels',
   admin: '/admins',
   template: '/templates/user',
   core: '/nodes/cores/new',
@@ -89,8 +90,16 @@ export function CommandPalette() {
     if (canReadResourcePage(admin, 'hosts')) items.push({ title: 'hosts', url: '/hosts', icon: ListTodo })
     if (canReadResourcePage(admin, 'groups')) items.push({ title: 'groups', url: '/groups', icon: Group })
     if (canReadResourcePage(admin, 'admins')) items.push({ title: 'admins.title', url: '/admins', icon: UserCog })
-    if (canReadResourcePage(admin, 'nodes')) items.push({ title: 'nodes.title', url: '/nodes', icon: Share2Icon })
-    if (canReadResourcePage(admin, 'cores')) items.push({ title: 'settings.cores.title', url: '/nodes/cores', icon: Cpu })
+    if (canReadResourcePage(admin, 'nodes')) {
+      items.push({
+        title: showLegacyNativeInfraInNav() ? 'nodes.title' : 'panels.title',
+        url: showLegacyNativeInfraInNav() ? '/nodes' : '/panels',
+        icon: Share2Icon,
+      })
+    }
+    if (showLegacyNativeInfraInNav() && canReadResourcePage(admin, 'cores')) {
+      items.push({ title: 'settings.cores.title', url: '/nodes/cores', icon: Cpu })
+    }
     if (canReadResourcePage(admin, 'templates')) items.push({ title: 'templates.userTemplates', url: '/templates/user', icon: FileUser })
     if (isOwner(admin) || hasPermission(admin, 'system', 'update')) items.push({ title: 'settings.title', url: '/settings', icon: Settings })
     return items
@@ -101,10 +110,18 @@ export function CommandPalette() {
     if (hasPermission(admin, 'users', 'create')) items.push({ target: 'user', title: 'createUser', icon: UsersIcon })
     if (hasPermission(admin, 'groups', 'create')) items.push({ target: 'group', title: 'createGroup', icon: Group })
     if (hasPermission(admin, 'hosts', 'create')) items.push({ target: 'host', title: 'hostsDialog.addHost', icon: ListTodo })
-    if (hasPermission(admin, 'nodes', 'create')) items.push({ target: 'node', title: 'nodes.addNode', icon: Share2Icon })
+    if (hasPermission(admin, 'nodes', 'create')) {
+      items.push({
+        target: 'node',
+        title: showLegacyNativeInfraInNav() ? 'nodes.addNode' : 'panels.addPanel',
+        icon: Share2Icon,
+      })
+    }
     if (hasPermission(admin, 'admins', 'create')) items.push({ target: 'admin', title: 'admins.createAdmin', icon: UserCog })
     if (hasPermission(admin, 'templates', 'create')) items.push({ target: 'template', title: 'templates.addTemplate', icon: FileUser })
-    if (hasPermission(admin, 'cores', 'create')) items.push({ target: 'core', title: 'settings.cores.addCore', icon: Cpu })
+    if (showLegacyNativeInfraInNav() && hasPermission(admin, 'cores', 'create')) {
+      items.push({ target: 'core', title: 'settings.cores.addCore', icon: Cpu })
+    }
     return items
   }, [admin])
 

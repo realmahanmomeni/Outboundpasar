@@ -1,6 +1,9 @@
 services:
   pasarguard:
-    image: pasarguard/panel:latest
+    build:
+      context: /root/pasarguard/opt/pasarguard
+      dockerfile: Dockerfile
+    image: pasarguard/panel:4.x-local
     restart: always
     env_file: .env
     network_mode: host

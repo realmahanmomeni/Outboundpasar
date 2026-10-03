@@ -1,3 +1,4 @@
+import { showLegacyNativeInfraInNav } from '@/constants/oc-product-ui'
 import { Spinner } from '@/components/common/spinner'
 import { LoadingSpinner } from '@/components/common/loading-spinner'
 import PageHeader from '@/components/layout/page-header'
@@ -32,9 +33,13 @@ import { useLocation } from 'react-router'
 type TabDef = { id: string; labelKey: string; icon: LucideIcon; url: string }
 
 const NODES_TABS: TabDef[] = [
-  { id: 'nodes.title', labelKey: 'nodes.title', icon: Share2, url: '/nodes' },
-  { id: 'core', labelKey: 'core', icon: Cpu, url: '/nodes/cores' },
-  { id: 'nodes.wireguard.title', labelKey: 'nodes.wireguard.title', icon: Network, url: '/nodes/wireguard' },
+  ...(showLegacyNativeInfraInNav()
+    ? [
+        { id: 'nodes.title', labelKey: 'nodes.title', icon: Share2, url: '/nodes' },
+        { id: 'core', labelKey: 'core', icon: Cpu, url: '/nodes/cores' },
+        { id: 'nodes.wireguard.title', labelKey: 'nodes.wireguard.title', icon: Network, url: '/nodes/wireguard' },
+      ]
+    : []),
   { id: 'nodes.logs.title', labelKey: 'nodes.logs.title', icon: Logs, url: '/nodes/logs' },
 ]
 

@@ -1,3 +1,4 @@
+import { isLegacyNativeInfraRoute, ocPanelFallbackRoute } from '@/constants/oc-product-ui'
 import type { AdminDetails } from '@/service/api'
 
 type PermissionValue = boolean | { scope?: number | string | null } | null | undefined
@@ -59,8 +60,7 @@ export const firstAllowedRoute = (admin: AdminDetails | null | undefined) => {
   if (canReadResourcePage(admin, 'hosts')) return '/hosts'
   if (canReadResourcePage(admin, 'groups')) return '/groups'
   if (canReadResourcePage(admin, 'admins')) return '/admins'
-  if (canReadResourcePage(admin, 'nodes')) return '/nodes'
-  if (canReadResourcePage(admin, 'cores')) return '/nodes/cores'
+  if (canReadResourcePage(admin, 'nodes')) return ocPanelFallbackRoute()
   if (hasPermission(admin, 'nodes', 'logs')) return '/nodes/logs'
   if (canReadResourcePage(admin, 'templates')) return '/templates/user'
   if (canReadResourcePage(admin, 'client_templates')) return '/templates/client'
@@ -69,6 +69,8 @@ export const firstAllowedRoute = (admin: AdminDetails | null | undefined) => {
 
 export const canAccessRoute = (admin: AdminDetails | null | undefined, pathname: string) => {
   if (!admin) return false
+  if (isLegacyNativeInfraRoute(pathname)) return false
+  if (pathname.startsWith('/panels')) return canReadResourcePage(admin, 'nodes')
   if (pathname === '/') return hasPermission(admin, 'system', 'read')
   if (pathname.startsWith('/theme') || pathname.startsWith('/settings/theme')) return true
   if (pathname.startsWith('/users')) return hasPermission(admin, 'users', 'read')

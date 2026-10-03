@@ -1,3 +1,4 @@
+import { showLegacyNativeInfraInNav } from '@/constants/oc-product-ui'
 import PageHeader from '@/components/layout/page-header'
 import PageTransition from '@/components/layout/page-transition'
 import { useAdmin } from '@/hooks/use-admin'
@@ -17,9 +18,13 @@ interface Tab {
 }
 
 const tabs: Tab[] = [
-  { id: 'nodes.title', label: 'nodes.title', icon: Share2, url: '/nodes' },
-  { id: 'core', label: 'core', icon: Cpu, url: '/nodes/cores' },
-  { id: 'nodes.wireguard.title', label: 'nodes.wireguard.title', icon: Network, url: '/nodes/wireguard' },
+  ...(showLegacyNativeInfraInNav()
+    ? [
+        { id: 'nodes.title', label: 'nodes.title', icon: Share2, url: '/nodes' },
+        { id: 'core', label: 'core', icon: Cpu, url: '/nodes/cores' },
+        { id: 'nodes.wireguard.title', label: 'nodes.wireguard.title', icon: Network, url: '/nodes/wireguard' },
+      ]
+    : []),
   { id: 'nodes.logs.title', label: 'nodes.logs.title', icon: Logs, url: '/nodes/logs' },
 ]
 

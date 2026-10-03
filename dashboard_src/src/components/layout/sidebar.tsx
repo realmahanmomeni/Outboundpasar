@@ -18,6 +18,7 @@ import useDirDetection from '@/hooks/use-dir-detection'
 import { useSystemVersion } from '@/hooks/use-system-version'
 import { useVersionCheck } from '@/hooks/use-version-check'
 import { cn } from '@/lib/utils'
+import { showLegacyNativeInfraInNav } from '@/constants/oc-product-ui'
 import { canReadResourcePage, hasPermission, hasScopeAll, isOwner } from '@/utils/rbac'
 import {
   ArrowUpDown,
@@ -77,6 +78,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const canReadNodeLogs = hasPermission(admin, 'nodes', 'logs')
   const canBulkCreateFromTemplate = hasPermission(admin, 'users', 'create') && canReadTemplates
   const canBulkUpdateUsers = hasScopeAll(admin, 'users', 'update')
+  const showLegacyInfra = showLegacyNativeInfraInNav()
   const nodeNavItems = [
     ...(canReadNodes
       ? [
@@ -85,14 +87,18 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             url: '/panels',
             icon: Server,
           },
-          {
-            title: 'nodes.native.title',
-            url: '/nodes/native',
-            icon: Share2Icon,
-          },
+          ...(showLegacyInfra
+            ? [
+                {
+                  title: 'nodes.native.title',
+                  url: '/nodes/native',
+                  icon: Share2Icon,
+                },
+              ]
+            : []),
         ]
       : []),
-    ...(canReadCores
+    ...(showLegacyInfra && canReadCores
       ? [
           {
             title: 'settings.cores.title',
