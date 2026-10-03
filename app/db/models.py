@@ -67,12 +67,28 @@ class AdminStatus(str, Enum):
     limited = "limited"
 
 
+class TenantStatus(str, Enum):
+    active = "active"
+    disabled = "disabled"
+
+
 class IdMixin:
     id: Mapped[int] = mapped_column(SqliteCompatibleBigInteger, primary_key=True, init=False, autoincrement=True)
 
 
 class CreatedAtUTCMixin(IdMixin):
     created_at: Mapped[dt] = mapped_column(DateTime(timezone=True), default_factory=lambda: dt.now(UTC), init=False)
+
+
+class Tenant(Base, CreatedAtUTCMixin):
+    __tablename__ = "tenants"
+    name: Mapped[str] = mapped_column(String(128))
+    status: Mapped[TenantStatus] = mapped_column(
+        SQLEnum(TenantStatus, name="tenantstatus", create_constraint=True),
+        default=TenantStatus.active,
+        server_default="active",
+    )
+    admins: Mapped[list["Admin"]] = relationship(back_populates="tenant", init=False, default_factory=list)
 
 
 class Admin(Base, CreatedAtUTCMixin):
@@ -89,6 +105,9 @@ class Admin(Base, CreatedAtUTCMixin):
     api_keys: Mapped[list[APIKey]] = relationship(
         back_populates="admin", init=False, default_factory=list, cascade="all, delete-orphan"
     )
+
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(back_populates="admins", init=False, lazy="select")
 
     password_reset_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
     telegram_id: Mapped[int | None] = mapped_column(BigInteger, default=None)
@@ -607,6 +626,8 @@ class ProxyHost(Base, IdMixin):
     subscription_templates: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), default=None)
     final_mask_settings: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), default=None)
     cipher_suites: Mapped[str | None] = mapped_column(String(1024), default=None)
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(init=False)
 
 
 class System(Base, IdMixin):
@@ -816,6 +837,8 @@ class Group(Base, IdMixin):
         secondary=template_group_association, back_populates="groups", init=False
     )
     is_disabled: Mapped[bool] = mapped_column(server_default="0", default=False)
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(init=False)
 
     @hybrid_property
     def inbound_ids(self) -> list[int]:

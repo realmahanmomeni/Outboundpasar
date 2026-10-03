@@ -133,8 +133,9 @@ class BaseOperation:
         except ValueError as e:
             await self.raise_error(message=f"Invalid date range or format: {e!s}", code=400)
 
-    async def get_validated_host(self, db: AsyncSession, host_id: int) -> ProxyHost:
-        db_host = await get_host_by_id(db, host_id)
+    async def get_validated_host(self, db: AsyncSession, host_id: int, admin=None) -> ProxyHost:
+        tenant_id = admin.tenant_id if admin and not admin.is_owner else None
+        db_host = await get_host_by_id(db, host_id, tenant_id=tenant_id)
         if db_host is None:
             await self.raise_error(message="Host not found", code=404)
         return db_host
@@ -207,6 +208,7 @@ class BaseOperation:
             join_groups=join_groups,
             load_lifetime_used_traffic=load_lifetime_used_traffic,
             admin_id=get_scope_admin_id(admin, scope_resource, scope_action),
+            tenant_id=admin.tenant_id if not admin.is_owner else None,
         )
         if not db_user:
             await self.raise_error(message="User not found", code=404)
@@ -237,25 +239,42 @@ class BaseOperation:
             join_groups=join_groups,
             load_lifetime_used_traffic=load_lifetime_used_traffic,
             admin_id=get_scope_admin_id(admin, scope_resource, scope_action),
+            tenant_id=admin.tenant_id if not admin.is_owner else None,
         )
         if not db_user:
             await self.raise_error(message="User not found", code=404)
         return db_user
 
-    async def get_validated_admin(self, db: AsyncSession, username: str) -> DBAdmin:
+    async def ensure_admin_tenant_access(
+        self, db_admin: DBAdmin, current_admin: AdminDetails | None
+    ) -> None:
+        """Reject cross-tenant admin access for non-owner callers (404 to avoid leaking existence)."""
+        if current_admin is None or current_admin.is_owner:
+            return
+        if db_admin.tenant_id != current_admin.tenant_id:
+            await self.raise_error(message="Admin not found", code=404)
+
+    async def get_validated_admin(
+        self, db: AsyncSession, username: str, current_admin: AdminDetails | None = None
+    ) -> DBAdmin:
         db_admin = await get_admin(db, username)
         if not db_admin:
             await self.raise_error(message="Admin not found", code=404)
+        await self.ensure_admin_tenant_access(db_admin, current_admin)
         return db_admin
 
-    async def get_validated_admin_by_id(self, db: AsyncSession, id: int) -> DBAdmin:
+    async def get_validated_admin_by_id(
+        self, db: AsyncSession, id: int, current_admin: AdminDetails | None = None
+    ) -> DBAdmin:
         db_admin = await get_admin_by_id(db, id)
         if not db_admin:
             await self.raise_error(message="Admin not found", code=404)
+        await self.ensure_admin_tenant_access(db_admin, current_admin)
         return db_admin
 
-    async def get_validated_group(self, db: AsyncSession, group_id: int) -> Group:
-        db_group = await get_group_by_id(db, group_id)
+    async def get_validated_group(self, db: AsyncSession, group_id: int, admin: AdminDetails | None = None) -> Group:
+        tenant_id = admin.tenant_id if admin and not admin.is_owner else None
+        db_group = await get_group_by_id(db, group_id, tenant_id=tenant_id)
         if not db_group:
             await self.raise_error("Group not found", 404)
         return db_group
@@ -288,7 +307,10 @@ class BaseOperation:
                     if group_id not in allowed_set and group_id not in grandfathered:
                         await self.raise_error("Group not found", 404)
 
-        groups = await get_groups_by_ids(db, unique_ids, load_users=False, load_inbounds=True)
+        tenant_id = admin.tenant_id if admin and not admin.is_owner else None
+        groups = await get_groups_by_ids(
+            db, unique_ids, load_users=False, load_inbounds=True, tenant_id=tenant_id
+        )
         groups_by_id = {group.id: group for group in groups}
 
         missing_ids = [group_id for group_id in unique_ids if group_id not in groups_by_id]

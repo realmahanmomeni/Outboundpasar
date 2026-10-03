@@ -9,10 +9,10 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.db import GetDB
-from app.db.crud.admin import build_admin_details
+from app.db.crud.admin import build_admin_details, get_admin_by_id
 from app.models.admin import AdminDetails, AdminRoleData
 from app.models.admin_role import RolePermissions, CRUDPermissions
 from app.db.crud.user import (
@@ -29,6 +29,8 @@ from app.db.models import (
     Group,
     ProxyHost,
     ProxyInbound,
+    Tenant,
+    TenantStatus,
     User,
     UserStatus,
 )
@@ -72,10 +74,37 @@ class MockRequest:
         self.url = url
 
 
+def _panel_user_context(
+    username: str,
+    tenant_id: int,
+    *,
+    admin_id: int = 9001,
+    can_update: bool = True,
+) -> tuple[str, bool, AdminDetails]:
+    """Match get_current_user_context / get_current_admin_user_context contract."""
+    permissions = RolePermissions(
+        nodes=CRUDPermissions(read=True, update=can_update),
+    )
+    admin = AdminDetails(
+        id=admin_id,
+        username=username,
+        tenant_id=tenant_id,
+        status=AdminStatus.active,
+        role=AdminRoleData(
+            id=2,
+            name="panel_test_admin",
+            is_owner=False,
+            permissions=permissions,
+        ),
+    )
+    return (username, False, admin)
+
+
 async def run_tests():
     print("=== Running Phase 15 Security & Authorization Tests ===")
     sub_op = SubscriptionOperation(operator_type=OperatorType.API)
     entities_to_clean = []
+    tenant_ids_to_clean: list[int] = []
 
     try:
         async with GetDB() as db:
@@ -347,10 +376,17 @@ async def run_tests():
             await db.flush()
             entities_to_clean.append(intg_idor)
 
+            tenant_alice = Tenant(name=f"p15_alice_{uuid.uuid4().hex[:8]}", status=TenantStatus.active)
+            tenant_bob = Tenant(name=f"p15_bob_{uuid.uuid4().hex[:8]}", status=TenantStatus.active)
+            db.add_all([tenant_alice, tenant_bob])
+            await db.flush()
+            tenant_ids_to_clean.extend([tenant_alice.id, tenant_bob.id])
+
             panel_a = OCPanel(
                 integration_id=intg_idor.id,
                 source_panel_id="panel_idor_a",
                 purchaser_identity="admin_alice",
+                tenant_id=tenant_alice.id,
                 name="Alice Panel",
                 multiplier=1.00,
             )
@@ -358,6 +394,7 @@ async def run_tests():
                 integration_id=intg_idor.id,
                 source_panel_id="panel_idor_b",
                 purchaser_identity="admin_bob",
+                tenant_id=tenant_bob.id,
                 name="Bob Panel",
                 multiplier=1.00,
             )
@@ -395,8 +432,26 @@ async def run_tests():
             await db.commit()
             entities_to_clean.append(conf_b)
 
-            alice_ctx = ("admin_alice", False)
-            bob_ctx = ("admin_bob", False)
+            alice_ctx = _panel_user_context("admin_alice", tenant_alice.id, admin_id=9001)
+            bob_ctx = _panel_user_context("admin_bob", tenant_bob.id, admin_id=9002)
+
+            # Same-tenant panel access
+            resp_a = await get_panel(panel_id=panel_a.id, db=db, user_context=alice_ctx)
+            assert resp_a.id == panel_a.id
+            resp_b = await get_panel(panel_id=panel_b.id, db=db, user_context=bob_ctx)
+            assert resp_b.id == panel_b.id
+            print("   [x] Same-tenant panel read succeeds for authenticated tenant admins.")
+
+            owner_row = (
+                await db.execute(select(Admin).join(AdminRole).where(AdminRole.is_owner.is_(True)).limit(1))
+            ).scalar_one()
+            owner_details = build_admin_details(
+                await get_admin_by_id(db, owner_row.id, load_role=True, load_users=False, load_usage_logs=False)
+            )
+            owner_ctx = (owner_details.username, True, owner_details)
+            await get_panel(panel_id=panel_a.id, db=db, user_context=owner_ctx)
+            await get_panel(panel_id=panel_b.id, db=db, user_context=owner_ctx)
+            print("   [x] Platform Owner can read panels across tenants.")
 
             # 3.1 Admin Alice cannot read or modify Bob's panel
             try:
@@ -404,7 +459,14 @@ async def run_tests():
                 assert False, "Alice must not be able to read Bob's panel"
             except HTTPException as exc:
                 assert exc.status_code == 403
-            print("   [x] Cross-tenant panel read blocked with 403 Forbidden.")
+            print("   [x] Cross-tenant panel read blocked with 403 Forbidden (Alice → Bob).")
+
+            try:
+                await get_panel(panel_id=panel_a.id, db=db, user_context=bob_ctx)
+                assert False, "Bob must not be able to read Alice's panel"
+            except HTTPException as exc:
+                assert exc.status_code == 403
+            print("   [x] Cross-tenant panel read blocked with 403 Forbidden (Bob → Alice).")
 
             try:
                 await update_panel(
@@ -597,6 +659,11 @@ async def run_tests():
                     await db.delete(entity)
                 except Exception:
                     pass
+            if tenant_ids_to_clean:
+                panel_ids_subq = select(OCPanel.id).where(OCPanel.tenant_id.in_(tenant_ids_to_clean))
+                await db.execute(delete(OCPanelConfig).where(OCPanelConfig.panel_id.in_(panel_ids_subq)))
+                await db.execute(delete(OCPanel).where(OCPanel.tenant_id.in_(tenant_ids_to_clean)))
+                await db.execute(delete(Tenant).where(Tenant.id.in_(tenant_ids_to_clean)))
             await db.commit()
 
 

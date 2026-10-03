@@ -105,7 +105,7 @@ async def remove_inbounds(db: AsyncSession, inbounds: list[ProxyInbound]) -> Non
     await db.commit()
 
 
-async def get_hosts(db: AsyncSession, query: HostListQuery | None = None) -> list[ProxyHost]:
+async def get_hosts(db: AsyncSession, query: HostListQuery | None = None, tenant_id: int | None = None) -> list[ProxyHost]:
     """
     Retrieves hosts sorted by priority (ascending) by default.
 
@@ -123,6 +123,8 @@ async def get_hosts(db: AsyncSession, query: HostListQuery | None = None) -> lis
 
     if query.ids:
         stmt = stmt.where(ProxyHost.id.in_(query.ids))
+    if tenant_id is not None:
+        stmt = stmt.where(ProxyHost.tenant_id == tenant_id)
     if query.offset:
         stmt = stmt.offset(query.offset)
     if query.limit:
@@ -132,7 +134,7 @@ async def get_hosts(db: AsyncSession, query: HostListQuery | None = None) -> lis
     return list(result.scalars().all())
 
 
-async def get_host_by_id(db: AsyncSession, id: int) -> ProxyHost:
+async def get_host_by_id(db: AsyncSession, id: int, tenant_id: int | None = None) -> ProxyHost:
     """
     Retrieves host by id.
 
@@ -144,11 +146,13 @@ async def get_host_by_id(db: AsyncSession, id: int) -> ProxyHost:
         ProxyHost: The host if found.
     """
     stmt = select(ProxyHost).where(ProxyHost.id == id)
+    if tenant_id is not None:
+        stmt = stmt.where(ProxyHost.tenant_id == tenant_id)
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
 
-async def create_host(db: AsyncSession, new_host: CreateHost) -> ProxyHost:
+async def create_host(db: AsyncSession, new_host: CreateHost, tenant_id: int | None = None) -> ProxyHost:
     """
     Creates a proxy Host based on the host.
 
@@ -160,6 +164,7 @@ async def create_host(db: AsyncSession, new_host: CreateHost) -> ProxyHost:
         ProxyHost: The retrieved or newly created proxy host.
     """
     db_host = ProxyHost(**new_host.model_dump(exclude={"inbound_tag", "id"}))
+    db_host.tenant_id = tenant_id
     db_host.inbound = await get_or_create_inbound(db, new_host.inbound_tag)
 
     db.add(db_host)

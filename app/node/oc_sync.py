@@ -4,8 +4,78 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import User
-from app.db.models_oc import OCPanelConfig, OCUserMapping, OCSyncState
+from app.db.models_oc import OCPanel, OCPanelConfig, OCUserMapping, OCSyncState
 from app.node.user import _bucket_inbounds, _inbounds_from_loaded_groups
+from app.services.oc_telegram_connection import get_active_connection
+
+
+async def tenant_panel_allows_oc_user_mutations(db_session: AsyncSession, panel_id: int) -> bool:
+    panel = await db_session.scalar(select(OCPanel.tenant_id).where(OCPanel.id == panel_id))
+    if panel is None:
+        return False
+    tenant_id = panel
+    if tenant_id is None:
+        return True
+    return await get_active_connection(db_session, tenant_id) is not None
+
+
+async def enqueue_mapping_delete_sync(
+    db_session: AsyncSession,
+    user_id: int,
+    panel_id: int,
+    mapping: OCUserMapping,
+) -> None:
+    last_configs = mapping.last_synced_configs
+    if last_configs is not None:
+        last_configs = sorted(last_configs)
+
+    if mapping.status == "deleted" and last_configs == []:
+        return
+
+    entity_id = f"{user_id}_{panel_id}"
+
+    pending_job = (
+        await db_session.execute(
+            select(OCSyncState).where(
+                OCSyncState.entity_type == "user_mapping",
+                OCSyncState.entity_id == entity_id,
+                OCSyncState.status == "pending",
+            )
+        )
+    ).scalars().first()
+
+    if pending_job:
+        pending_job.operation = "delete"
+        pending_job.payload = {"external_user_id": mapping.external_user_id}
+        pending_job.revision += 1
+        await db_session.flush()
+    else:
+        job = OCSyncState(
+            entity_type="user_mapping",
+            entity_id=entity_id,
+            operation="delete",
+            idempotency_key=f"sync_{user_id}_{panel_id}_{uuid.uuid4()}",
+            payload={"external_user_id": mapping.external_user_id},
+            status="pending",
+        )
+        db_session.add(job)
+        await db_session.flush()
+
+
+async def enqueue_tenant_panel_user_deletions(db_session: AsyncSession, tenant_id: int) -> None:
+    panel_ids = (
+        await db_session.execute(select(OCPanel.id).where(OCPanel.tenant_id == tenant_id))
+    ).scalars().all()
+    if not panel_ids:
+        return
+
+    mappings = (
+        await db_session.execute(select(OCUserMapping).where(OCUserMapping.panel_id.in_(panel_ids)))
+    ).scalars().all()
+
+    for mapping in mappings:
+        await enqueue_mapping_delete_sync(db_session, mapping.user_id, mapping.panel_id, mapping)
+
 
 async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
     """
@@ -34,6 +104,9 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
     existing_panel_ids = {m.panel_id: m for m in existing_mappings}
 
     for panel_id in active_panel_ids:
+        if not await tenant_panel_allows_oc_user_mutations(db_session, panel_id):
+            continue
+
         mapping = existing_panel_ids.get(panel_id)
         is_new_mapping = False
         if not mapping:
@@ -101,36 +174,7 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
         
     for panel_id, mapping in existing_panel_ids.items():
         if panel_id not in active_panel_ids:
-            last_configs = mapping.last_synced_configs
-            if last_configs is not None:
-                last_configs = sorted(last_configs)
-
-            if mapping.status != "deleted" or last_configs != []:
-                entity_id = f"{db_user.id}_{panel_id}"
-                
-                pending_job = (await db_session.execute(
-                    select(OCSyncState)
-                    .where(
-                        OCSyncState.entity_type == "user_mapping",
-                        OCSyncState.entity_id == entity_id,
-                        OCSyncState.status == "pending"
-                    )
-                )).scalars().first()
-
-                if pending_job:
-                    pending_job.operation = "delete"
-                    pending_job.payload = {"external_user_id": mapping.external_user_id}
-                    pending_job.revision += 1
-                else:
-                    job = OCSyncState(
-                        entity_type="user_mapping",
-                        entity_id=entity_id,
-                        operation="delete",
-                        idempotency_key=f"sync_{db_user.id}_{panel_id}_{uuid.uuid4()}",
-                        payload={"external_user_id": mapping.external_user_id},
-                        status="pending"
-                    )
-                    db_session.add(job)
+            await enqueue_mapping_delete_sync(db_session, db_user.id, panel_id, mapping)
 
 async def sync_panel_from_outbound_center(db_session: AsyncSession, panel_id: int):
     """

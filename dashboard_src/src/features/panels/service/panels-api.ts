@@ -53,7 +53,29 @@ export interface OCPanelItem {
   status: string
 }
 
+export const getTelegramConnection = () =>
+  fetcher<{ status: string; telegram_user_id?: number; oc_account_id?: number; verified_at?: string }>(
+    '/api/integration/telegram-connection'
+  )
+
+export const startTelegramConnection = () =>
+  fetcher<{ intent_id: string; bot_url: string; status: string }>('/api/integration/telegram-connection/start', {
+    method: 'POST',
+  })
+
+export const confirmTelegramConnection = (code: string) =>
+  fetcher<{ status: string; telegram_user_id?: number; oc_account_id?: number }>(
+    '/api/integration/telegram-connection/confirm',
+    { method: 'POST', body: JSON.stringify({ code }) }
+  )
+
 export const getAvailablePanels = () => fetcher<{ items: OCPanelItem[] }>('/api/integration/available-panels')
+
+export const importPanels = (subscription_ids: number[]) =>
+  fetcher<{ imported: { subscription_id: number; panel_id: number; created: boolean }[] }>(
+    '/api/integration/import-panels',
+    { method: 'POST', body: JSON.stringify({ subscription_ids }) }
+  )
 
 export const selectPanel = (data: { source_panel_id: string; name: string }) => 
   fetcher<{ panel_id: number; source_panel_id: string; test_user_id: string | null }>('/api/integration/select-panel', {

@@ -11,7 +11,18 @@ import {
 import { Button } from '@/components/ui/button'
 import { Server, UserCheck, Layers, Wrench, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getAvailablePanels, selectPanel, createTestUser, getGroups, syncPanel, OCPanelItem } from '../service/panels-api'
+import {
+  getAvailablePanels,
+  createTestUser,
+  getGroups,
+  syncPanel,
+  OCPanelItem,
+  getTelegramConnection,
+  startTelegramConnection,
+  confirmTelegramConnection,
+  importPanels,
+} from '../service/panels-api'
+import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
 
 interface AddPanelWizardModalProps {
@@ -26,21 +37,29 @@ export default function AddPanelWizardModal({
   const { t } = useTranslation()
   const queryClient = useQueryClient()
 
-  const [step, setStep] = useState<number>(1)
-  const [selectedPanel, setSelectedPanel] = useState<OCPanelItem | null>(null)
+  const [step, setStep] = useState<number>(0)
+  const [selectedPanelIds, setSelectedPanelIds] = useState<number[]>([])
   const [localPanelId, setLocalPanelId] = useState<number | null>(null)
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([])
+  const [botUrl, setBotUrl] = useState<string | null>(null)
+  const [connectCode, setConnectCode] = useState('')
+  const [connectionStatus, setConnectionStatus] = useState<string>('loading')
   
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   // Reset state when opened
   useEffect(() => {
     if (isOpen) {
-      setStep(1)
-      setSelectedPanel(null)
+      setStep(0)
+      setSelectedPanelIds([])
       setLocalPanelId(null)
       setSelectedGroupIds([])
+      setBotUrl(null)
+      setConnectCode('')
       setErrorMsg(null)
+      getTelegramConnection()
+        .then((s) => setConnectionStatus(s.status))
+        .catch(() => setConnectionStatus('none'))
     }
   }, [isOpen])
 
@@ -48,7 +67,7 @@ export default function AddPanelWizardModal({
   const { data: availablePanelsData, isLoading: isLoadingPanels, isError: isErrorPanels, refetch: refetchPanels } = useQuery({
     queryKey: ['available-panels'],
     queryFn: getAvailablePanels,
-    enabled: isOpen && step === 1,
+    enabled: isOpen && step === 1 && connectionStatus === 'active',
   })
   
   const { data: groupsData, isLoading: isLoadingGroups, isError: isErrorGroups, refetch: refetchGroups } = useQuery({
@@ -58,14 +77,34 @@ export default function AddPanelWizardModal({
   })
 
   // Mutations
-  const selectPanelMut = useMutation({
-    mutationFn: selectPanel,
+  const importPanelsMut = useMutation({
+    mutationFn: importPanels,
     onSuccess: (data) => {
-      setLocalPanelId(data.panel_id)
+      const first = data.imported[0]
+      if (first) setLocalPanelId(first.panel_id)
       setStep(2)
       setErrorMsg(null)
     },
-    onError: (err: any) => setErrorMsg(err.message || 'Failed to select panel')
+    onError: (err: any) => setErrorMsg(err.message || 'Failed to import panels'),
+  })
+
+  const startConnectMut = useMutation({
+    mutationFn: startTelegramConnection,
+    onSuccess: (data) => {
+      setBotUrl(data.bot_url)
+      setErrorMsg(null)
+    },
+    onError: (err: any) => setErrorMsg(err.message || 'Failed to start Telegram connection'),
+  })
+
+  const confirmConnectMut = useMutation({
+    mutationFn: () => confirmTelegramConnection(connectCode.trim()),
+    onSuccess: () => {
+      setConnectionStatus('active')
+      setStep(1)
+      setErrorMsg(null)
+    },
+    onError: (err: any) => setErrorMsg(err.message || 'Invalid or expired code'),
   })
 
   const testUserMut = useMutation({
@@ -88,10 +127,10 @@ export default function AddPanelWizardModal({
   })
 
   // Handlers
-  const handleSelectPanel = () => {
-    if (!selectedPanel) return
+  const handleImportPanels = () => {
+    if (selectedPanelIds.length === 0) return
     setErrorMsg(null)
-    selectPanelMut.mutate({ source_panel_id: String(selectedPanel.id), name: selectedPanel.name })
+    importPanelsMut.mutate(selectedPanelIds)
   }
 
   const handleCreateTestUser = () => {
@@ -126,7 +165,7 @@ export default function AddPanelWizardModal({
   }
 
   return (
-    <Dialog open={isOpen} onOpenChange={(val) => !selectPanelMut.isPending && !testUserMut.isPending && !syncMut.isPending && onOpenChange(val)}>
+    <Dialog open={isOpen} onOpenChange={(val) => !importPanelsMut.isPending && !testUserMut.isPending && !syncMut.isPending && onOpenChange(val)}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <div className="flex items-center gap-2">
@@ -150,9 +189,42 @@ export default function AddPanelWizardModal({
             </div>
           )}
 
+          {step === 0 && (
+            <div className="space-y-3">
+              <h3 className="font-semibold text-sm flex items-center gap-2">
+                <span className="flex h-5 w-5 rounded-full bg-primary text-primary-foreground items-center justify-center text-xs">0</span>
+                Connect Outbound Center Telegram
+              </h3>
+              {connectionStatus === 'active' ? (
+                <p className="text-sm text-muted-foreground">Telegram account connected. Continue to import your panels.</p>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Open the Outbound Center bot, confirm the connection, then enter the 5-digit code here.
+                  </p>
+                  <Button onClick={() => startConnectMut.mutate()} disabled={startConnectMut.isPending}>
+                    {startConnectMut.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Connect Telegram
+                  </Button>
+                  {botUrl && (
+                    <a href={botUrl} target="_blank" rel="noreferrer" className="text-sm text-primary underline block">
+                      Open Outbound Center bot
+                    </a>
+                  )}
+                  <Input
+                    placeholder="5-digit code"
+                    value={connectCode}
+                    onChange={(e) => setConnectCode(e.target.value.replace(/\D/g, '').slice(0, 5))}
+                    maxLength={5}
+                  />
+                </>
+              )}
+            </div>
+          )}
+
           {step === 1 && (
             <div className="space-y-3">
-              <h3 className="font-semibold text-sm flex items-center gap-2"><span className="flex h-5 w-5 rounded-full bg-primary text-primary-foreground items-center justify-center text-xs">1</span> Select Purchased Panel Instance</h3>
+              <h3 className="font-semibold text-sm flex items-center gap-2"><span className="flex h-5 w-5 rounded-full bg-primary text-primary-foreground items-center justify-center text-xs">1</span> Select panels to import</h3>
               {isLoadingPanels ? (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading panels...</div>
               ) : isErrorPanels ? (
@@ -163,12 +235,17 @@ export default function AddPanelWizardModal({
                   {availablePanelsData?.items?.map(p => (
                     <div 
                       key={p.id} 
-                      className={`flex items-center justify-between p-3 border rounded-md cursor-pointer transition-colors ${selectedPanel?.id === p.id ? 'border-primary bg-primary/5' : 'hover:bg-muted'}`}
-                      onClick={() => setSelectedPanel(p)}
+                      className={`flex items-center justify-between p-3 border rounded-md cursor-pointer transition-colors ${selectedPanelIds.includes(p.id) ? 'border-primary bg-primary/5' : 'hover:bg-muted'}`}
+                      onClick={() => {
+                        setSelectedPanelIds((prev) =>
+                          prev.includes(p.id) ? prev.filter((id) => id !== p.id) : [...prev, p.id]
+                        )
+                      }}
                     >
                       <div className="flex items-center gap-3">
+                        <Checkbox checked={selectedPanelIds.includes(p.id)} />
                         <Server className="h-4 w-4 text-muted-foreground" />
-                        <span className="text-sm font-medium">{p.name} (Panel {p.id})</span>
+                        <span className="text-sm font-medium">{p.name}</span>
                       </div>
                       <span className="text-xs capitalize px-2 py-1 bg-muted rounded-full">{p.status}</span>
                     </div>
@@ -271,18 +348,27 @@ export default function AddPanelWizardModal({
         </div>
 
         <DialogFooter>
-          {step > 1 && step < 6 && (
-            <Button variant="outline" onClick={() => setStep(step - 1)} disabled={selectPanelMut.isPending || testUserMut.isPending || syncMut.isPending}>
+          {step > 0 && step < 6 && (
+            <Button variant="outline" onClick={() => setStep(step - 1)} disabled={importPanelsMut.isPending || testUserMut.isPending || syncMut.isPending}>
               Back
+            </Button>
+          )}
+          {step === 0 && (
+            <Button
+              onClick={() => (connectionStatus === 'active' ? setStep(1) : confirmConnectMut.mutate())}
+              disabled={connectionStatus === 'active' ? false : connectCode.length !== 5 || confirmConnectMut.isPending}
+            >
+              {confirmConnectMut.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {connectionStatus === 'active' ? 'Continue' : 'Confirm code'}
             </Button>
           )}
           {step === 1 && (
             <Button 
-              onClick={handleSelectPanel} 
-              disabled={!selectedPanel || selectPanelMut.isPending}
+              onClick={handleImportPanels} 
+              disabled={selectedPanelIds.length === 0 || importPanelsMut.isPending}
             >
-              {selectPanelMut.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Continue
+              {importPanelsMut.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Import selected
             </Button>
           )}
           {step === 2 && (
@@ -317,7 +403,7 @@ export default function AddPanelWizardModal({
               Sync Configs & Hosts
             </Button>
           )}
-          {(step === 1 || step === 6) && (
+          {(step === 0 || step === 6) && (
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               {step === 6 ? 'Done' : 'Cancel'}
             </Button>

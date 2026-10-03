@@ -81,6 +81,7 @@ class AdminBase(BaseModel):
 
     id: int | None = None
     username: str
+    tenant_id: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -29,8 +29,12 @@ logger = get_logger("host-operation")
 
 
 class HostOperation(BaseOperation):
-    async def get_hosts(self, db: AsyncSession, query: HostListQuery) -> list[BaseHost]:
-        return await get_hosts(db=db, query=query)
+    async def get_hosts(self, db: AsyncSession, query: HostListQuery, admin: AdminDetails) -> list[BaseHost]:
+        return await get_hosts(
+            db=db,
+            query=query,
+            tenant_id=admin.tenant_id if not admin.is_owner else None
+        )
 
     async def validate_subscription_templates(self, db: AsyncSession, host: CreateHost) -> None:
         if not host.subscription_templates or host.subscription_templates.xray is None:
@@ -40,7 +44,13 @@ class HostOperation(BaseOperation):
         if db_template.template_type != ClientTemplateType.xray_subscription.value:
             await self.raise_error("Selected template must be an Xray subscription template", 400, db=db)
 
-    async def validate_ds_host(self, db: AsyncSession, host: CreateHost, host_id: int | None = None) -> ProxyHost:
+    async def validate_ds_host(
+        self,
+        db: AsyncSession,
+        host: CreateHost,
+        host_id: int | None = None,
+        admin: AdminDetails | None = None,
+    ) -> ProxyHost:
         if (
             host.transport_settings
             and host.transport_settings.xhttp_settings
@@ -48,7 +58,8 @@ class HostOperation(BaseOperation):
         ):
             if host_id and nested_host == host_id:
                 return await self.raise_error("download host cannot be the same as the host", 400, db=db)
-            ds_host = await get_host_by_id(db, nested_host)
+            tenant_id = admin.tenant_id if admin and not admin.is_owner else None
+            ds_host = await get_host_by_id(db, nested_host, tenant_id=tenant_id)
             if not ds_host:
                 return await self.raise_error("download host not found", 404, db=db)
             if (
@@ -60,11 +71,11 @@ class HostOperation(BaseOperation):
 
     async def create_host(self, db: AsyncSession, new_host: CreateHost, admin: AdminDetails) -> BaseHost:
         await self.validate_subscription_templates(db, new_host)
-        await self.validate_ds_host(db, new_host)
+        await self.validate_ds_host(db, new_host, admin=admin)
 
         await self.check_host_inbound_tags([new_host.inbound_tag])
 
-        db_host = await create_host(db, new_host)
+        db_host = await create_host(db, new_host, tenant_id=admin.tenant_id if not admin.is_owner else None)
 
         logger.info(f'Host "{db_host.id}" added by admin "{admin.username}"')
 
@@ -79,12 +90,12 @@ class HostOperation(BaseOperation):
         self, db: AsyncSession, host_id: int, modified_host: CreateHost, admin: AdminDetails
     ) -> BaseHost:
         await self.validate_subscription_templates(db, modified_host)
-        await self.validate_ds_host(db, modified_host, host_id)
+        await self.validate_ds_host(db, modified_host, host_id, admin=admin)
 
         if modified_host.inbound_tag:
             await self.check_host_inbound_tags([modified_host.inbound_tag])
 
-        db_host = await self.get_validated_host(db, host_id)
+        db_host = await self.get_validated_host(db, host_id, admin=admin)
 
         db_host = await modify_host(db=db, db_host=db_host, modified_host=modified_host)
 
@@ -93,7 +104,7 @@ class HostOperation(BaseOperation):
         host = BaseHost.model_validate(db_host)
         asyncio.create_task(notification.modify_host(host, admin.username))
 
-        db_hosts = await get_hosts(db=db)
+        db_hosts = await get_hosts(db=db, tenant_id=admin.tenant_id if not admin.is_owner else None)
         dependents = [
             h
             for h in db_hosts
@@ -104,7 +115,7 @@ class HostOperation(BaseOperation):
         return host
 
     async def remove_host(self, db: AsyncSession, host_id: int, admin: AdminDetails):
-        db_host = await self.get_validated_host(db, host_id)
+        db_host = await self.get_validated_host(db, host_id, admin=admin)
         await remove_host(db, db_host)
         logger.info(f'Host "{db_host.id}" deleted by admin "{admin.username}"')
 
@@ -119,18 +130,22 @@ class HostOperation(BaseOperation):
     ) -> list[BaseHost]:
         for host in modified_hosts:
             await self.validate_subscription_templates(db, host)
-            await self.validate_ds_host(db, host, host.id)
+            await self.validate_ds_host(db, host, host.id, admin=admin)
 
             old_host: ProxyHost | None = None
             if host.id is not None:
-                old_host = await get_host_by_id(db, host.id)
+                old_host = await get_host_by_id(
+                    db,
+                    host.id,
+                    tenant_id=admin.tenant_id if not admin.is_owner else None,
+                )
 
             if old_host is None:
-                await create_host(db, host)
+                await create_host(db, host, tenant_id=admin.tenant_id if not admin.is_owner else None)
             else:
                 await modify_host(db, old_host, host)
 
-        db_hosts = await get_hosts(db=db)
+        db_hosts = await get_hosts(db=db, tenant_id=admin.tenant_id if not admin.is_owner else None)
         await host_manager.add_hosts(db, db_hosts)
 
         logger.info(f'Host\'s has been modified by admin "{admin.username}"')
@@ -144,7 +159,7 @@ class HostOperation(BaseOperation):
     ) -> RemoveHostsResponse:
         """Remove multiple hosts by ID"""
         ids_list = list(bulk_hosts.ids)
-        db_hosts = await get_hosts(db, HostListQuery(ids=ids_list, limit=len(ids_list)))
+        db_hosts = await get_hosts(db, HostListQuery(ids=ids_list, limit=len(ids_list)), tenant_id=admin.tenant_id if not admin.is_owner else None)
 
         found_ids = {h.id for h in db_hosts}
         missing = set(ids_list) - found_ids
@@ -179,7 +194,7 @@ class HostOperation(BaseOperation):
         is_disabled: bool,
     ) -> BulkHostsActionResponse:
         ids_list = list(bulk_hosts.ids)
-        db_hosts = await get_hosts(db, HostListQuery(ids=ids_list, limit=len(ids_list)))
+        db_hosts = await get_hosts(db, HostListQuery(ids=ids_list, limit=len(ids_list)), tenant_id=admin.tenant_id if not admin.is_owner else None)
 
         found_ids = {h.id for h in db_hosts}
         missing = set(ids_list) - found_ids

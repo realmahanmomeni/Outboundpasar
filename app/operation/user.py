@@ -1010,7 +1010,12 @@ class UserOperation(BaseOperation):
             admin_ids=[scope_admin_id] if scope_admin_id is not None else None,
             limit=len(ids_list),
         )
-        users = await get_users(db, query=query, load_admin_role=load_admin_role)
+        users = await get_users(
+            db,
+            query=query,
+            load_admin_role=load_admin_role,
+            tenant_id=admin.tenant_id if not admin.is_owner else None,
+        )
 
         # Verify every requested ID was found (mirrors the 404 in get_validated_user_by_id)
         found_ids = {user.id for user in users}
@@ -1338,21 +1343,21 @@ class UserOperation(BaseOperation):
             DeprecationWarning,
             stacklevel=2,
         )
-        new_admin = await self.get_validated_admin(db, username=admin_username)
+        new_admin = await self.get_validated_admin(db, username=admin_username, current_admin=admin)
         db_user = await self.get_validated_user(db, username, admin)
         return await self._set_owner(db, db_user, new_admin, admin)
 
     async def set_owner_by_id(
         self, db: AsyncSession, user_id: int, admin_username: str, admin: AdminDetails
     ) -> UserResponse:
-        new_admin = await self.get_validated_admin(db, username=admin_username)
+        new_admin = await self.get_validated_admin(db, username=admin_username, current_admin=admin)
         db_user = await self.get_validated_user_by_id(db, user_id, admin, scope_action="update")
         return await self._set_owner(db, db_user, new_admin, admin)
 
     async def bulk_set_owner(
         self, db: AsyncSession, bulk_users: BulkUsersSetOwner, admin: AdminDetails
     ) -> BulkUsersActionResponse:
-        new_admin = await self.get_validated_admin(db, username=bulk_users.admin_username)
+        new_admin = await self.get_validated_admin(db, username=bulk_users.admin_username, current_admin=admin)
         db_users = await self._get_validated_users_by_ids(
             db, bulk_users.ids, admin, load_usage_logs=False, scope_action="update"
         )
@@ -1473,6 +1478,7 @@ class UserOperation(BaseOperation):
             return_with_count=True,
             load_usage_logs=False,
             load_lifetime_used_traffic=True,
+            tenant_id=admin.tenant_id if not admin.is_owner else None,
         )
 
         if query.load_sub:
@@ -1505,6 +1511,7 @@ class UserOperation(BaseOperation):
             db=db,
             query=query,
             admin=admin_filter,
+            tenant_id=admin.tenant_id if not admin.is_owner else None,
         )
 
         # Convert tuples to Pydantic models
@@ -1584,6 +1591,7 @@ class UserOperation(BaseOperation):
         self,
         db: AsyncSession,
         query: ExpiredUsersQuery,
+        admin: AdminDetails,
     ) -> list[str]:
         """
         Get users who match the cleanup target within the specified date range.
@@ -1596,14 +1604,16 @@ class UserOperation(BaseOperation):
         """
 
         expired_after, expired_before = await self.validate_dates(query.expired_after, query.expired_before, False)
+        tenant_id = admin.tenant_id if not admin.is_owner else None
         if query.admin_username:
-            admin_id = (await self.get_validated_admin(db, query.admin_username)).id
+            admin_id = (await self.get_validated_admin(db, query.admin_username, current_admin=admin)).id
         else:
             admin_id = None
         users = await get_expired_users(
             db,
             query=query.model_copy(update={"expired_after": expired_after, "expired_before": expired_before}),
             admin_id=admin_id,
+            tenant_id=tenant_id,
         )
         return [row.username for row in users]
 
@@ -1624,9 +1634,10 @@ class UserOperation(BaseOperation):
         """
 
         expired_after, expired_before = await self.validate_dates(query.expired_after, query.expired_before, False)
+        tenant_id = admin.tenant_id if not admin.is_owner else None
 
         if query.admin_username:
-            admin_id = (await self.get_validated_admin(db, query.admin_username)).id
+            admin_id = (await self.get_validated_admin(db, query.admin_username, current_admin=admin)).id
         else:
             admin_id = None
         username_list = await remove_expired_users(
@@ -1636,6 +1647,7 @@ class UserOperation(BaseOperation):
             admin_id,
             target=query.target,
             dry_run=query.dry_run,
+            tenant_id=tenant_id,
         )
         if not query.dry_run:
             await self.remove_users_logger(users=username_list, by=admin.username)
@@ -2035,7 +2047,7 @@ class UserOperation(BaseOperation):
                 if not can_read_admins and admin_id != admin.id:
                     await self.raise_error(message="You're not allowed", code=403)
                 elif can_read_admins and admin_id != admin.id:
-                    await self.get_validated_admin_by_id(db, admin_id)
+                    await self.get_validated_admin_by_id(db, admin_id, current_admin=admin)
                 resolved_admin_id = admin_id
             else:
                 resolved_admin_id = get_scope_admin_id(admin, "users", "read")

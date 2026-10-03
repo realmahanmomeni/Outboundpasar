@@ -206,6 +206,7 @@ async def get_user(
     join_groups: bool = False,
     load_lifetime_used_traffic: bool = False,
     admin_id: int | None = None,
+    tenant_id: int | None = None,
 ) -> User | None:
     """
     Retrieves a user by username.
@@ -230,6 +231,8 @@ async def get_user(
 
     if admin_id is not None:
         stmt = stmt.where(User.admin_id == admin_id)
+    if tenant_id is not None:
+        stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
 
     return (await db.execute(stmt)).unique().scalar_one_or_none()
 
@@ -246,6 +249,7 @@ async def get_user_by_id(
     join_groups: bool = False,
     load_lifetime_used_traffic: bool = False,
     admin_id: int | None = None,
+    tenant_id: int | None = None,
 ) -> User | None:
     """
     Retrieves a user by user ID.
@@ -270,6 +274,8 @@ async def get_user_by_id(
 
     if admin_id is not None:
         stmt = stmt.where(User.admin_id == admin_id)
+    if tenant_id is not None:
+        stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
 
     return (await db.execute(stmt)).unique().scalar_one_or_none()
 
@@ -398,6 +404,7 @@ async def get_users(
     load_admin_role: bool = False,
     load_usage_logs: bool = True,
     load_lifetime_used_traffic: bool = False,
+    tenant_id: int | None = None,
 ) -> list[User] | tuple[list[User], int]:
     """
     Retrieves users based on various filters.
@@ -409,6 +416,7 @@ async def get_users(
         return_with_count: Whether to return total count.
         load_usage_logs: Whether to materialize reset-history rows.
         load_lifetime_used_traffic: Whether to calculate lifetime usage with an aggregate.
+        tenant_id: Scope users to a specific tenant.
 
     Returns:
         List of users or tuple with (users, count) if return_with_count is True.
@@ -445,8 +453,16 @@ async def get_users(
             filters.append(User.status == query.status)
     if admin:
         filters.append(User.admin_id == admin.id)
-    if query.owner or query.admin_ids:
+
+    join_admin = False
+    if query.owner or query.admin_ids or tenant_id is not None:
         stmt = stmt.join(User.admin)
+        join_admin = True
+
+    if tenant_id is not None:
+        filters.append(Admin.tenant_id == tenant_id)
+
+    if query.owner or query.admin_ids:
         if query.owner:
             filters.append(Admin.username.in_(query.owner))
         if query.admin_ids:
@@ -524,6 +540,7 @@ async def get_users_simple(
     db: AsyncSession,
     query: UserSimpleListQuery,
     admin: Admin | None = None,
+    tenant_id: int | None = None,
 ) -> tuple[list[tuple[int, str]], int]:
     """
     Retrieves lightweight user data with only id and username.
@@ -532,6 +549,7 @@ async def get_users_simple(
         db: Database session.
         query: Structured lightweight user list filters.
         admin: Admin filter (for scope-based authorization).
+        tenant_id: Scope users to a specific tenant.
 
     Returns:
         Tuple of (list of (id, username) tuples, total_count).
@@ -547,6 +565,10 @@ async def get_users_simple(
         filters.append(User.username.ilike(f"%{query.search}%"))
     if admin:
         filters.append(User.admin_id == admin.id)
+
+    if tenant_id is not None:
+        stmt = stmt.join(User.admin)
+        filters.append(Admin.tenant_id == tenant_id)
 
     if filters:
         stmt = stmt.where(and_(*filters))
@@ -585,9 +607,12 @@ async def get_expired_users(
     db: AsyncSession,
     query: ExpiredUsersQuery,
     admin_id: int | None = None,
+    tenant_id: int | None = None,
 ):
     conditions = _cleanup_target_user_conditions(query.expired_after, query.expired_before, admin_id, query.target)
     stmt = select(User).where(*conditions)
+    if tenant_id is not None:
+        stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
 
     return (await db.execute(stmt)).unique().scalars().all()
 
@@ -632,10 +657,15 @@ async def remove_expired_users(
     admin_id: int | None = None,
     target: Literal["expired", "limited", "on_hold", "disabled"] = "expired",
     dry_run: bool = False,
+    tenant_id: int | None = None,
 ) -> list[str]:
     conditions = _cleanup_target_user_conditions(expired_after, expired_before, admin_id, target)
 
-    rows = (await db.execute(select(User.id, User.username).where(*conditions))).all()
+    stmt = select(User.id, User.username).where(*conditions)
+    if tenant_id is not None:
+        stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
+
+    rows = (await db.execute(stmt)).all()
     if not rows:
         return []
 

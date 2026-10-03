@@ -242,6 +242,17 @@ async def get_current_for_request(
     return admin
 
 
+async def get_tenant_context(admin: AdminDetails = Depends(get_current)) -> TenantContext:
+    from app.core.tenant import TenantContext
+    if not admin.is_owner and admin.tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Non-owner admin must belong to a tenant",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return TenantContext(admin=admin)
+
+
 async def get_current_with_metrics(
     request: Request,
     db: AsyncSession = Depends(get_db),

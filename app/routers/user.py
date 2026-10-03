@@ -600,7 +600,7 @@ async def get_users_count_metric(
 async def get_expired_users(
     query: Annotated[ExpiredUsersQuery, Depends(get_expired_users_query)],
     db: AsyncSession = Depends(get_db),
-    _: AdminDetails = Depends(require_scope_all("users", "read")),
+    admin: AdminDetails = Depends(require_scope_all("users", "read")),
 ):
     """
     Get cleanup-target users in the specified scope.
@@ -611,7 +611,7 @@ async def get_expired_users(
     - For `limited` / `on_hold` / `disabled`: filters by last_status_change (when they entered that status).
     """
 
-    return await user_operator.get_expired_users(db, query=query)
+    return await user_operator.get_expired_users(db, query=query, admin=admin)
 
 
 @router.delete("s/expired", response_model=RemoveUsersResponse)

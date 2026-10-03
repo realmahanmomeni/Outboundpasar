@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 from app import scheduler
 from app.db import GetDB
 from app.db.models_oc import OCSyncState, OCPanel, OCUserMapping
+from app.services.oc_telegram_connection import get_active_connection
 from app.utils.crypto import decrypt_secret
 from app.utils.logger import get_logger
 from config import job_settings, runtime_settings
@@ -45,17 +46,30 @@ async def process_oc_sync():
                     if not panel or not panel.integration.is_active:
                         raise ValueError(f"Panel {panel_id} not found or integration disabled")
 
+                    # Snapshot original intent
+                    original_payload = job.payload.copy() if job.payload else None
+                    original_operation = job.operation
+                    original_revision = job.revision
+
+                    if job.operation in ("create", "update"):
+                        if panel.tenant_id is not None:
+                            connection = await get_active_connection(db, panel.tenant_id)
+                            if connection is None:
+                                stmt = (
+                                    update(OCSyncState)
+                                    .where(OCSyncState.id == job.id, OCSyncState.revision == original_revision)
+                                    .values(status="completed")
+                                )
+                                await db.execute(stmt)
+                                await db.commit()
+                                continue
+
                     token = await decrypt_secret(panel.integration.api_token_encrypted)
                     headers = {
                         "X-Integration-Token": token,
                         "Authorization": f"Bearer {token}",
                         "Content-Type": "application/json",
                     }
-                    
-                    # Snapshot original intent
-                    original_payload = job.payload.copy() if job.payload else None
-                    original_operation = job.operation
-                    original_revision = job.revision
 
                     if job.operation in ("create", "update"):
                         mapping = (await db.execute(

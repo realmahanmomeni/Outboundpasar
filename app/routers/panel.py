@@ -7,12 +7,24 @@ from sqlalchemy.orm import selectinload, joinedload
 
 from app.db import AsyncSession, get_db
 from app.db.models import ProxyHost, Group
+from app.models.admin import AdminDetails
 from app.db.models_oc import OCPanel, OCPanelConfig, OCPanelGroup
 from app.routers.authentication import get_current_for_request, oauth2_scheme
 from app.utils.jwt import get_customer_payload
 from app.node.oc_sync import sync_panel_from_outbound_center
+from app.services.oc_telegram_connection import get_active_connection, require_active_telegram_for_tenant_admin
 
 router = APIRouter(prefix="/api/panels", tags=["Panels"])
+
+
+async def _tenant_oc_panel_filter(db: AsyncSession, admin: AdminDetails | None):
+    """Imported OC panels are visible only while the tenant Telegram connection is active."""
+    if admin is None or admin.tenant_id is None:
+        return None
+    connection = await get_active_connection(db, admin.tenant_id)
+    if connection is None or connection.oc_account_id is None:
+        return ("disconnected", None)
+    return ("connected", connection.oc_account_id)
 
 class OCPanelResponse(BaseModel):
     id: int
@@ -58,7 +70,7 @@ async def get_current_user_context(
     request: Request,
     db: AsyncSession = Depends(get_db),
     token: str | None = Depends(oauth2_scheme),
-) -> tuple[str, bool]:
+) -> tuple[str, bool, AdminDetails | None]:
     """
     Returns (identity, is_owner).
     Supports:
@@ -70,7 +82,7 @@ async def get_current_user_context(
     if token:
         cust_payload = await get_customer_payload(token)
         if cust_payload and "account_id" in cust_payload:
-            return (str(cust_payload["account_id"]), False)
+            return (str(cust_payload["account_id"]), False, None)
 
     try:
         admin = await get_current_for_request(request, db, token)
@@ -97,14 +109,14 @@ async def get_current_user_context(
         except PermissionDenied as e:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
-    return (admin.username, is_owner)
+    return (admin.username, is_owner, admin)
 
 
 async def get_current_admin_user_context(
     request: Request,
     db: AsyncSession = Depends(get_db),
     token: str | None = Depends(oauth2_scheme),
-) -> tuple[str, bool]:
+) -> tuple[str, bool, AdminDetails]:
     """
     Returns (identity, is_owner) for mutating operations (PATCH, POST).
     Disallows customer tokens and requires nodes:update permission for non-owner admins.
@@ -142,18 +154,27 @@ async def get_current_admin_user_context(
         except PermissionDenied as e:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
-    return (admin.username, is_owner)
+    return (admin.username, is_owner, admin)
 
 
 @router.get("", response_model=list[OCPanelResponse])
 async def list_panels(
     db: AsyncSession = Depends(get_db),
-    user_context: tuple[str, bool] = Depends(get_current_user_context),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_user_context),
 ):
-    identity, is_owner = user_context
+    identity, is_owner, admin = user_context
     stmt = select(OCPanel).options(selectinload(OCPanel.configs)).order_by(OCPanel.id.asc())
     if not is_owner:
-        stmt = stmt.where(OCPanel.purchaser_identity == identity)
+        if admin is not None:
+            oc_state, oc_account_id = await _tenant_oc_panel_filter(db, admin)
+            if oc_state == "disconnected":
+                return []
+            stmt = stmt.where(
+                OCPanel.tenant_id == admin.tenant_id,
+                OCPanel.oc_account_id == oc_account_id,
+            )
+        else:
+            stmt = stmt.where(OCPanel.purchaser_identity == identity)
 
     result = await db.execute(stmt)
     panels = result.scalars().all()
@@ -181,9 +202,9 @@ async def list_panels(
 async def get_panel(
     panel_id: int,
     db: AsyncSession = Depends(get_db),
-    user_context: tuple[str, bool] = Depends(get_current_user_context),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_user_context),
 ):
-    identity, is_owner = user_context
+    identity, is_owner, admin = user_context
     stmt = select(OCPanel).options(selectinload(OCPanel.configs)).where(OCPanel.id == panel_id)
     result = await db.execute(stmt)
     panel = result.scalar_one_or_none()
@@ -191,8 +212,15 @@ async def get_panel(
     if not panel:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
 
-    if not is_owner and panel.purchaser_identity != identity:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this panel")
+    if not is_owner:
+        if admin is not None and panel.tenant_id != admin.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this panel")
+        elif admin is None and panel.purchaser_identity != identity:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this panel")
+        if admin is not None and panel.oc_account_id is not None:
+            oc_state, oc_account_id = await _tenant_oc_panel_filter(db, admin)
+            if oc_state == "disconnected" or panel.oc_account_id != oc_account_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
 
     return OCPanelResponse(
         id=panel.id,
@@ -215,9 +243,9 @@ async def update_panel(
     panel_id: int,
     update_data: PanelUpdate,
     db: AsyncSession = Depends(get_db),
-    user_context: tuple[str, bool] = Depends(get_current_admin_user_context),
+    user_context: tuple[str, bool, AdminDetails] = Depends(get_current_admin_user_context),
 ):
-    identity, is_owner = user_context
+    identity, is_owner, admin = user_context
     stmt = select(OCPanel).options(selectinload(OCPanel.configs)).where(OCPanel.id == panel_id)
     result = await db.execute(stmt)
     panel = result.scalar_one_or_none()
@@ -225,8 +253,10 @@ async def update_panel(
     if not panel:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
 
-    if not is_owner and panel.purchaser_identity != identity:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this panel")
+    if not is_owner:
+        if panel.tenant_id != admin.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this panel")
+        await require_active_telegram_for_tenant_admin(db, admin, is_owner)
 
     if update_data.multiplier is not None:
         panel.multiplier = float(update_data.multiplier)
@@ -253,16 +283,21 @@ async def update_panel(
 async def sync_panel(
     panel_id: int,
     db: AsyncSession = Depends(get_db),
-    user_context: tuple[str, bool] = Depends(get_current_admin_user_context),
+    user_context: tuple[str, bool, AdminDetails] = Depends(get_current_admin_user_context),
 ):
-    identity, is_owner = user_context
+    identity, is_owner, admin = user_context
     panel = (await db.execute(select(OCPanel).where(OCPanel.id == panel_id))).scalar_one_or_none()
 
     if not panel:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
 
-    if not is_owner and panel.purchaser_identity != identity:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this panel")
+    if not is_owner:
+        if admin is not None and panel.tenant_id != admin.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this panel")
+        elif admin is None and panel.purchaser_identity != identity:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this panel")
+        if admin is not None:
+            await require_active_telegram_for_tenant_admin(db, admin, is_owner)
 
     try:
         await sync_panel_from_outbound_center(db, panel_id)
@@ -275,14 +310,20 @@ async def sync_panel(
 async def list_panel_hosts(
     panel_id: int,
     db: AsyncSession = Depends(get_db),
-    user_context: tuple[str, bool] = Depends(get_current_user_context),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_user_context),
 ):
-    identity, is_owner = user_context
+    identity, is_owner, admin = user_context
     panel = (await db.execute(select(OCPanel).where(OCPanel.id == panel_id))).scalar_one_or_none()
     if not panel:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
-    if not is_owner and panel.purchaser_identity != identity:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    if not is_owner:
+        if admin is not None and panel.tenant_id != admin.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        elif admin is None and panel.purchaser_identity != identity:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        if admin is not None:
+            await require_active_telegram_for_tenant_admin(db, admin, is_owner)
 
     stmt = (
         select(ProxyHost, OCPanelConfig, OCPanelGroup, Group)
@@ -315,14 +356,20 @@ async def get_panel_host(
     panel_id: int,
     host_id: int,
     db: AsyncSession = Depends(get_db),
-    user_context: tuple[str, bool] = Depends(get_current_user_context),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_user_context),
 ):
-    identity, is_owner = user_context
+    identity, is_owner, admin = user_context
     panel = (await db.execute(select(OCPanel).where(OCPanel.id == panel_id))).scalar_one_or_none()
     if not panel:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
-    if not is_owner and panel.purchaser_identity != identity:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    if not is_owner:
+        if admin is not None and panel.tenant_id != admin.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        elif admin is None and panel.purchaser_identity != identity:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        if admin is not None:
+            await require_active_telegram_for_tenant_admin(db, admin, is_owner)
 
     stmt = (
         select(ProxyHost, OCPanelConfig, OCPanelGroup, Group)
@@ -340,7 +387,7 @@ async def get_panel_host(
 
     host, config, oc_group, local_group = row
     group_name = local_group.name if local_group else (oc_group.source_name if oc_group else None)
-    
+
     return PanelHostResponse(
         id=host.id,
         display_name=host.remark,
@@ -358,14 +405,17 @@ async def update_panel_host(
     host_id: int,
     update_data: PanelHostUpdate,
     db: AsyncSession = Depends(get_db),
-    user_context: tuple[str, bool] = Depends(get_current_admin_user_context),
+    user_context: tuple[str, bool, AdminDetails] = Depends(get_current_admin_user_context),
 ):
-    identity, is_owner = user_context
+    identity, is_owner, admin = user_context
     panel = (await db.execute(select(OCPanel).where(OCPanel.id == panel_id))).scalar_one_or_none()
     if not panel:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
-    if not is_owner and panel.purchaser_identity != identity:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    if not is_owner:
+        if panel.tenant_id != admin.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        await require_active_telegram_for_tenant_admin(db, admin, is_owner)
 
     stmt = (
         select(ProxyHost, OCPanelConfig, OCPanelGroup, Group)

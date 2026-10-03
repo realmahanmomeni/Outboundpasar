@@ -1,13 +1,21 @@
 import logging
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from app.db import AsyncSession, get_db
 from app.db.models_oc import OCIntegration, OCPanel, OCPanelGroup, OCPanelConfig
 from app.db.models import ProxyInbound, ProxyHost
-from app.routers.panel import get_current_user_context
+from app.models.admin import AdminDetails
+from app.routers.panel import get_current_admin_user_context, get_current_user_context
+from app.services.oc_telegram_connection import (
+    activate_connection,
+    get_active_connection,
+    require_active_telegram_for_tenant_admin,
+    revoke_connection,
+    start_connection,
+)
 from app.utils.crypto import decrypt_secret
 
 logger = logging.getLogger(__name__)
@@ -22,6 +30,39 @@ class PanelItem(BaseModel):
 
 class AvailablePanelsResponse(BaseModel):
     items: list[PanelItem]
+
+
+class TelegramConnectionStartResponse(BaseModel):
+    intent_id: str
+    bot_url: str
+    status: str
+
+
+class TelegramConnectionConfirmRequest(BaseModel):
+    code: str = Field(..., min_length=5, max_length=5)
+
+
+class TelegramConnectionStatusResponse(BaseModel):
+    status: str
+    active: bool = False
+    telegram_user_id: int | None = None
+    oc_account_id: int | None = None
+    verified_at: str | None = None
+    connected_at: str | None = None
+
+
+class ImportPanelsRequest(BaseModel):
+    subscription_ids: list[int] = Field(..., min_length=1)
+
+
+class ImportPanelResult(BaseModel):
+    subscription_id: int
+    panel_id: int
+    created: bool
+
+
+class ImportPanelsResponse(BaseModel):
+    imported: list[ImportPanelResult]
 
 class SelectPanelRequest(BaseModel):
     source_panel_id: str
@@ -82,66 +123,330 @@ async def call_oc_api(integration: OCIntegration, method: str, path: str, json: 
         logger.error(f"OC API connection error: {e}")
         raise HTTPException(status_code=503, detail="OC API unavailable")
 
-@router.get("/available-panels", response_model=AvailablePanelsResponse)
-async def get_available_panels(db: AsyncSession = Depends(get_db), user_context = Depends(get_current_user_context)):
-    identity, is_owner = user_context
-    if not is_owner:
-        raise HTTPException(status_code=403, detail="Only owner can view available panels")
-        
+
+def _require_tenant_admin(user_context: tuple[str, bool, AdminDetails | None]) -> AdminDetails:
+    _identity, is_owner, admin = user_context
+    if admin is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    if not is_owner and admin.tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant scope required")
+    return admin
+
+
+async def _register_oc_intent(integration: OCIntegration, intent_id: str) -> None:
+    await call_oc_api(
+        integration,
+        "POST",
+        "/v1/integration/pasarguard/connection-intents",
+        json={"intent_id": intent_id},
+    )
+
+
+@router.post("/telegram-connection/start", response_model=TelegramConnectionStartResponse)
+async def telegram_connection_start(
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_admin_user_context),
+):
+    admin = _require_tenant_admin(user_context)
+    if admin.tenant_id is None:
+        raise HTTPException(status_code=400, detail="Admin is not assigned to a tenant")
     integration = await get_active_integration(db)
-    data = await call_oc_api(integration, "GET", "/v1/integration/panels")
-    
-    return AvailablePanelsResponse(items=data["items"])
+    payload = await start_connection(db, admin.tenant_id)
+    await _register_oc_intent(integration, payload["intent_id"])
+    await db.commit()
+    return TelegramConnectionStartResponse(**payload)
+
+
+@router.post("/telegram-connection/confirm", response_model=TelegramConnectionStatusResponse)
+async def telegram_connection_confirm(
+    body: TelegramConnectionConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_admin_user_context),
+):
+    admin = _require_tenant_admin(user_context)
+    if admin.tenant_id is None:
+        raise HTTPException(status_code=400, detail="Admin is not assigned to a tenant")
+
+    from app.db.models_oc import TenantTelegramConnection, TenantTelegramConnectionStatus
+
+    pending = await db.scalar(
+        select(TenantTelegramConnection).where(
+            TenantTelegramConnection.tenant_id == admin.tenant_id,
+            TenantTelegramConnection.status == TenantTelegramConnectionStatus.pending.value,
+            TenantTelegramConnection.revoked_at.is_(None),
+        )
+    )
+    if pending is None or not pending.pending_intent_id:
+        raise HTTPException(status_code=400, detail="No pending Telegram connection")
+
+    integration = await get_active_integration(db)
+    verify_data = await call_oc_api(
+        integration,
+        "POST",
+        f"/v1/integration/pasarguard/connection-intents/{pending.pending_intent_id}/verify",
+        json={"code": body.code.strip()},
+    )
+
+    row = await activate_connection(
+        db,
+        admin.tenant_id,
+        telegram_user_id=int(verify_data["telegram_id"]),
+        oc_account_id=int(verify_data["account_id"]),
+    )
+    await db.commit()
+    return TelegramConnectionStatusResponse(
+        status=row.status,
+        active=bool(row.active),
+        telegram_user_id=row.telegram_user_id,
+        oc_account_id=row.oc_account_id,
+        verified_at=row.verified_at.isoformat() if row.verified_at else None,
+        connected_at=row.connected_at.isoformat() if row.connected_at else None,
+    )
+
+
+@router.get("/telegram-connection", response_model=TelegramConnectionStatusResponse)
+async def telegram_connection_status(
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_user_context),
+):
+    admin = _require_tenant_admin(user_context)
+    if admin.tenant_id is None:
+        return TelegramConnectionStatusResponse(status="unconfigured")
+    active = await get_active_connection(db, admin.tenant_id)
+    if active is None:
+        return TelegramConnectionStatusResponse(status="none", active=False)
+    return TelegramConnectionStatusResponse(
+        status=active.status,
+        active=bool(active.active),
+        telegram_user_id=active.telegram_user_id,
+        oc_account_id=active.oc_account_id,
+        verified_at=active.verified_at.isoformat() if active.verified_at else None,
+        connected_at=active.connected_at.isoformat() if active.connected_at else None,
+    )
+
+
+@router.post("/telegram-connection/revoke", status_code=status.HTTP_204_NO_CONTENT)
+async def telegram_connection_revoke(
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_admin_user_context),
+):
+    admin = _require_tenant_admin(user_context)
+    if admin.tenant_id is None:
+        raise HTTPException(status_code=400, detail="Admin is not assigned to a tenant")
+    await revoke_connection(db, admin.tenant_id)
+    await db.commit()
+
+
+async def _fetch_account_panels(integration: OCIntegration, oc_account_id: int) -> list[dict]:
+    data = await call_oc_api(
+        integration,
+        "GET",
+        f"/v1/integration/accounts/{oc_account_id}/panels",
+    )
+    return list(data.get("items") or [])
+
+
+@router.get("/available-panels", response_model=AvailablePanelsResponse)
+async def get_available_panels(
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_user_context),
+):
+    admin = _require_tenant_admin(user_context)
+    if admin.tenant_id is None:
+        raise HTTPException(status_code=400, detail="Admin is not assigned to a tenant")
+
+    identity, is_owner, _ = user_context
+    await require_active_telegram_for_tenant_admin(db, admin, is_owner)
+    connection = await get_active_connection(db, admin.tenant_id)
+    if connection is None or connection.oc_account_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Active Telegram connection required",
+        )
+
+    integration = await get_active_integration(db)
+    raw_items = await _fetch_account_panels(integration, connection.oc_account_id)
+    items = [
+        PanelItem(
+            id=int(row["subscription_id"]),
+            panel_type=str(row["panel_type"]),
+            name=str(row["name"]),
+            status=str(row["status"]),
+        )
+        for row in raw_items
+    ]
+    return AvailablePanelsResponse(items=items)
+
+
+@router.post("/import-panels", response_model=ImportPanelsResponse)
+async def import_panels(
+    body: ImportPanelsRequest,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_admin_user_context),
+):
+    admin = _require_tenant_admin(user_context)
+    if admin.tenant_id is None:
+        raise HTTPException(status_code=400, detail="Admin is not assigned to a tenant")
+
+    identity, is_owner, _ = user_context
+    await require_active_telegram_for_tenant_admin(db, admin, is_owner)
+    connection = await get_active_connection(db, admin.tenant_id)
+    if connection is None or connection.oc_account_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Active Telegram connection required",
+        )
+
+    integration = await get_active_integration(db)
+    allowed = await _fetch_account_panels(integration, connection.oc_account_id)
+    allowed_ids = {int(row["subscription_id"]) for row in allowed}
+    requested = set(body.subscription_ids)
+    if not requested.issubset(allowed_ids):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="One or more panels are not owned by this account")
+
+    imported: list[ImportPanelResult] = []
+    oc_account_id = connection.oc_account_id
+    for sub_id in body.subscription_ids:
+        source_panel_id = str(sub_id)
+        meta = next((r for r in allowed if int(r["subscription_id"]) == sub_id), None)
+        display_name = str(meta["name"]) if meta else f"OC Panel {sub_id}"
+
+        existing = (
+            await db.execute(
+                select(OCPanel).where(
+                    OCPanel.integration_id == integration.id,
+                    OCPanel.source_panel_id == source_panel_id,
+                    OCPanel.tenant_id == admin.tenant_id,
+                    OCPanel.oc_account_id == oc_account_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+        created = False
+        if existing is None:
+            new_panel = OCPanel(
+                integration_id=integration.id,
+                source_panel_id=source_panel_id,
+                purchaser_identity=str(oc_account_id),
+                oc_account_id=oc_account_id,
+                tenant_id=admin.tenant_id,
+                name=display_name,
+                sync_status="pending",
+            )
+            db.add(new_panel)
+            await db.flush()
+            existing = new_panel
+            created = True
+
+        imported.append(
+            ImportPanelResult(
+                subscription_id=sub_id,
+                panel_id=existing.id,
+                created=created,
+            )
+        )
+
+    await db.commit()
+    return ImportPanelsResponse(imported=imported)
 
 @router.post("/select-panel", response_model=SelectPanelResponse)
-async def select_panel(req: SelectPanelRequest, db: AsyncSession = Depends(get_db), user_context = Depends(get_current_user_context)):
-    identity, is_owner = user_context
-    if not is_owner:
-        raise HTTPException(status_code=403, detail="Only owner can add panels")
-        
+async def select_panel(
+    req: SelectPanelRequest,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_admin_user_context),
+):
+    admin = _require_tenant_admin(user_context)
+    if admin.tenant_id is None:
+        raise HTTPException(status_code=400, detail="Admin is not assigned to a tenant")
+
+    identity, is_owner, _ = user_context
+    await require_active_telegram_for_tenant_admin(db, admin, is_owner)
+    connection = await get_active_connection(db, admin.tenant_id)
+    if connection is None or connection.oc_account_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Active Telegram connection required",
+        )
+
+    try:
+        sub_id = int(req.source_panel_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid source_panel_id")
+
     integration = await get_active_integration(db)
-    
-    stmt = select(OCPanel).where(
-        OCPanel.integration_id == integration.id,
-        OCPanel.source_panel_id == req.source_panel_id,
-        OCPanel.purchaser_identity == identity  # Owner's identity is "admin" normally, wait! The prompt says "Panel 40 + Mahan". If we are the owner, we can set the purchaser_identity to whatever the OC API says? 
-        # Actually, in phase 4, the name is "admin_username - Sub id". So we parse it.
-    )
-    # Wait, the parsing logic:
-    purchaser = req.name.split(" - Sub ")[0] if " - Sub " in req.name else req.name
-    
-    stmt = select(OCPanel).where(
-        OCPanel.integration_id == integration.id,
-        OCPanel.source_panel_id == req.source_panel_id,
-        OCPanel.purchaser_identity == purchaser
-    )
-    existing = (await db.execute(stmt)).scalar_one_or_none()
-    
+    allowed = await _fetch_account_panels(integration, connection.oc_account_id)
+    meta = next((r for r in allowed if int(r["subscription_id"]) == sub_id), None)
+    if meta is None:
+        raise HTTPException(status_code=403, detail="Panel not available for this connected account")
+
+    display_name = req.name or str(meta.get("name") or f"OC Panel {sub_id}")
+    existing = (
+        await db.execute(
+            select(OCPanel).where(
+                OCPanel.integration_id == integration.id,
+                OCPanel.source_panel_id == str(sub_id),
+                OCPanel.tenant_id == admin.tenant_id,
+                OCPanel.oc_account_id == connection.oc_account_id,
+            )
+        )
+    ).scalar_one_or_none()
+
     if existing:
-        return SelectPanelResponse(panel_id=existing.id, source_panel_id=existing.source_panel_id, test_user_id=existing.test_user_id)
-        
+        return SelectPanelResponse(
+            panel_id=existing.id,
+            source_panel_id=existing.source_panel_id,
+            test_user_id=existing.test_user_id,
+        )
+
     new_panel = OCPanel(
         integration_id=integration.id,
-        source_panel_id=req.source_panel_id,
-        purchaser_identity=purchaser,
-        name=req.name,
-        sync_status="pending"
+        source_panel_id=str(sub_id),
+        purchaser_identity=str(connection.oc_account_id),
+        oc_account_id=connection.oc_account_id,
+        tenant_id=admin.tenant_id,
+        name=display_name,
+        sync_status="pending",
     )
     db.add(new_panel)
     await db.commit()
     await db.refresh(new_panel)
-    
-    return SelectPanelResponse(panel_id=new_panel.id, source_panel_id=new_panel.source_panel_id, test_user_id=new_panel.test_user_id)
+
+    return SelectPanelResponse(
+        panel_id=new_panel.id,
+        source_panel_id=new_panel.source_panel_id,
+        test_user_id=new_panel.test_user_id,
+    )
+
+
+async def _ensure_panel_tenant_access(
+    panel: OCPanel | None,
+    admin: AdminDetails,
+    is_owner: bool,
+) -> None:
+    if panel is None:
+        raise HTTPException(status_code=404, detail="Panel not found")
+    if is_owner:
+        return
+    if panel.tenant_id != admin.tenant_id:
+        raise HTTPException(status_code=403, detail="Access denied to this panel")
+
 
 @router.post("/panels/{panel_id}/test-user", response_model=TestUserResponse)
-async def create_test_user(panel_id: int, db: AsyncSession = Depends(get_db), user_context = Depends(get_current_user_context)):
-    identity, is_owner = user_context
-    if not is_owner:
-        raise HTTPException(status_code=403, detail="Only owner can manage panels")
-        
-    panel = (await db.execute(select(OCPanel).options(selectinload(OCPanel.integration)).where(OCPanel.id == panel_id))).scalar_one_or_none()
-    if not panel:
-        raise HTTPException(status_code=404, detail="Panel not found")
+async def create_test_user(
+    panel_id: int,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_admin_user_context),
+):
+    identity, is_owner, admin = user_context
+    admin = _require_tenant_admin(user_context)
+
+    panel = (
+        await db.execute(
+            select(OCPanel).options(selectinload(OCPanel.integration)).where(OCPanel.id == panel_id)
+        )
+    ).scalar_one_or_none()
+    await _ensure_panel_tenant_access(panel, admin, is_owner)
+    await require_active_telegram_for_tenant_admin(db, admin, is_owner)
         
     if panel.test_user_id:
         # Verify it still exists? Or just return it. The prompt says "Reuse existing test user". 
@@ -156,27 +461,48 @@ async def create_test_user(panel_id: int, db: AsyncSession = Depends(get_db), us
     return TestUserResponse(test_user_id=panel.test_user_id)
 
 @router.get("/panels/{panel_id}/groups", response_model=GroupListResponse)
-async def get_groups(panel_id: int, db: AsyncSession = Depends(get_db), user_context = Depends(get_current_user_context)):
-    identity, is_owner = user_context
-    if not is_owner:
-        raise HTTPException(status_code=403, detail="Only owner can manage panels")
-        
-    panel = (await db.execute(select(OCPanel).options(selectinload(OCPanel.integration)).where(OCPanel.id == panel_id))).scalar_one_or_none()
-    if not panel:
-        raise HTTPException(status_code=404, detail="Panel not found")
+async def get_groups(
+    panel_id: int,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_user_context),
+):
+    identity, is_owner, admin = user_context
+    admin = _require_tenant_admin(user_context)
+
+    panel = (
+        await db.execute(
+            select(OCPanel).options(selectinload(OCPanel.integration)).where(OCPanel.id == panel_id)
+        )
+    ).scalar_one_or_none()
+    await _ensure_panel_tenant_access(panel, admin, is_owner)
+    await require_active_telegram_for_tenant_admin(db, admin, is_owner)
         
     data = await call_oc_api(panel.integration, "GET", f"/v1/integration/panels/{panel.source_panel_id}/groups")
     return GroupListResponse(groups=data["groups"])
 
 @router.post("/panels/{panel_id}/sync", response_model=SyncResponse)
-async def sync_configs_and_hosts(panel_id: int, req: SyncRequest, db: AsyncSession = Depends(get_db), user_context = Depends(get_current_user_context)):
-    identity, is_owner = user_context
-    if not is_owner:
-        raise HTTPException(status_code=403, detail="Only owner can manage panels")
-        
-    panel = (await db.execute(select(OCPanel).options(selectinload(OCPanel.integration), selectinload(OCPanel.groups), selectinload(OCPanel.configs)).where(OCPanel.id == panel_id))).scalar_one_or_none()
-    if not panel:
-        raise HTTPException(status_code=404, detail="Panel not found")
+async def sync_configs_and_hosts(
+    panel_id: int,
+    req: SyncRequest,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_admin_user_context),
+):
+    identity, is_owner, admin = user_context
+    admin = _require_tenant_admin(user_context)
+
+    panel = (
+        await db.execute(
+            select(OCPanel)
+            .options(
+                selectinload(OCPanel.integration),
+                selectinload(OCPanel.groups),
+                selectinload(OCPanel.configs),
+            )
+            .where(OCPanel.id == panel_id)
+        )
+    ).scalar_one_or_none()
+    await _ensure_panel_tenant_access(panel, admin, is_owner)
+    await require_active_telegram_for_tenant_admin(db, admin, is_owner)
         
     # 1. Update groups
     existing_group_by_source = {g.source_group_id: g for g in panel.groups}

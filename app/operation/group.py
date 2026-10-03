@@ -47,7 +47,7 @@ class GroupOperation(BaseOperation):
         # If allowed is an empty list, the id was filtered out → not accessible
         if allowed is not None and group_id not in allowed:
             await self.raise_error("Group not found", 404)
-        db_group = await self.get_validated_group(db, group_id)
+        db_group = await self.get_validated_group(db, group_id, admin=admin)
         return db_group
 
     async def _sync_users_allocations(self, db: AsyncSession, users) -> None:
@@ -58,7 +58,7 @@ class GroupOperation(BaseOperation):
 
     async def create_group(self, db: AsyncSession, new_group: GroupCreate, admin: Admin) -> Group:
         await self.check_inbound_tags(new_group.inbound_tags)
-        db_group = await create_group(db, new_group)
+        db_group = await create_group(db, new_group, tenant_id=admin.tenant_id if not admin.is_owner else None)
 
         group = GroupResponse.model_validate(db_group)
 
@@ -69,7 +69,7 @@ class GroupOperation(BaseOperation):
 
     async def get_all_groups(self, db: AsyncSession, query: GroupListQuery, admin: Admin) -> GroupsResponse:
         query.ids = apply_group_access(admin, query.ids)
-        db_groups, count = await get_group(db, query)
+        db_groups, count = await get_group(db, query, tenant_id=admin.tenant_id if not admin.is_owner else None)
         return GroupsResponse(groups=db_groups, total=count)
 
     async def get_groups_simple(
@@ -80,7 +80,9 @@ class GroupOperation(BaseOperation):
     ) -> GroupsSimpleResponse:
         """Get lightweight group list with only id and name"""
         query.ids = apply_group_access(admin, query.ids)
-        rows, total = await get_groups_simple(db=db, query=query)
+        rows, total = await get_groups_simple(
+            db=db, query=query, tenant_id=admin.tenant_id if not admin.is_owner else None
+        )
         groups = [GroupSimple(id=row[0], name=row[1]) for row in rows]
         return GroupsSimpleResponse(groups=groups, total=total)
 
@@ -160,7 +162,9 @@ class GroupOperation(BaseOperation):
         requested_ids = list(bulk_groups.ids)
         allowed_ids = apply_group_access(admin, requested_ids)
         # Fetch all allowed groups in one query
-        db_groups = await get_groups_by_ids(db, allowed_ids or [], load_users=False, load_inbounds=False)
+        db_groups = await get_groups_by_ids(
+            db, allowed_ids or [], load_users=False, load_inbounds=False, tenant_id=admin.tenant_id if not admin.is_owner else None
+        )
         # Verify all requested ids were found and accessible
         found_ids = {g.id for g in db_groups}
         for gid in requested_ids:
@@ -206,7 +210,9 @@ class GroupOperation(BaseOperation):
     ) -> BulkGroupsActionResponse:
         requested_ids = list(bulk_groups.ids)
         allowed_ids = apply_group_access(admin, requested_ids)
-        db_groups = await get_groups_by_ids(db, allowed_ids or [], load_users=False, load_inbounds=False)
+        db_groups = await get_groups_by_ids(
+            db, allowed_ids or [], load_users=False, load_inbounds=False, tenant_id=admin.tenant_id if not admin.is_owner else None
+        )
         found_ids = {g.id for g in db_groups}
         for gid in requested_ids:
             if gid not in found_ids:

@@ -16,6 +16,7 @@ class RuntimeSettings(EnvSettings):
     debug: bool = Field(default=False, validation_alias="DEBUG")
     docs: bool = Field(default=False, validation_alias="DOCS")
     role: Role = Field(default=Role.ALL_IN_ONE, validation_alias="ROLE")
+    oc_bot_username: str = Field(default="", validation_alias="OC_BOT_USERNAME")
 
     @field_validator("role", mode="before")
     @classmethod

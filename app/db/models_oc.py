@@ -1,4 +1,5 @@
 from datetime import UTC, datetime as dt
+from enum import Enum
 from typing import Any
 
 from sqlalchemy import (
@@ -14,7 +15,33 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.db.compiles_types import SqliteCompatibleBigInteger
-from app.db.models import CreatedAtUTCMixin, Group, ProxyInbound, User, fk_id_column
+from app.db.models import CreatedAtUTCMixin, Group, ProxyInbound, Tenant, User, fk_id_column
+
+
+class TenantTelegramConnectionStatus(str, Enum):
+    pending = "pending"
+    active = "active"
+    revoked = "revoked"
+
+
+class TenantTelegramConnection(Base, CreatedAtUTCMixin):
+    __tablename__ = "tenant_telegram_connections"
+
+    id: Mapped[int] = mapped_column(SqliteCompatibleBigInteger, primary_key=True, init=False, autoincrement=True)
+    tenant_id: Mapped[int] = fk_id_column("tenants.id", ondelete="CASCADE")
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, default=None)
+    oc_account_id: Mapped[int | None] = mapped_column(nullable=True, default=None)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=TenantTelegramConnectionStatus.pending.value)
+    active: Mapped[bool] = mapped_column(default=False)
+    pending_intent_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    connected_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)
+    verified_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)
+    revoked_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
+    )
+
+    tenant: Mapped[Tenant] = relationship(init=False)
 
 
 class OCIntegration(Base, CreatedAtUTCMixin):
@@ -46,6 +73,8 @@ class OCPanel(Base, CreatedAtUTCMixin):
     updated_at: Mapped[dt] = mapped_column(
         DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
     )
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    oc_account_id: Mapped[int | None] = mapped_column(nullable=True, default=None)
 
     integration: Mapped[OCIntegration] = relationship(back_populates="panels", init=False)
     groups: Mapped[list["OCPanelGroup"]] = relationship(back_populates="panel", init=False, cascade="all, delete-orphan")

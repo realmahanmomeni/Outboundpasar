@@ -74,6 +74,11 @@ class AdminOperation(BaseOperation):
         except IntegrityError:
             await self.raise_error(message="Admin already exists", code=409, db=db)
 
+        if not admin.is_owner:
+            db_admin.tenant_id = admin.tenant_id
+            await db.commit()
+            await db.refresh(db_admin)
+
         logger.info(f'New admin "{db_admin.username}" with id "{db_admin.id}" added by admin "{admin.username}"')
         new_admin_details = build_admin_details(db_admin, include_loaded_metrics=True)
         asyncio.create_task(notification.create_admin(new_admin_details, admin.username))
@@ -87,7 +92,7 @@ class AdminOperation(BaseOperation):
             DeprecationWarning,
             stacklevel=2,
         )
-        db_admin = await self.get_validated_admin(db, username=username)
+        db_admin = await self.get_validated_admin(db, username=username, current_admin=current_admin)
         await self._ensure_owner_target_access(db_admin, current_admin)
         return await self._modify_admin(db, db_admin, modified_admin, current_admin)
 
@@ -150,7 +155,7 @@ class AdminOperation(BaseOperation):
     async def modify_admin_by_id(
         self, db: AsyncSession, admin_id: int, modified_admin: AdminModify, current_admin: AdminDetails
     ) -> AdminDetails:
-        db_admin = await self.get_validated_admin_by_id(db, admin_id)
+        db_admin = await self.get_validated_admin_by_id(db, admin_id, current_admin=current_admin)
         await self._ensure_owner_target_access(db_admin, current_admin)
         return await self._modify_admin(db, db_admin, modified_admin, current_admin)
 
@@ -160,7 +165,7 @@ class AdminOperation(BaseOperation):
             DeprecationWarning,
             stacklevel=2,
         )
-        db_admin = await self.get_validated_admin(db, username=username)
+        db_admin = await self.get_validated_admin(db, username=username, current_admin=current_admin)
         if current_admin is not None:
             await self._ensure_owner_target_access(db_admin, current_admin)
         await self._remove_admin(db, db_admin, current_admin)
@@ -178,7 +183,7 @@ class AdminOperation(BaseOperation):
             asyncio.create_task(notification.remove_admin(db_admin.username, current_admin.username))
 
     async def remove_admin_by_id(self, db: AsyncSession, admin_id: int, current_admin: AdminDetails | None = None):
-        db_admin = await self.get_validated_admin_by_id(db, admin_id)
+        db_admin = await self.get_validated_admin_by_id(db, admin_id, current_admin=current_admin)
         if current_admin is not None:
             await self._ensure_owner_target_access(db_admin, current_admin)
         await self._remove_admin(db, db_admin, current_admin)
@@ -191,6 +196,7 @@ class AdminOperation(BaseOperation):
             return_with_count=True,
             compact=True,
             include_owner=admin.is_owner,
+            tenant_id=admin.tenant_id if not admin.is_owner else None,
         )
         return AdminsResponse(admins=admins, total=total, active=active, disabled=disabled, limited=limited)
 
@@ -198,7 +204,12 @@ class AdminOperation(BaseOperation):
         self, db: AsyncSession, query: AdminSimpleListQuery, admin: AdminDetails
     ) -> AdminsSimpleResponse:
         """Get lightweight admin list with only id and username."""
-        rows, total = await get_admins_simple(db=db, query=query, include_owner=admin.is_owner)
+        rows, total = await get_admins_simple(
+            db=db,
+            query=query,
+            include_owner=admin.is_owner,
+            tenant_id=admin.tenant_id if not admin.is_owner else None,
+        )
         admins = [AdminSimple(id=row[0], username=row[1]) for row in rows]
         return AdminsSimpleResponse(admins=admins, total=total)
 
@@ -211,7 +222,7 @@ class AdminOperation(BaseOperation):
             DeprecationWarning,
             stacklevel=2,
         )
-        db_admin = await self.get_validated_admin(db, username=username)
+        db_admin = await self.get_validated_admin(db, username=username, current_admin=admin)
         await self._ensure_owner_target_access(db_admin, admin)
         await self._disable_all_active_users_for_admin(db, db_admin, admin)
 
@@ -223,7 +234,7 @@ class AdminOperation(BaseOperation):
         logger.info(f'Admin "{db_admin.username}" users has been disabled by admin "{admin.username}"')
 
     async def disable_all_active_users_by_id(self, db: AsyncSession, admin_id: int, admin: AdminDetails):
-        db_admin = await self.get_validated_admin_by_id(db, admin_id)
+        db_admin = await self.get_validated_admin_by_id(db, admin_id, current_admin=admin)
         await self._ensure_owner_target_access(db_admin, admin)
         await self._disable_all_active_users_for_admin(db, db_admin, admin)
 
@@ -233,7 +244,7 @@ class AdminOperation(BaseOperation):
             DeprecationWarning,
             stacklevel=2,
         )
-        db_admin = await self.get_validated_admin(db, username=username)
+        db_admin = await self.get_validated_admin(db, username=username, current_admin=admin)
         await self._ensure_owner_target_access(db_admin, admin)
         await self._activate_all_disabled_users_for_admin(db, db_admin, admin)
 
@@ -245,7 +256,7 @@ class AdminOperation(BaseOperation):
         logger.info(f'Admin "{db_admin.username}" users has been activated by admin "{admin.username}"')
 
     async def activate_all_disabled_users_by_id(self, db: AsyncSession, admin_id: int, admin: AdminDetails):
-        db_admin = await self.get_validated_admin_by_id(db, admin_id)
+        db_admin = await self.get_validated_admin_by_id(db, admin_id, current_admin=admin)
         await self._ensure_owner_target_access(db_admin, admin)
         await self._activate_all_disabled_users_for_admin(db, db_admin, admin)
 
@@ -255,7 +266,7 @@ class AdminOperation(BaseOperation):
             DeprecationWarning,
             stacklevel=2,
         )
-        db_admin = await self.get_validated_admin(db, username=username)
+        db_admin = await self.get_validated_admin(db, username=username, current_admin=admin)
         await self._ensure_owner_target_access(db_admin, admin)
         return await self._remove_all_users_for_admin(db, db_admin, admin)
 
@@ -280,7 +291,7 @@ class AdminOperation(BaseOperation):
         return len(serialized_users)
 
     async def remove_all_users_by_id(self, db: AsyncSession, admin_id: int, admin: AdminDetails) -> int:
-        db_admin = await self.get_validated_admin_by_id(db, admin_id)
+        db_admin = await self.get_validated_admin_by_id(db, admin_id, current_admin=admin)
         await self._ensure_owner_target_access(db_admin, admin)
         return await self._remove_all_users_for_admin(db, db_admin, admin)
 
@@ -290,7 +301,7 @@ class AdminOperation(BaseOperation):
             DeprecationWarning,
             stacklevel=2,
         )
-        db_admin = await self.get_validated_admin(db, username=username)
+        db_admin = await self.get_validated_admin(db, username=username, current_admin=admin)
         await self._ensure_owner_target_access(db_admin, admin)
         return await self._reset_admin_usage(db, db_admin, admin)
 
@@ -309,7 +320,7 @@ class AdminOperation(BaseOperation):
         return reseted_admin_details
 
     async def reset_admin_usage_by_id(self, db: AsyncSession, admin_id: int, admin: AdminDetails) -> AdminDetails:
-        db_admin = await self.get_validated_admin_by_id(db, admin_id)
+        db_admin = await self.get_validated_admin_by_id(db, admin_id, current_admin=admin)
         await self._ensure_owner_target_access(db_admin, admin)
         return await self._reset_admin_usage(db, db_admin, admin)
 
@@ -321,7 +332,7 @@ class AdminOperation(BaseOperation):
             DeprecationWarning,
             stacklevel=2,
         )
-        db_admin = await self.get_validated_admin(db, username=username)
+        db_admin = await self.get_validated_admin(db, username=username, current_admin=admin)
         await self._ensure_owner_target_access(db_admin, admin)
         return await self._get_admin_usage(
             db,
@@ -373,7 +384,7 @@ class AdminOperation(BaseOperation):
     async def get_admin_usage_by_id(
         self, db: AsyncSession, admin_id: int, admin: AdminDetails, query: AdminUsageQuery
     ) -> UserUsageStatsList:
-        db_admin = await self.get_validated_admin_by_id(db, admin_id)
+        db_admin = await self.get_validated_admin_by_id(db, admin_id, current_admin=admin)
         await self._ensure_owner_target_access(db_admin, admin)
         return await self._get_admin_usage(
             db,
@@ -417,7 +428,12 @@ class AdminOperation(BaseOperation):
 
         ids_list = list(ids)
 
-        admins = await get_admins(db, AdminListQuery(ids=ids_list, limit=len(ids_list)))
+        admins = await get_admins(
+            db,
+            AdminListQuery(ids=ids_list, limit=len(ids_list)),
+            include_owner=current_admin.is_owner,
+            tenant_id=current_admin.tenant_id if not current_admin.is_owner else None,
+        )
 
         # Verify every requested ID was found (mirrors the 404 in get_validated_admin_by_id)
         found_ids = {a.id for a in admins}
