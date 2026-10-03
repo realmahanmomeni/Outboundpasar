@@ -50,6 +50,13 @@ class GroupOperation(BaseOperation):
         db_group = await self.get_validated_group(db, group_id, admin=admin)
         return db_group
 
+    async def _enqueue_oc_sync_for_users(self, db: AsyncSession, users) -> None:
+        if not users:
+            return
+        from app.node.oc_sync import enqueue_oc_user_sync_many
+
+        await enqueue_oc_user_sync_many(db, users)
+
     async def _sync_users_allocations(self, db: AsyncSession, users) -> None:
         try:
             await sync_users_allocations(db, users)
@@ -98,6 +105,7 @@ class GroupOperation(BaseOperation):
             load_admin_role=True,
         )
         await self._sync_users_allocations(db, users)
+        await self._enqueue_oc_sync_for_users(db, users)
         await db.commit()
         await sync_users(users)
 
@@ -118,6 +126,7 @@ class GroupOperation(BaseOperation):
 
         users = await get_users(db, query=UserListQuery(username=username_list), load_admin_role=True)
         await self._sync_users_allocations(db, users)
+        await self._enqueue_oc_sync_for_users(db, users)
         await db.commit()
         await sync_users(users)
 
@@ -133,6 +142,7 @@ class GroupOperation(BaseOperation):
 
         users, users_count = await add_groups_to_users(db, bulk_model)
         await self._sync_users_allocations(db, users)
+        await self._enqueue_oc_sync_for_users(db, users)
         await db.commit()
         await sync_users(users)
 
@@ -148,6 +158,7 @@ class GroupOperation(BaseOperation):
 
         users, users_count = await remove_groups_from_users(db, bulk_model)
         await self._sync_users_allocations(db, users)
+        await self._enqueue_oc_sync_for_users(db, users)
         await db.commit()
         await sync_users(users)
 
@@ -186,6 +197,7 @@ class GroupOperation(BaseOperation):
                 db, query=UserListQuery(username=list(all_affected_usernames)), load_admin_role=True
             )
             await self._sync_users_allocations(db, users)
+            await self._enqueue_oc_sync_for_users(db, users)
             await db.commit()
             await sync_users(users)
 
@@ -236,6 +248,7 @@ class GroupOperation(BaseOperation):
                 load_admin_role=True,
             )
             await self._sync_users_allocations(db, users)
+            await self._enqueue_oc_sync_for_users(db, users)
             await db.commit()
             await sync_users(users)
 

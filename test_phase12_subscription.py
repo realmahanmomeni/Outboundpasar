@@ -334,10 +334,19 @@ async def run_tests():
                 panel_id=panel_a.id,
                 external_user_id="ext_user_a",
                 last_cumulative_traffic=1000,
+                status="active",
+                last_synced_configs=["c1"],
             )
-            db.add(mapping_a)
+            mapping_b = OCUserMapping(
+                user_id=sub_user.id,
+                panel_id=panel_b.id,
+                external_user_id="ext_user_b",
+                status="active",
+                last_synced_configs=["c1"],
+            )
+            db.add_all([mapping_a, mapping_b])
             await db.flush()
-            entities_to_clean.append(mapping_a)
+            entities_to_clean.extend([mapping_a, mapping_b])
 
             await db.commit()
             await db.refresh(sub_user)

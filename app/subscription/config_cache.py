@@ -22,6 +22,7 @@ def make_sub_config_key(
     config_format: str,
     as_base64: bool,
     randomize_order: bool,
+    runtime_oc_fingerprint: tuple = (),
 ) -> tuple:
     expire = getattr(user, "expire", None)
     expire_key = expire.timestamp() if hasattr(expire, "timestamp") else expire
@@ -37,6 +38,7 @@ def make_sub_config_key(
         getattr(user, "data_limit", None),
         expire_key,
         tuple(inbounds),
+        runtime_oc_fingerprint,
     )
 
 

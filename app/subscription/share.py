@@ -84,7 +84,18 @@ async def generate_subscription(
     as_base64: bool,
     randomize_order: bool = False,
 ) -> str | bytes:
-    cache_key = make_sub_config_key(user, config_format, as_base64, randomize_order)
+    from app.db import GetDB
+    from app.services.oc_subscription_runtime import (
+        resolve_user_tenant_id,
+        runtime_oc_subscription_cache_fingerprint,
+    )
+
+    runtime_oc_fingerprint: tuple = ()
+    async with GetDB() as db:
+        user_tenant_id = await resolve_user_tenant_id(db, user.id, getattr(user, "admin_id", None))
+        runtime_oc_fingerprint = await runtime_oc_subscription_cache_fingerprint(db, user.id, user_tenant_id)
+
+    cache_key = make_sub_config_key(user, config_format, as_base64, randomize_order, runtime_oc_fingerprint)
     cached = get_sub_config(cache_key)
     if cached is not None:
         return cached
@@ -472,7 +483,20 @@ async def process_inbounds_and_tags(
     proxy_settings = user.proxy_settings.dict()
     proxy_settings["_user_id"] = user.id
     hosts = await filter_hosts(list((await host_manager.get_hosts()).values()), user.status)
-    oc_tags = [t for t in (user.inbounds or []) if t.startswith("oc_")]
+    desired_oc_tags = [t for t in (user.inbounds or []) if t.startswith("oc_")]
+    oc_tags = desired_oc_tags
+    if desired_oc_tags:
+        from app.db import GetDB
+        from app.services.oc_subscription_runtime import (
+            filter_oc_inbound_tags_for_runtime_subscription,
+            resolve_user_tenant_id,
+        )
+
+        async with GetDB() as db:
+            user_tenant_id = await resolve_user_tenant_id(db, user.id, getattr(user, "admin_id", None))
+            oc_tags = await filter_oc_inbound_tags_for_runtime_subscription(
+                db, user.id, desired_oc_tags, user_tenant_id
+            )
     if oc_tags:
         oc_hosts = await resolve_oc_virtual_hosts(oc_tags, user.status, proxy_settings)
         hosts.extend(oc_hosts)

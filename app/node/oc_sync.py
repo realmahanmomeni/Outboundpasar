@@ -7,13 +7,26 @@ from app.db.models import User
 from app.db.models_oc import OCPanel, OCPanelConfig, OCUserMapping, OCSyncState
 from app.node.user import _bucket_inbounds, _inbounds_from_loaded_groups
 from app.services.oc_telegram_connection import get_active_connection
+from app.services.oc_user_mapping_state import (
+    OC_MAPPING_STATUS_ACTIVE,
+    OC_MAPPING_STATUS_DELETED,
+    OC_MAPPING_STATUS_PENDING,
+    resolve_oc_sync_operation,
+)
+
+
+async def enqueue_oc_user_sync_many(db_session: AsyncSession, users: list[User]) -> None:
+    for db_user in users:
+        await enqueue_oc_user_sync(db_session, db_user)
 
 
 async def tenant_panel_allows_oc_user_mutations(db_session: AsyncSession, panel_id: int) -> bool:
-    panel = await db_session.scalar(select(OCPanel.tenant_id).where(OCPanel.id == panel_id))
-    if panel is None:
+    row = (
+        await db_session.execute(select(OCPanel.tenant_id).where(OCPanel.id == panel_id))
+    ).one_or_none()
+    if row is None:
         return False
-    tenant_id = panel
+    tenant_id = row[0]
     if tenant_id is None:
         return True
     return await get_active_connection(db_session, tenant_id) is not None
@@ -29,7 +42,7 @@ async def enqueue_mapping_delete_sync(
     if last_configs is not None:
         last_configs = sorted(last_configs)
 
-    if mapping.status == "deleted" and last_configs == []:
+    if mapping.status == OC_MAPPING_STATUS_DELETED and last_configs == []:
         return
 
     entity_id = f"{user_id}_{panel_id}"
@@ -114,7 +127,7 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
                 user_id=db_user.id,
                 panel_id=panel_id,
                 external_user_id=str(uuid.uuid4()),
-                status="active"
+                status=OC_MAPPING_STATUS_PENDING,
             )
             db_session.add(mapping)
             await db_session.flush() # flush to get external_user_id ready if needed
@@ -142,7 +155,15 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
         if last_configs is not None:
             last_configs = sorted(last_configs)
             
-        if is_new_mapping or last_configs is None or mapping.status != "active" or last_configs != configs:
+        needs_sync = (
+            is_new_mapping
+            or last_configs is None
+            or mapping.status != OC_MAPPING_STATUS_ACTIVE
+            or last_configs != configs
+        )
+        if needs_sync:
+            if mapping.status != OC_MAPPING_STATUS_ACTIVE:
+                mapping.status = OC_MAPPING_STATUS_PENDING
             entity_id = f"{db_user.id}_{panel_id}"
             
             pending_job = (await db_session.execute(
@@ -154,7 +175,9 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
                 )
             )).scalars().first()
 
-            operation = "update" if (not is_new_mapping and last_configs is not None) else "create"
+            operation = resolve_oc_sync_operation(
+                mapping, is_new_mapping=is_new_mapping, last_configs=last_configs
+            )
             payload = {"groups": [], "configs": configs}
 
             if pending_job:

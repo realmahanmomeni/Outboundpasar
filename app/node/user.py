@@ -15,6 +15,7 @@ from app.db.models import (
     users_groups_association,
 )
 from app.models.protocol import ProxyProtocol
+from app.services.oc_user_mapping_state import oc_user_mapping_runtime_active_criteria
 
 _ALL_PROXY_PROTOCOLS = frozenset(ProxyProtocol)
 
@@ -112,9 +113,14 @@ async def serialize_user(user: User, allowed_protocols: frozenset[ProxyProtocol]
     active_panel_ids = []
     session = async_object_session(user)
     if session is not None:
-        active_panel_ids = (await session.execute(
-            select(OCUserMapping.panel_id).where(OCUserMapping.user_id == user.id)
-        )).scalars().all()
+        active_panel_ids = (
+            await session.execute(
+                select(OCUserMapping.panel_id).where(
+                    OCUserMapping.user_id == user.id,
+                    oc_user_mapping_runtime_active_criteria(),
+                )
+            )
+        ).scalars().all()
 
     return _serialize_user_for_node(user.id, user_settings, inbounds, allowed_protocols, active_panel_ids)
 
@@ -147,10 +153,13 @@ def _serialize_user_for_node(
         proxy_kwargs["hysteria_auth"] = user_settings.get("hysteria", {}).get("auth")
 
     inbounds_list = inbounds or []
-    buckets = _bucket_inbounds(inbounds_list, active_panel_ids)
+    runtime_panel_ids = set(active_panel_ids or [])
+    buckets = _bucket_inbounds(inbounds_list, list(runtime_panel_ids) if runtime_panel_ids else None)
     proto_users = []
 
     for panel_id, bucket_inbounds in buckets.items():
+        if panel_id is not None and panel_id not in runtime_panel_ids:
+            continue
         identity = get_panel_xray_identity(id, panel_id) if panel_id is not None else str(id)
         proto_users.append(
             create_user(
@@ -206,7 +215,10 @@ async def core_users(
                 ProxyInbound.tag.in_(inbound_tags) if inbound_tags else True,
             ),
         )
-        .outerjoin(OCUserMapping, User.id == OCUserMapping.user_id)
+        .outerjoin(
+            OCUserMapping,
+            and_(User.id == OCUserMapping.user_id, oc_user_mapping_runtime_active_criteria()),
+        )
         # Exclude users whose admin role blocks user sync for the admin's current status.
         .outerjoin(Admin, Admin.id == User.admin_id)
         .outerjoin(AdminRole, AdminRole.id == Admin.role_id)
@@ -260,9 +272,14 @@ async def serialize_users_for_node(
     panel_mappings = {}
     if session is not None:
         user_ids = [u.id for u in users]
-        rows = (await session.execute(
-            select(OCUserMapping.user_id, OCUserMapping.panel_id).where(OCUserMapping.user_id.in_(user_ids))
-        )).all()
+        rows = (
+            await session.execute(
+                select(OCUserMapping.user_id, OCUserMapping.panel_id).where(
+                    OCUserMapping.user_id.in_(user_ids),
+                    oc_user_mapping_runtime_active_criteria(),
+                )
+            )
+        ).all()
         for r in rows:
             panel_mappings.setdefault(r.user_id, []).append(r.panel_id)
 

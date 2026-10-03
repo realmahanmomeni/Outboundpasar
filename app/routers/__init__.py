@@ -20,6 +20,7 @@ from . import (
     customer_auth,
     panel,
     integration,
+    user_panel_binding,
 )
 
 api_router = APIRouter()
@@ -44,6 +45,7 @@ routers = [
     customer_auth.router,
     panel.router,
     integration.router,
+    user_panel_binding.router,
 ]
 
 for router in routers:

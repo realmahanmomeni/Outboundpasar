@@ -26,8 +26,10 @@ async def test_bucket_inbounds():
 
 async def test_serialize_user_for_node():
     user_settings = {"shadowsocks": {"password": "test"}}
-    proto_users = _serialize_user_for_node(123, user_settings, ["native1", "oc_92_5"])
-    
+    proto_users = _serialize_user_for_node(
+        123, user_settings, ["native1", "oc_92_5"], active_panel_ids=[92]
+    )
+
     assert len(proto_users) == 2
     
     # Check native
@@ -38,11 +40,17 @@ async def test_serialize_user_for_node():
     panel = next(pu for pu in proto_users if pu.email == "123_p92")
     assert panel.inbounds == ["oc_92_5"]
 
-    # Check empty active panels
-    proto_users = _serialize_user_for_node(123, user_settings, ["native1"], active_panel_ids=[92])
+    # OC panel routes require a runtime-active mapping; without one only native identity is emitted.
+    proto_users = _serialize_user_for_node(123, user_settings, ["native1", "oc_92_5"])
+    assert len(proto_users) == 1
+    assert proto_users[0].email == "123"
+
+    proto_users = _serialize_user_for_node(
+        123, user_settings, ["native1", "oc_92_5"], active_panel_ids=[92]
+    )
     assert len(proto_users) == 2
     panel = next(pu for pu in proto_users if pu.email == "123_p92")
-    assert panel.inbounds == [] # Empty inbounds explicitly generated for removed panels
+    assert panel.inbounds == ["oc_92_5"]
 
 async def test_enqueue_oc_user_sync(db, test_admin):
     # Create integration

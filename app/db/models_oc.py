@@ -148,6 +148,32 @@ class OCUserMapping(Base, CreatedAtUTCMixin):
     panel: Mapped[OCPanel] = relationship(back_populates="user_mappings", init=False)
 
 
+class UserPanelBindingSource(str, Enum):
+    explicit = "explicit"
+    group_derived = "group_derived"
+
+
+class UserPanelBinding(Base, CreatedAtUTCMixin):
+    __tablename__ = "user_panel_bindings"
+    __table_args__ = (UniqueConstraint("user_id", "oc_panel_id"),)
+
+    tenant_id: Mapped[int] = fk_id_column("tenants.id", ondelete="CASCADE")
+    user_id: Mapped[int] = fk_id_column("users.id", ondelete="CASCADE")
+    oc_panel_id: Mapped[int] = fk_id_column("oc_panels.id", ondelete="CASCADE")
+    enabled: Mapped[bool] = mapped_column(default=True)
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=UserPanelBindingSource.explicit.value
+    )
+    desired_config_ids: Mapped[list[str] | None] = mapped_column(JSON(none_as_null=True), nullable=True, default=None)
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
+    )
+
+    user: Mapped[User] = relationship(init=False)
+    panel: Mapped[OCPanel] = relationship(init=False)
+    tenant: Mapped[Tenant] = relationship(init=False)
+
+
 class OCSyncState(Base, CreatedAtUTCMixin):
     __tablename__ = "oc_sync_states"
     

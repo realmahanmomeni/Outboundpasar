@@ -173,9 +173,16 @@ async def remove_users(users: list[User]) -> None:
     panel_mappings = {}
     if session is not None:
         user_ids = [u.id for u in users]
-        rows = (await session.execute(
-            select(OCUserMapping.user_id, OCUserMapping.panel_id).where(OCUserMapping.user_id.in_(user_ids))
-        )).all()
+        from app.services.oc_user_mapping_state import oc_user_mapping_runtime_active_criteria
+
+        rows = (
+            await session.execute(
+                select(OCUserMapping.user_id, OCUserMapping.panel_id).where(
+                    OCUserMapping.user_id.in_(user_ids),
+                    oc_user_mapping_runtime_active_criteria(),
+                )
+            )
+        ).all()
         for r in rows:
             panel_mappings.setdefault(r.user_id, []).append(r.panel_id)
 

@@ -433,9 +433,16 @@ class UserOperation(BaseOperation):
         
         session = async_object_session(db_user)
         if session is not None:
-            user.active_panel_ids = (await session.execute(
-                select(OCUserMapping.panel_id).where(OCUserMapping.user_id == db_user.id)
-            )).scalars().all()
+            from app.services.oc_user_mapping_state import oc_user_mapping_runtime_active_criteria
+
+            user.active_panel_ids = (
+                await session.execute(
+                    select(OCUserMapping.panel_id).where(
+                        OCUserMapping.user_id == db_user.id,
+                        oc_user_mapping_runtime_active_criteria(),
+                    )
+                )
+            ).scalars().all()
             
         if include_subscription_url:
             user.subscription_url = await self.generate_subscription_url(user)
