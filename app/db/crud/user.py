@@ -207,6 +207,7 @@ async def get_user(
     load_lifetime_used_traffic: bool = False,
     admin_id: int | None = None,
     tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> User | None:
     """
     Retrieves a user by username.
@@ -233,6 +234,8 @@ async def get_user(
         stmt = stmt.where(User.admin_id == admin_id)
     if tenant_id is not None:
         stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
 
     return (await db.execute(stmt)).unique().scalar_one_or_none()
 
@@ -250,6 +253,7 @@ async def get_user_by_id(
     load_lifetime_used_traffic: bool = False,
     admin_id: int | None = None,
     tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> User | None:
     """
     Retrieves a user by user ID.
@@ -276,6 +280,8 @@ async def get_user_by_id(
         stmt = stmt.where(User.admin_id == admin_id)
     if tenant_id is not None:
         stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
 
     return (await db.execute(stmt)).unique().scalar_one_or_none()
 
@@ -405,6 +411,7 @@ async def get_users(
     load_usage_logs: bool = True,
     load_lifetime_used_traffic: bool = False,
     tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> list[User] | tuple[list[User], int]:
     """
     Retrieves users based on various filters.
@@ -417,6 +424,7 @@ async def get_users(
         load_usage_logs: Whether to materialize reset-history rows.
         load_lifetime_used_traffic: Whether to calculate lifetime usage with an aggregate.
         tenant_id: Scope users to a specific tenant.
+        workspace_id: Scope users to a specific workspace.
 
     Returns:
         List of users or tuple with (users, count) if return_with_count is True.
@@ -461,6 +469,9 @@ async def get_users(
 
     if tenant_id is not None:
         filters.append(Admin.tenant_id == tenant_id)
+
+    if workspace_id is not None:
+        filters.append(User.workspace_id == workspace_id)
 
     if query.owner or query.admin_ids:
         if query.owner:
@@ -541,6 +552,7 @@ async def get_users_simple(
     query: UserSimpleListQuery,
     admin: Admin | None = None,
     tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> tuple[list[tuple[int, str]], int]:
     """
     Retrieves lightweight user data with only id and username.
@@ -550,6 +562,7 @@ async def get_users_simple(
         query: Structured lightweight user list filters.
         admin: Admin filter (for scope-based authorization).
         tenant_id: Scope users to a specific tenant.
+        workspace_id: Scope users to a specific workspace.
 
     Returns:
         Tuple of (list of (id, username) tuples, total_count).
@@ -569,6 +582,9 @@ async def get_users_simple(
     if tenant_id is not None:
         stmt = stmt.join(User.admin)
         filters.append(Admin.tenant_id == tenant_id)
+
+    if workspace_id is not None:
+        filters.append(User.workspace_id == workspace_id)
 
     if filters:
         stmt = stmt.where(and_(*filters))
@@ -608,11 +624,14 @@ async def get_expired_users(
     query: ExpiredUsersQuery,
     admin_id: int | None = None,
     tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ):
     conditions = _cleanup_target_user_conditions(query.expired_after, query.expired_before, admin_id, query.target)
     stmt = select(User).where(*conditions)
     if tenant_id is not None:
         stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
 
     return (await db.execute(stmt)).unique().scalars().all()
 
@@ -658,12 +677,15 @@ async def remove_expired_users(
     target: Literal["expired", "limited", "on_hold", "disabled"] = "expired",
     dry_run: bool = False,
     tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> list[str]:
     conditions = _cleanup_target_user_conditions(expired_after, expired_before, admin_id, target)
 
     stmt = select(User.id, User.username).where(*conditions)
     if tenant_id is not None:
         stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
 
     rows = (await db.execute(stmt)).all()
     if not rows:
@@ -867,6 +889,12 @@ async def get_user_usages(
     return UserUsageStatsList(period=period, start=start, end=end, stats=stats)
 
 
+async def get_workspace_used_traffic_total(db: AsyncSession, workspace_id: int) -> int:
+    """Sum current used_traffic for all users in a workspace (dashboard bandwidth scope)."""
+    stmt = select(func.coalesce(func.sum(User.used_traffic), 0)).where(User.workspace_id == workspace_id)
+    return int((await db.execute(stmt)).scalar_one() or 0)
+
+
 async def get_users_count_by_admin(db: AsyncSession, admin_id: int | None) -> int:
     """
     Gets the total count of users belonging to a specific admin.
@@ -950,13 +978,22 @@ async def get_users_count(db: AsyncSession, status: UserStatus = None, admin_id:
 
 
 def _build_user_count_metrics_query(
-    statuses: list[UserStatus], online_since: datetime, admin_id: int | None = None
+    statuses: list[UserStatus],
+    online_since: datetime,
+    admin_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> Select:
     """Build one index-aware query for dashboard user counts."""
+    scope_filters = []
     if admin_id is not None:
+        scope_filters.append(User.admin_id == admin_id)
+    if workspace_id is not None:
+        scope_filters.append(User.workspace_id == workspace_id)
+
+    if admin_id is not None or workspace_id is not None:
         status_columns = [
             select(func.count(User.id))
-            .where(User.admin_id == admin_id, User.status == status)
+            .where(*scope_filters, User.status == status)
             .scalar_subquery()
             .label(status.value)
             for status in statuses
@@ -964,7 +1001,7 @@ def _build_user_count_metrics_query(
         online_column = (
             select(func.count(User.id))
             .where(
-                User.admin_id == admin_id,
+                *scope_filters,
                 User.online_at.isnot(None),
                 User.online_at >= online_since,
             )
@@ -985,13 +1022,16 @@ async def get_users_count_metrics(
     statuses: list[UserStatus],
     online_window: timedelta,
     admin_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> tuple[dict[str, int], int]:
     """Return per-status, total, and recent-online user counts in one SELECT.
 
     The ``total`` value includes only the requested statuses. Pass every
     ``UserStatus`` value when a complete user count is required.
     """
-    stmt = _build_user_count_metrics_query(statuses, datetime.now(UTC) - online_window, admin_id)
+    stmt = _build_user_count_metrics_query(
+        statuses, datetime.now(UTC) - online_window, admin_id, workspace_id=workspace_id
+    )
     row = (await db.execute(stmt)).one()
 
     status_counts = {status.value: int(getattr(row, status.value) or 0) for status in statuses}
@@ -1019,6 +1059,7 @@ async def create_user(
         sub_token=secrets.token_hex(16),
     )
     db_user.admin = admin
+    db_user.workspace_id = admin.workspace_id
     db_user.groups = groups
     db_user.expire = new_user.expire or None
     db_user.on_hold_timeout = new_user.on_hold_timeout or None
@@ -1060,6 +1101,7 @@ async def create_users_bulk(
             sub_token=secrets.token_hex(16),
         )
         db_user.admin = admin
+        db_user.workspace_id = admin.workspace_id
         db_user.groups = list(groups)
         db_user.expire = new_user.expire or None
         db_user.on_hold_timeout = new_user.on_hold_timeout or None
@@ -1148,6 +1190,8 @@ async def modify_user(
     modify: UserModify,
     *,
     groups: list[Group] | None = None,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
     commit: bool = True,
 ) -> User:
     """
@@ -1167,7 +1211,14 @@ async def modify_user(
     if modify.proxy_settings is not None:
         db_user.proxy_settings = modify.proxy_settings.dict()
     if modify.group_ids is not None:
-        db_user.groups = groups or await get_groups_by_ids(db, modify.group_ids, load_users=False, load_inbounds=True)
+        db_user.groups = groups or await get_groups_by_ids(
+            db,
+            modify.group_ids,
+            load_users=False,
+            load_inbounds=True,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
         await sync_user_allocations(db, db_user, accessible_tags=await tags_from_groups(db_user.groups))
 
     if modify.status is not None:
@@ -1510,6 +1561,7 @@ async def get_users_sub_update_list(
 def _subscription_update_from_clause(
     user_id: int | None = None,
     admin_id: int | None = None,
+    workspace_id: int | None = None,
 ):
     conditions = []
     if user_id is not None:
@@ -1519,6 +1571,8 @@ def _subscription_update_from_clause(
         from_clause = UserSubscriptionUpdate.__table__.join(User, UserSubscriptionUpdate.user_id == User.id)
         if admin_id:
             conditions.append(User.admin_id == admin_id)
+        if workspace_id is not None:
+            conditions.append(User.workspace_id == workspace_id)
     return from_clause, conditions
 
 
@@ -1529,9 +1583,12 @@ async def get_users_subscription_agent_counts(
     start: datetime | None = None,
     end: datetime | None = None,
     period: Period | None = None,
+    workspace_id: int | None = None,
 ) -> list[tuple[str, int]]:
     stmt = select(UserSubscriptionUpdate.user_agent, func.count().label("count"))
-    from_clause, conditions = _subscription_update_from_clause(user_id=user_id, admin_id=admin_id)
+    from_clause, conditions = _subscription_update_from_clause(
+        user_id=user_id, admin_id=admin_id, workspace_id=workspace_id
+    )
 
     if start is not None:
         start_utc = (
@@ -1558,12 +1615,15 @@ async def get_users_subscription_agent_stats(
     period: Period = Period.hour,
     user_id: int | None = None,
     admin_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> list[dict]:
     """Retrieve subscription update counts grouped by agent and period."""
     trunc_expr = _build_trunc_expression(db, period, UserSubscriptionUpdate.created_at, start)
     start_utc = get_complete_period_start_for_filter(start, period)
     end_utc = to_utc_for_filter(end)
-    from_clause, conditions = _subscription_update_from_clause(user_id=user_id, admin_id=admin_id)
+    from_clause, conditions = _subscription_update_from_clause(
+        user_id=user_id, admin_id=admin_id, workspace_id=workspace_id
+    )
     conditions.extend(
         [
             UserSubscriptionUpdate.created_at >= start_utc,
@@ -1649,6 +1709,7 @@ async def get_all_users_usages(
     period: Period = Period.hour,
     node_id: int | None = None,
     group_by_node: bool = False,
+    workspace_id: int | None = None,
 ) -> UserUsageStatsList:
     """
     Retrieves aggregated usage data for all users of an admin within a specified time range,
@@ -1680,6 +1741,8 @@ async def get_all_users_usages(
     ]
     if admins_filter:
         conditions.append(Admin.username.in_(admins_filter))
+    if workspace_id is not None:
+        conditions.append(User.workspace_id == workspace_id)
 
     if node_id is not None:
         conditions.append(NodeUserUsage.node_id == node_id)
@@ -1738,11 +1801,14 @@ async def get_user_count_metric_stats(
     metric: UserCountMetric = UserCountMetric.online,
     node_id: int | None = None,
     group_by_node: bool = False,
+    workspace_id: int | None = None,
 ) -> UserCountMetricStatsList:
     """Retrieves one distinct user count metric from node_user_usages."""
     validate_user_count_metric_scope(metric, node_id=node_id, group_by_node=group_by_node)
 
-    query_parts = _build_user_count_query_parts(db, admins, start, end, period, node_id)
+    query_parts = _build_user_count_query_parts(
+        db, admins, start, end, period, node_id, workspace_id=workspace_id
+    )
     count_expr = _build_user_count_metric_expression(metric).label("count")
     total_stmt = select(count_expr).select_from(query_parts["from_clause"]).where(and_(*query_parts["conditions"]))
 
@@ -1799,6 +1865,8 @@ def _build_user_count_query_parts(
     end: datetime,
     period: Period,
     node_id: int | None,
+    *,
+    workspace_id: int | None = None,
 ) -> dict:
     admins_filter = admins or None
     trunc_expr = _build_trunc_expression(db, period, NodeUserUsage.created_at, start)
@@ -1811,6 +1879,8 @@ def _build_user_count_query_parts(
 
     if admins_filter:
         conditions.append(Admin.username.in_(admins_filter))
+    if workspace_id is not None:
+        conditions.append(User.workspace_id == workspace_id)
 
     stats_key = node_id
     if node_id is not None:
@@ -1891,6 +1961,7 @@ async def set_owner(db: AsyncSession, db_user: User, admin: Admin) -> User:
     """
     old_admin = db_user.admin
     db_user.admin = admin
+    db_user.workspace_id = admin.workspace_id
 
     # Update admin traffic counters
     if old_admin and old_admin.id != admin.id:
@@ -1926,6 +1997,7 @@ async def bulk_set_owner(db: AsyncSession, users: list[User], admin: Admin) -> l
             admin_traffic_changes[old_admin.id] -= user.used_traffic
         total_traffic_to_add += user.used_traffic
         user.admin = admin
+        user.workspace_id = admin.workspace_id
 
     # Update old admins' traffic
     for admin_id, traffic_change in admin_traffic_changes.items():

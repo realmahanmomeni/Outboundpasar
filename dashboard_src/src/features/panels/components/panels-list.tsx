@@ -6,19 +6,36 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import PanelCard from './panel-card'
 import AddPanelWizardModal from '../dialogs/add-panel-wizard-modal'
 import UpdatePanelModal from '../dialogs/update-panel-modal'
-import { useGetPanels, type PanelItem } from '../service/panels-api'
+import DisconnectPanelDialog from '../dialogs/disconnect-panel-dialog'
+import { useGetPanels, deletePanel, type PanelItem } from '../service/panels-api'
+import { toast } from 'sonner'
 
 export default function PanelsList() {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [searchTerm, setSearchTerm] = useState('')
   const [isAddModalOpen, setIsAddModalOpen] = useState(false)
   const [selectedPanelForUpdate, setSelectedPanelForUpdate] = useState<PanelItem | null>(null)
+  const [selectedPanelForDisconnect, setSelectedPanelForDisconnect] = useState<PanelItem | null>(null)
 
   const { data: panels = [], isLoading, isError, error, refetch, isFetching } = useGetPanels()
+
+  const disconnectMut = useMutation({
+    mutationFn: (panelId: number) => deletePanel(panelId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/panels'] })
+      toast.success(t('panels.disconnectSuccess', { defaultValue: 'Panel disconnected from PasarGuard' }))
+      setSelectedPanelForDisconnect(null)
+    },
+    onError: (err: any) => {
+      toast.error(err?.message || t('panels.disconnectError', { defaultValue: 'Failed to disconnect panel' }))
+    },
+  })
 
   // Listen to openNodeDialog / openAddPanelDialog custom events
   useEffect(() => {
@@ -52,6 +69,10 @@ export default function PanelsList() {
 
   const handleUpdate = useCallback((panel: PanelItem) => {
     setSelectedPanelForUpdate(panel)
+  }, [])
+
+  const handleDisconnect = useCallback((panel: PanelItem) => {
+    setSelectedPanelForDisconnect(panel)
   }, [])
 
   return (
@@ -197,6 +218,7 @@ export default function PanelsList() {
               panel={panel}
               onManage={handleManage}
               onUpdate={handleUpdate}
+              onDisconnect={handleDisconnect}
             />
           ))}
         </div>
@@ -212,6 +234,18 @@ export default function PanelsList() {
         panel={selectedPanelForUpdate}
         isOpen={Boolean(selectedPanelForUpdate)}
         onOpenChange={open => !open && setSelectedPanelForUpdate(null)}
+      />
+
+      <DisconnectPanelDialog
+        panel={selectedPanelForDisconnect}
+        isOpen={Boolean(selectedPanelForDisconnect)}
+        isPending={disconnectMut.isPending}
+        onOpenChange={open => !open && !disconnectMut.isPending && setSelectedPanelForDisconnect(null)}
+        onConfirm={() => {
+          if (selectedPanelForDisconnect) {
+            disconnectMut.mutate(selectedPanelForDisconnect.id)
+          }
+        }}
       />
     </div>
   )

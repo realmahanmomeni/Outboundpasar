@@ -10,6 +10,7 @@ import {
   Settings2,
   User,
   ExternalLink,
+  Trash2,
 } from 'lucide-react'
 import type { PanelItem } from '../service/panels-api'
 
@@ -17,9 +18,10 @@ interface PanelCardProps {
   panel: PanelItem
   onManage: (panel: PanelItem) => void
   onUpdate: (panel: PanelItem) => void
+  onDisconnect: (panel: PanelItem) => void
 }
 
-export default function PanelCard({ panel, onManage, onUpdate }: PanelCardProps) {
+export default function PanelCard({ panel, onManage, onUpdate, onDisconnect }: PanelCardProps) {
   const { t } = useTranslation()
 
   const getStatusBadge = () => {
@@ -118,7 +120,17 @@ export default function PanelCard({ panel, onManage, onUpdate }: PanelCardProps)
         </CardContent>
       </div>
 
-      <CardFooter className="flex items-center justify-end gap-2 pt-0 border-t bg-muted/20 py-2.5">
+      <CardFooter className="flex items-center justify-between gap-2 pt-0 border-t bg-muted/20 py-2.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 gap-1.5 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
+          onClick={() => onDisconnect(panel)}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          <span>{t('panels.disconnect', { defaultValue: 'Disconnect' })}</span>
+        </Button>
+        <div className="flex items-center gap-2">
         <Button
           variant="outline"
           size="sm"
@@ -137,6 +149,7 @@ export default function PanelCard({ panel, onManage, onUpdate }: PanelCardProps)
           <Settings2 className="h-3.5 w-3.5" />
           <span>{t('panels.manage', { defaultValue: 'Manage' })}</span>
         </Button>
+        </div>
       </CardFooter>
     </Card>
   )

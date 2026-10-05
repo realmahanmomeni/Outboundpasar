@@ -9,11 +9,10 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
 import { Input } from '@/components/ui/input'
-import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Edit2, Check, X, ShieldAlert, Monitor } from 'lucide-react'
+import { Edit2, Check, X, Monitor } from 'lucide-react'
 import { useGetPanelHosts, updatePanelHost, PanelHostItem } from '../service/panels-api'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -22,36 +21,37 @@ export function PanelHostsList({ panelId }: { panelId: string | number }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const { data: hosts, isLoading, isError } = useGetPanelHosts(panelId)
-  
+
   const [editingId, setEditingId] = useState<number | null>(null)
-  const [editForm, setEditForm] = useState<{ display_name: string }>({
-    display_name: ''
-  })
+  const [editDisplayName, setEditDisplayName] = useState('')
 
   const updateMutation = useMutation({
-    mutationFn: ({ hostId, data }: { hostId: number, data: any }) => updatePanelHost(panelId, hostId, data),
+    mutationFn: ({ hostId, data }: { hostId: number; data: Record<string, unknown> }) =>
+      updatePanelHost(panelId, hostId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/panels', String(panelId), 'hosts'] })
+      queryClient.invalidateQueries({ queryKey: ['/api/panels', String(panelId)] })
+      queryClient.invalidateQueries({ queryKey: ['/api/group-host-options'] })
       setEditingId(null)
       toast.success(t('panels.hostUpdated', { defaultValue: 'Host updated successfully' }))
     },
-    onError: (err: any) => {
+    onError: (err: { message?: string }) => {
       toast.error(err?.message || 'Failed to update host')
-    }
+    },
   })
 
   const handleEdit = (host: PanelHostItem) => {
     setEditingId(host.id)
-    setEditForm({
-      display_name: host.display_name
-    })
+    setEditDisplayName(host.display_name || '')
   }
 
   const handleSave = (hostId: number) => {
-    const data: any = {
-      display_name: editForm.display_name
-    }
-    updateMutation.mutate({ hostId, data })
+    updateMutation.mutate({
+      hostId,
+      data: {
+        display_name: editDisplayName.trim(),
+      },
+    })
   }
 
   const handleToggleStatus = (hostId: number, currentDisabled: boolean) => {
@@ -59,11 +59,13 @@ export function PanelHostsList({ panelId }: { panelId: string | number }) {
   }
 
   if (isLoading) {
-    return <div className="space-y-4">
-      <Skeleton className="h-10 w-full" />
-      <Skeleton className="h-10 w-full" />
-      <Skeleton className="h-10 w-full" />
-    </div>
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+      </div>
+    )
   }
 
   if (isError) {
@@ -74,68 +76,41 @@ export function PanelHostsList({ panelId }: { panelId: string | number }) {
     return (
       <div className="flex flex-col items-center justify-center p-8 text-center text-muted-foreground border rounded-lg bg-muted/20">
         <Monitor className="h-10 w-10 mb-4 opacity-50" />
-        <p>No hosts imported yet. Run synchronization to import.</p>
+        <p>No destination hosts yet. Run panel sync to import subscription configs.</p>
       </div>
     )
   }
 
   return (
     <div className="rounded-md border">
+      <p className="text-xs text-muted-foreground px-4 py-2 border-b">
+        One row per destination subscription config. Edit the host display name only; connection settings come from the
+        subscription.
+      </p>
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Display Name (Local)</TableHead>
-            <TableHead>Source Config Name</TableHead>
-            <TableHead>Group</TableHead>
-            <TableHead>Address</TableHead>
-            <TableHead>Multiplier</TableHead>
+            <TableHead>Host name</TableHead>
             <TableHead>Status</TableHead>
             <TableHead className="text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {hosts.map((host) => {
+          {hosts.map(host => {
             const isEditing = editingId === host.id
-            
+
             return (
               <TableRow key={host.id}>
-                <TableCell>
+                <TableCell className="max-w-[320px]">
                   {isEditing ? (
                     <Input
-                      value={editForm.display_name}
-                      onChange={(e) => setEditForm({ ...editForm, display_name: e.target.value })}
-                      className="h-8 max-w-[200px]"
+                      value={editDisplayName}
+                      onChange={e => setEditDisplayName(e.target.value)}
+                      className="h-8 text-sm"
                     />
                   ) : (
-                    <span className="font-medium">{host.display_name}</span>
+                    <span className="font-medium text-sm">{host.display_name}</span>
                   )}
-                </TableCell>
-                <TableCell>
-                  <span className="text-xs text-muted-foreground flex items-center gap-1.5">
-                    <ShieldAlert className="h-3 w-3" />
-                    {host.source_config_name}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  {host.group_name ? (
-                    <Badge variant="outline" className="text-xs font-normal bg-muted/30">
-                      {host.group_name}
-                    </Badge>
-                  ) : (
-                    <span className="text-muted-foreground text-xs">Global</span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <div className="flex flex-col gap-1">
-                    {host.address?.map((addr, idx) => (
-                      <span key={idx} className="font-mono text-xs text-muted-foreground">
-                        {addr}
-                      </span>
-                    ))}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  {host.multiplier !== null ? `${host.multiplier}x` : 'N/A'}
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2">
@@ -152,7 +127,12 @@ export function PanelHostsList({ panelId }: { panelId: string | number }) {
                 <TableCell className="text-right">
                   {isEditing ? (
                     <div className="flex justify-end gap-2">
-                      <Button size="icon" variant="ghost" className="h-8 w-8 text-green-500" onClick={() => handleSave(host.id)}>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8 text-green-500"
+                        onClick={() => handleSave(host.id)}
+                      >
                         <Check className="h-4 w-4" />
                       </Button>
                       <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => setEditingId(null)}>

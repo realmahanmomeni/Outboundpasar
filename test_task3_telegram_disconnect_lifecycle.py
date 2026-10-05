@@ -24,6 +24,7 @@ from app.db.models_oc import (
 )
 from app.jobs.process_oc_sync import process_oc_sync
 from app.node.oc_sync import enqueue_oc_user_sync, enqueue_tenant_panel_user_deletions
+from app.models.admin import AdminDetails, AdminRoleData
 from app.services.oc_telegram_connection import (
     get_active_connection,
     require_active_telegram_for_tenant_admin,
@@ -72,12 +73,17 @@ async def _cleanup_fixture_ids(
 
 @pytest.mark.asyncio
 async def test_require_active_telegram_blocks_disconnected_tenant_admin():
-    admin = _AdminStub(tenant_id=1)
+    admin = AdminDetails(
+        id=1,
+        username="tenant-admin",
+        tenant_id=1,
+        role=AdminRoleData(id=2, name="administrator", is_owner=False),
+    )
     db = AsyncMock()
     with patch(
-        "app.services.oc_telegram_connection.get_active_connection",
+        "app.services.oc_actor_connection.require_oc_telegram_connection_for_actor",
         new_callable=AsyncMock,
-        return_value=None,
+        side_effect=HTTPException(status_code=403, detail="No active Telegram connection"),
     ):
         with pytest.raises(HTTPException) as exc:
             await require_active_telegram_for_tenant_admin(db, admin, is_owner=False)
@@ -201,7 +207,16 @@ async def test_revoke_enqueues_delete_jobs_for_tenant_mappings():
                 )
             ).scalars().all()
             assert len(jobs_a) == 1
-            assert jobs_a[0].payload == {"external_user_id": ext_a}
+            # Delete payload also snapshots who may authorise the delete on OC after the
+            # OCPanel row is gone (tenant/account) and the revoked connection it must use.
+            assert jobs_a[0].payload == {
+                "external_user_id": ext_a,
+                "source_panel_id": "sub-a",
+                "integration_id": intg.id,
+                "tenant_id": tenant_a.id,
+                "oc_account_id": 100,
+                "connection_id": conn_a.id,
+            }
             fixture_ids["sync_job_ids"].append(jobs_a[0].id)
 
             jobs_b = (
@@ -487,7 +502,12 @@ async def test_enqueue_tenant_deletions_idempotent_pending_delete():
                 )
             ).scalars().all()
             assert len(jobs) == 1
-            assert jobs[0].payload == {"external_user_id": ext}
+            assert jobs[0].payload == {
+                "external_user_id": ext,
+                "source_panel_id": "sub-i",
+                "integration_id": intg.id,
+                "tenant_id": tenant.id,
+            }
             fixture_ids["sync_job_ids"].append(jobs[0].id)
     finally:
         async with GetDB() as db:

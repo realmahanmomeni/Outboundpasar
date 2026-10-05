@@ -52,7 +52,7 @@ async def test_serialize_user_for_node():
     panel = next(pu for pu in proto_users if pu.email == "123_p92")
     assert panel.inbounds == ["oc_92_5"]
 
-async def test_enqueue_oc_user_sync(db, test_admin):
+async def enqueue_oc_user_sync_scenario(db, test_admin):
     # Create integration
     integration = OCIntegration(base_url="http://test", api_token_encrypted="encrypted_token", token_preview="test")
     db.add(integration)
@@ -130,7 +130,7 @@ async def test_enqueue_oc_user_sync(db, test_admin):
     
     return integration, panel, virtual_inbound, panel_group, panel_config, native_inbound, group, user
 
-async def test_enqueue_oc_user_sync_status_disabled(db, test_admin):
+async def enqueue_oc_user_sync_status_disabled_scenario(db, test_admin):
     import uuid
     # Test that a disabled user triggers a DELETE sync state
     integration = OCIntegration(base_url="http://test2", api_token_encrypted="encrypted", token_preview="test2")
@@ -207,11 +207,11 @@ async def run_tests():
     
     try:
         async with GetDB() as db:
-            e1 = await test_enqueue_oc_user_sync(db, test_admin)
+            e1 = await enqueue_oc_user_sync_scenario(db, test_admin)
             entities_to_delete.extend(e1)
             print("   [x] enqueue_oc_user_sync mapping lifecycle OK")
 
-            e2 = await test_enqueue_oc_user_sync_status_disabled(db, test_admin)
+            e2 = await enqueue_oc_user_sync_status_disabled_scenario(db, test_admin)
             entities_to_delete.extend(e2)
             print("   [x] enqueue_oc_user_sync_status_disabled mapping lifecycle OK")
             

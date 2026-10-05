@@ -40,9 +40,9 @@ async def create_client_template(
 async def get_client_template(
     template_id: int,
     db: AsyncSession = Depends(get_db),
-    _: AdminDetails = Depends(require_permission("client_templates", "read")),
+    admin: AdminDetails = Depends(require_permission("client_templates", "read")),
 ):
-    return await client_template_operator.get_validated_client_template(db, template_id)
+    return await client_template_operator._get_template_with_access(db, template_id, admin)
 
 
 @router.put("/{template_id}", response_model=ClientTemplateResponse)
@@ -69,18 +69,18 @@ async def remove_client_template(
 async def get_client_templates(
     query=Depends(get_client_template_list_query),
     db: AsyncSession = Depends(get_db),
-    _: AdminDetails = Depends(require_permission("client_templates", "read")),
+    admin: AdminDetails = Depends(require_permission("client_templates", "read")),
 ):
-    return await client_template_operator.get_client_templates(db, query=query)
+    return await client_template_operator.get_client_templates(db, query=query, admin=admin)
 
 
 @router.get("s/simple", response_model=ClientTemplatesSimpleResponse)
 async def get_client_templates_simple(
     query=Depends(get_client_template_simple_list_query),
     db: AsyncSession = Depends(get_db),
-    _: AdminDetails = Depends(require_permission("client_templates", "read_simple")),
+    admin: AdminDetails = Depends(require_permission("client_templates", "read_simple")),
 ):
-    return await client_template_operator.get_client_templates_simple(db=db, query=query)
+    return await client_template_operator.get_client_templates_simple(db=db, query=query, admin=admin)
 
 
 @router.post(

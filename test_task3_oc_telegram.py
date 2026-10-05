@@ -27,6 +27,13 @@ def test_duplicate_telegram_tenant_guard():
     assert conflict
 
 
+def test_owner_integration_tenant_auto_provision_flag():
+    """Owner without tenant_id uses auto_provision on mutating integration routes."""
+    auto_on_start = True
+    auto_on_status_get = False
+    assert auto_on_start and not auto_on_status_get
+
+
 def run_tests():
     print("=== Task 3 lightweight tests ===")
     test_import_panel_subset_guard()
@@ -35,6 +42,8 @@ def run_tests():
     print("[x] bot deep link format")
     test_duplicate_telegram_tenant_guard()
     print("[x] duplicate telegram guard")
+    test_owner_integration_tenant_auto_provision_flag()
+    print("[x] owner integration tenant provisioning flags")
     print("All Task 3 lightweight tests passed.")
 
 

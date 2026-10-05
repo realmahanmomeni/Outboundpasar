@@ -85,7 +85,13 @@ async def _prepare_subscription_inbound_data(
     inbound_config = await core_manager.get_inbound_by_tag(host.inbound_tag)
     if not inbound_config:
         source_payload = oc_config.source_payload if (oc_config and isinstance(oc_config.source_payload, dict)) else {}
-        protocol = oc_config.protocol if (oc_config and oc_config.protocol) else (source_payload.get("protocol") or source_payload.get("type"))
+        sub_parsed = source_payload.get("subscription_parsed") if isinstance(source_payload.get("subscription_parsed"), dict) else {}
+        protocol = (
+            sub_parsed.get("protocol")
+            or (oc_config.protocol if oc_config else None)
+            or source_payload.get("protocol")
+            or source_payload.get("type")
+        )
         if not protocol and oc_config and oc_config.source_name:
             name_lower = oc_config.source_name.lower()
             for p in ("vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria"):
@@ -99,8 +105,14 @@ async def _prepare_subscription_inbound_data(
                     break
         protocol = protocol or "vless"
 
-        network = (oc_config.network if (oc_config and oc_config.network) else (source_payload.get("network") or source_payload.get("transport"))) or "tcp"
-        inbound_port = oc_config.port if (oc_config and oc_config.port) else source_payload.get("port")
+        network = (
+            sub_parsed.get("network")
+            or (oc_config.network if (oc_config and oc_config.network) else None)
+            or source_payload.get("network")
+            or source_payload.get("transport")
+            or "tcp"
+        )
+        inbound_port = sub_parsed.get("port") or (oc_config.port if (oc_config and oc_config.port) else source_payload.get("port"))
         inbound_path = host.path or source_payload.get("path") or ""
         inbound_tls = source_payload.get("tls") or ("tls" if (host.port or inbound_port) == 443 else "none")
 
@@ -183,6 +195,10 @@ async def _prepare_subscription_inbound_data(
     sni_list = _string_list(host.sni) if host.sni else _string_list(inbound_config.get("sni", []))
     host_list = _string_list(host.host) if host.host else _string_list(inbound_config.get("host", []))
     address_list = _string_list(host.address) if host.address else []
+    if not address_list and oc_config and isinstance(oc_config.source_payload, dict):
+        sp = oc_config.source_payload.get("subscription_parsed") or {}
+        if isinstance(sp, dict) and sp.get("address"):
+            address_list = [str(sp["address"])]
 
     # Get Reality fields from inbound if applicable
     reality_pbk = inbound_config.get("pbk", "")

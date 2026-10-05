@@ -91,6 +91,26 @@ class Tenant(Base, CreatedAtUTCMixin):
     admins: Mapped[list["Admin"]] = relationship(back_populates="tenant", init=False, default_factory=list)
 
 
+class Workspace(Base, CreatedAtUTCMixin):
+    """Private data boundary for one tenant Administrator and their Operators."""
+
+    __tablename__ = "workspaces"
+    __table_args__ = (UniqueConstraint("owner_admin_id", name="uq_workspaces_owner_admin_id"),)
+
+    tenant_id: Mapped[int] = fk_id_column("tenants.id", ondelete="CASCADE")
+    owner_admin_id: Mapped[int] = fk_id_column("admins.id", ondelete="RESTRICT")
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
+    )
+
+    tenant: Mapped[Tenant] = relationship(init=False, lazy="select")
+    owner_admin: Mapped["Admin"] = relationship(
+        foreign_keys=[owner_admin_id],
+        init=False,
+        lazy="select",
+    )
+
+
 class Admin(Base, CreatedAtUTCMixin):
     __tablename__ = "admins"
     username: Mapped[str] = mapped_column(String(34), unique=True, index=True)
@@ -108,6 +128,12 @@ class Admin(Base, CreatedAtUTCMixin):
 
     tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
     tenant: Mapped[Tenant | None] = relationship(back_populates="admins", init=False, lazy="select")
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
 
     password_reset_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
     telegram_id: Mapped[int | None] = mapped_column(BigInteger, default=None)
@@ -255,6 +281,12 @@ class User(Base, CreatedAtUTCMixin):
     )
     _expire: Mapped[dt | None] = mapped_column("expire", DateTime(timezone=True), default=None, init=False)
     admin_id: Mapped[int | None] = fk_id_column("admins.id", default=None)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
     sub_revoked_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
     note: Mapped[str | None] = mapped_column(String(500), default=None)
     online_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
@@ -495,7 +527,8 @@ class UserStatusCreate(str, Enum):
 
 class UserTemplate(Base, IdMixin):
     __tablename__ = "user_templates"
-    name: Mapped[str] = mapped_column(String(64), unique=True)
+    __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_user_templates_workspace_id_name"),)
+    name: Mapped[str] = mapped_column(String(64))
     username_prefix: Mapped[str | None] = mapped_column(String(20))
     username_suffix: Mapped[str | None] = mapped_column(String(20))
     extra_settings: Mapped[dict | None] = mapped_column(JSON(True))
@@ -515,6 +548,14 @@ class UserTemplate(Base, IdMixin):
         server_default="no_reset",
     )
     is_disabled: Mapped[bool] = mapped_column(server_default="0", default=False)
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(init=False)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
 
     @property
     def group_ids(self):
@@ -608,6 +649,12 @@ class ProxyHost(Base, IdMixin):
         server_default=ProxyHostSecurity.none.name,
     )
     is_disabled: Mapped[bool | None] = mapped_column(default=False)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
     fragment_settings: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), default=None)
     noise_settings: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), default=None)
     random_user_agent: Mapped[bool] = mapped_column(default=False, server_default="0")
@@ -839,6 +886,12 @@ class Group(Base, IdMixin):
     is_disabled: Mapped[bool] = mapped_column(server_default="0", default=False)
     tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
     tenant: Mapped[Tenant | None] = relationship(init=False)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
 
     @hybrid_property
     def inbound_ids(self) -> list[int]:
@@ -918,7 +971,7 @@ class WireGuardSubnet(Base, IdMixin):
 class ClientTemplate(Base, IdMixin):
     __tablename__ = "client_templates"
     __table_args__ = (
-        UniqueConstraint("template_type", "name"),
+        UniqueConstraint("workspace_id", "template_type", "name", name="uq_client_templates_workspace_type_name"),
         Index("ix_client_templates_template_type", "template_type"),
     )
     name: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -926,6 +979,14 @@ class ClientTemplate(Base, IdMixin):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     is_default: Mapped[bool] = mapped_column(default=False, server_default="0")
     is_system: Mapped[bool] = mapped_column(default=False, server_default="0")
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(init=False)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
 
 
 class NodeStat(Base, CreatedAtUTCMixin):
@@ -949,6 +1010,14 @@ class Settings(Base, IdMixin):
     subscription: Mapped[dict] = mapped_column(JSON())
     hwid: Mapped[dict] = mapped_column(JSON())
     general: Mapped[dict] = mapped_column(JSON())
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(init=False)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="CASCADE", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
 
 
 class AdminRole(Base, CreatedAtUTCMixin):

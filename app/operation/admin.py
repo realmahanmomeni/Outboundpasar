@@ -14,6 +14,7 @@ from app.db.crud.admin import (
     get_admins,
     get_admins_count,
     get_admins_simple,
+    load_admin_attrs,
     remove_admin,
     remove_admins,
     reset_admin_usage,
@@ -43,12 +44,25 @@ from app.operation import BaseOperation
 from app.operation.admin_sync import admin_users_sync_blocked, sync_admin_users_for_block_transition
 from app.operation.permissions import PermissionDenied, enforce_permission
 from app.operation.user import UserOperation
+from app.db.crud.workspace import assign_workspace_for_new_admin, ensure_administrator_has_workspace
+from app.services.tenant_admin_scope import (
+    BUILTIN_ADMINISTRATOR_ROLE_ID,
+    BUILTIN_OPERATOR_ROLE_ID,
+    assert_tenant_admin_may_assign_role,
+    resolve_admin_tenant_id,
+)
 from app.utils.logger import get_logger
 
 logger = get_logger("admin-operation")
 
 
 class AdminOperation(BaseOperation):
+    @staticmethod
+    async def _caller_tenant_id(db: AsyncSession, admin: AdminDetails) -> int | None:
+        if admin.is_owner:
+            return None
+        return await resolve_admin_tenant_id(db, admin, False)
+
     @staticmethod
     def _is_owner_admin(db_admin: Admin) -> bool:
         return db_admin.role_id == 1
@@ -64,6 +78,8 @@ class AdminOperation(BaseOperation):
                 message="Owner role cannot be assigned via this endpoint. Use the setup flow.", code=403
             )
 
+        await assert_tenant_admin_may_assign_role(db, admin, new_admin.role_id)
+
         if new_admin.telegram_id is not None:
             existing_admins = await find_admins_by_telegram_id(db, new_admin.telegram_id, limit=1)
             if existing_admins:
@@ -74,10 +90,31 @@ class AdminOperation(BaseOperation):
         except IntegrityError:
             await self.raise_error(message="Admin already exists", code=409, db=db)
 
-        if not admin.is_owner:
-            db_admin.tenant_id = admin.tenant_id
-            await db.commit()
-            await db.refresh(db_admin)
+        if admin.is_owner:
+            if new_admin.role_id in (BUILTIN_ADMINISTRATOR_ROLE_ID, BUILTIN_OPERATOR_ROLE_ID):
+                if new_admin.tenant_id is None:
+                    await self.raise_error(
+                        message="tenant_id is required when creating tenant administrators or operators.",
+                        code=400,
+                        db=db,
+                    )
+                db_admin.tenant_id = new_admin.tenant_id
+        else:
+            creator_tenant_id = await resolve_admin_tenant_id(db, admin, False)
+            if creator_tenant_id is None:
+                await self.raise_error(message="Tenant scope required", code=403, db=db)
+            db_admin.tenant_id = creator_tenant_id
+
+        await load_admin_attrs(db_admin, load_role=True)
+        await assign_workspace_for_new_admin(db, db_admin, creator=admin)
+        if new_admin.role_id == BUILTIN_OPERATOR_ROLE_ID and db_admin.workspace_id is None:
+            await self.raise_error(
+                message="Operator workspace could not be determined; create operators from a tenant administrator.",
+                code=400,
+                db=db,
+            )
+        await db.commit()
+        await db.refresh(db_admin)
 
         logger.info(f'New admin "{db_admin.username}" with id "{db_admin.id}" added by admin "{admin.username}"')
         new_admin_details = build_admin_details(db_admin, include_loaded_metrics=True)
@@ -112,6 +149,9 @@ class AdminOperation(BaseOperation):
                 message="Owner role cannot be assigned via this endpoint. Use the setup flow.", code=403
             )
 
+        if modified_admin.role_id is not None:
+            await assert_tenant_admin_may_assign_role(db, current_admin, modified_admin.role_id)
+
         if is_owner_target and modified_admin.role_id is not None and modified_admin.role_id != db_admin.role_id:
             await self.raise_error(
                 message="Owner role cannot be changed via this endpoint. Use the setup flow.", code=403
@@ -142,6 +182,10 @@ class AdminOperation(BaseOperation):
 
         old_users_sync_blocked = await admin_users_sync_blocked(db_admin)
         db_admin = await update_admin(db, db_admin, modified_admin)
+
+        if modified_admin.role_id is not None:
+            await load_admin_attrs(db_admin, load_role=True)
+            await ensure_administrator_has_workspace(db, db_admin)
 
         # Sync users to nodes if this admin's role/status starts or stops blocking user sync.
         await sync_admin_users_for_block_transition(db, db_admin, old_users_sync_blocked)
@@ -190,13 +234,20 @@ class AdminOperation(BaseOperation):
 
     async def get_admins(self, db: AsyncSession, query: AdminListQuery, admin: AdminDetails) -> AdminsResponse:
         """Retrieve a list of admins with optional filters and pagination."""
+        caller_tenant_id = await self._caller_tenant_id(db, admin)
+        workspace_id = None
+        if not admin.is_owner:
+            from app.services.workspace_scope import resolve_admin_workspace_id
+
+            workspace_id = await resolve_admin_workspace_id(db, admin, False)
         admins, total, active, disabled, limited = await get_admins(
             db,
             query,
             return_with_count=True,
             compact=True,
             include_owner=admin.is_owner,
-            tenant_id=admin.tenant_id if not admin.is_owner else None,
+            tenant_id=caller_tenant_id,
+            workspace_id=workspace_id,
         )
         return AdminsResponse(admins=admins, total=total, active=active, disabled=disabled, limited=limited)
 
@@ -204,11 +255,18 @@ class AdminOperation(BaseOperation):
         self, db: AsyncSession, query: AdminSimpleListQuery, admin: AdminDetails
     ) -> AdminsSimpleResponse:
         """Get lightweight admin list with only id and username."""
+        caller_tenant_id = await self._caller_tenant_id(db, admin)
+        workspace_id = None
+        if not admin.is_owner:
+            from app.services.workspace_scope import resolve_admin_workspace_id
+
+            workspace_id = await resolve_admin_workspace_id(db, admin, False)
         rows, total = await get_admins_simple(
             db=db,
             query=query,
             include_owner=admin.is_owner,
-            tenant_id=admin.tenant_id if not admin.is_owner else None,
+            tenant_id=caller_tenant_id,
+            workspace_id=workspace_id,
         )
         admins = [AdminSimple(id=row[0], username=row[1]) for row in rows]
         return AdminsSimpleResponse(admins=admins, total=total)
@@ -371,6 +429,12 @@ class AdminOperation(BaseOperation):
             node_id = None
             group_by_node = False
 
+        workspace_id = None
+        if not admin.is_owner:
+            from app.services.workspace_scope import resolve_admin_workspace_id
+
+            workspace_id = await resolve_admin_workspace_id(db, admin, False)
+
         return await get_admin_usages(
             db=db,
             admin_id=db_admin.id,
@@ -379,6 +443,7 @@ class AdminOperation(BaseOperation):
             period=period,
             node_id=node_id,
             group_by_node=group_by_node,
+            workspace_id=workspace_id,
         )
 
     async def get_admin_usage_by_id(
@@ -428,11 +493,18 @@ class AdminOperation(BaseOperation):
 
         ids_list = list(ids)
 
+        caller_tenant_id = await self._caller_tenant_id(db, current_admin)
+        workspace_id = None
+        if not current_admin.is_owner:
+            from app.services.workspace_scope import resolve_admin_workspace_id
+
+            workspace_id = await resolve_admin_workspace_id(db, current_admin, False)
         admins = await get_admins(
             db,
             AdminListQuery(ids=ids_list, limit=len(ids_list)),
             include_owner=current_admin.is_owner,
-            tenant_id=current_admin.tenant_id if not current_admin.is_owner else None,
+            tenant_id=caller_tenant_id,
+            workspace_id=workspace_id,
         )
 
         # Verify every requested ID was found (mirrors the 404 in get_validated_admin_by_id)

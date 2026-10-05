@@ -15,7 +15,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.db.compiles_types import SqliteCompatibleBigInteger
-from app.db.models import CreatedAtUTCMixin, Group, ProxyInbound, Tenant, User, fk_id_column
+from app.db.models import CreatedAtUTCMixin, Group, ProxyInbound, Tenant, User, Workspace, fk_id_column
 
 
 class TenantTelegramConnectionStatus(str, Enum):
@@ -29,6 +29,8 @@ class TenantTelegramConnection(Base, CreatedAtUTCMixin):
 
     id: Mapped[int] = mapped_column(SqliteCompatibleBigInteger, primary_key=True, init=False, autoincrement=True)
     tenant_id: Mapped[int] = fk_id_column("tenants.id", ondelete="CASCADE")
+    # NULL = platform owner integration binding; non-null = tenant admin/operator's own OC connection.
+    binding_admin_id: Mapped[int | None] = fk_id_column("admins.id", ondelete="SET NULL", default=None)
     telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, default=None)
     oc_account_id: Mapped[int | None] = mapped_column(nullable=True, default=None)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=TenantTelegramConnectionStatus.pending.value)
@@ -37,6 +39,12 @@ class TenantTelegramConnection(Base, CreatedAtUTCMixin):
     connected_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)
     verified_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)
     revoked_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)
+    # Per-connection credential issued by Outbound Center on verify (Fernet-encrypted).
+    # Scopes every panel/user call to this connection's OC account. Kept after a local
+    # revoke so queued user deletions can still be authorised on OC.
+    oc_connection_token_encrypted: Mapped[str | None] = mapped_column(String(2048), nullable=True, default=None)
+    # Telegram deep link returned by OC when the intent was registered.
+    pending_bot_url: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)
     updated_at: Mapped[dt] = mapped_column(
         DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
     )
@@ -74,11 +82,16 @@ class OCPanel(Base, CreatedAtUTCMixin):
         DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
     )
     tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
     oc_account_id: Mapped[int | None] = mapped_column(nullable=True, default=None)
 
     integration: Mapped[OCIntegration] = relationship(back_populates="panels", init=False)
+    workspace: Mapped[Workspace | None] = relationship(init=False)
     groups: Mapped[list["OCPanelGroup"]] = relationship(back_populates="panel", init=False, cascade="all, delete-orphan")
     configs: Mapped[list["OCPanelConfig"]] = relationship(back_populates="panel", init=False, cascade="all, delete-orphan")
+    destination_hosts: Mapped[list["OCPanelDestinationHost"]] = relationship(
+        back_populates="panel", init=False, cascade="all, delete-orphan"
+    )
     user_mappings: Mapped[list["OCUserMapping"]] = relationship(back_populates="panel", init=False, cascade="all, delete-orphan")
 
 
@@ -114,6 +127,7 @@ class OCPanelConfig(Base, CreatedAtUTCMixin):
     network: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     port: Mapped[int | None] = mapped_column(nullable=True, default=None)
     source_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True, default=None)
+    display_name_template: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)
     virtual_inbound_tag: Mapped[str | None] = mapped_column(
         String(256), ForeignKey("inbounds.tag", ondelete="SET NULL", onupdate="CASCADE"), nullable=True, default=None
     )
@@ -128,6 +142,30 @@ class OCPanelConfig(Base, CreatedAtUTCMixin):
     virtual_inbound: Mapped[ProxyInbound | None] = relationship(init=False)
 
 
+class OCPanelDestinationHost(Base, CreatedAtUTCMixin):
+    """One destination subscription config → one local OC Host (Group-selectable)."""
+
+    __tablename__ = "oc_panel_destination_hosts"
+    __table_args__ = (UniqueConstraint("panel_id", "destination_config_id"),)
+
+    id: Mapped[int] = mapped_column(SqliteCompatibleBigInteger, primary_key=True, init=False, autoincrement=True)
+    panel_id: Mapped[int] = fk_id_column("oc_panels.id", ondelete="CASCADE")
+    destination_config_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    virtual_inbound_tag: Mapped[str | None] = mapped_column(
+        String(256), ForeignKey("inbounds.tag", ondelete="SET NULL", onupdate="CASCADE"), nullable=True, default=None
+    )
+    source_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True, default=None)
+    display_name_template: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)
+    source_missing: Mapped[bool] = mapped_column(default=False)
+    locally_hidden: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
+    )
+
+    panel: Mapped[OCPanel] = relationship(back_populates="destination_hosts", init=False)
+
+
 class OCUserMapping(Base, CreatedAtUTCMixin):
     __tablename__ = "oc_user_mappings"
     __table_args__ = (UniqueConstraint("user_id", "panel_id"),)
@@ -140,6 +178,8 @@ class OCUserMapping(Base, CreatedAtUTCMixin):
     last_synced_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)
     last_synced_configs: Mapped[list[str] | None] = mapped_column(JSON(none_as_null=True), default=None)
     status: Mapped[str] = mapped_column(String(64), default="active")
+    # Subscription URL of the provisioned user as reported by the OC/underlying panel.
+    external_subscription_url: Mapped[str | None] = mapped_column(String(2048), nullable=True, default=None)
     updated_at: Mapped[dt] = mapped_column(
         DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
     )

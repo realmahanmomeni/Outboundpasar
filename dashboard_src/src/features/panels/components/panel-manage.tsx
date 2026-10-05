@@ -9,9 +9,10 @@ import {
   RefreshCw,
   Server,
   ShieldAlert,
-  User,
   UserCheck,
   Monitor,
+  Link2,
+  Users,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -228,36 +229,55 @@ export default function PanelManage() {
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                  <ShieldAlert className="h-4 w-4 text-amber-500" />
-                  <span>Management Capabilities</span>
+                  <ShieldAlert className="h-4 w-4 text-primary" />
+                  <span>{t('panels.capabilitiesTitle', { defaultValue: 'Available actions' })}</span>
                 </CardTitle>
+                <CardDescription className="text-xs">
+                  {t('panels.capabilitiesSubtitle', {
+                    defaultValue: 'What you can manage for this imported Outbound Center panel in PasarGuard.',
+                  })}
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 text-xs text-muted-foreground">
-                <p>
-                  This page establishes the foundation and shell for external panel management. Detailed integration actions will be enabled in subsequent phases:
-                </p>
-
-                <div className="rounded-lg border bg-muted/40 p-3 space-y-2 text-foreground/80">
-                  <div className="flex items-center gap-2">
-                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    <span><strong>Phase 5:</strong> Group discovery, inbound selection, host syncing</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    <span><strong>Phase 6 & 7:</strong> User mapping and traffic synchronization</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    <span><strong>Phase 8:</strong> Multiplier application & subscription links</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    <span><strong>Phase 11:</strong> Active synchronization & state reconciliation</span>
-                  </div>
-                </div>
-
-                <p className="text-[11px] text-muted-foreground/70">
-                  No configuration synchronization or direct changes to external panels are performed in this phase.
+                <ul className="space-y-2.5">
+                  <li className="flex items-start gap-2">
+                    <Link2 className="h-3.5 w-3.5 mt-0.5 text-primary shrink-0" />
+                    <span>
+                      <strong className="text-foreground">Connection status</strong> — view sync state, source panel ID,
+                      and last synchronization time for this import.
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <RefreshCw className="h-3.5 w-3.5 mt-0.5 text-primary shrink-0" />
+                    <span>
+                      <strong className="text-foreground">Traffic multiplier</strong> — adjust panel-level multiplier
+                      from the Panels list (Update action); applies to host traffic accounting.
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Monitor className="h-3.5 w-3.5 mt-0.5 text-primary shrink-0" />
+                    <span>
+                      <strong className="text-foreground">Imported hosts</strong> — rename presentation labels and
+                      enable or disable local hosts mapped from synchronized configs.
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Users className="h-3.5 w-3.5 mt-0.5 text-primary shrink-0" />
+                    <span>
+                      <strong className="text-foreground">User access</strong> — PasarGuard users reach this panel through
+                      groups and virtual inbounds; OC user mappings sync in the background when access changes.
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <UserCheck className="h-3.5 w-3.5 mt-0.5 text-primary shrink-0" />
+                    <span>
+                      <strong className="text-foreground">Telegram / tenant link</strong> — panel visibility and import
+                      actions require an active Outbound Center Telegram connection for your tenant.
+                    </span>
+                  </li>
+                </ul>
+                <p className="text-[11px] text-muted-foreground/80 pt-1 border-t">
+                  Disconnect removes the PasarGuard import only; it does not delete your remote Outbound Center server.
                 </p>
               </CardContent>
             </Card>

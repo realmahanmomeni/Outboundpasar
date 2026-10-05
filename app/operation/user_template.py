@@ -28,6 +28,7 @@ from app.models.user_template import (
 )
 from app.operation import BaseOperation
 from app.operation.permissions import apply_template_access
+from app.services.workspace_scope import resolve_tenant_workspace_scope
 from app.utils.logger import get_logger
 
 logger = get_logger("user-template-operation")
@@ -39,14 +40,26 @@ class UserTemplateOperation(BaseOperation):
         allowed = apply_template_access(admin, [template_id])
         if allowed is not None and template_id not in allowed:
             await self.raise_error("User Template not found", 404)
-        return await self.get_validated_user_template(db, template_id)
+        return await self.get_validated_user_template(db, template_id, admin=admin)
+
+    async def _group_scope(self, db: AsyncSession, admin: Admin) -> tuple[int | None, int | None]:
+        if admin.is_owner:
+            return None, None
+        return await resolve_tenant_workspace_scope(db, admin)
 
     async def create_user_template(
         self, db: AsyncSession, new_user_template: UserTemplateCreate, admin: Admin
     ) -> UserTemplateResponse:
-        await self.validate_all_groups(db, new_user_template, admin)
+        validated_groups = await self.validate_all_groups(db, new_user_template, admin)
+        tenant_id, workspace_id = await self._group_scope(db, admin)
         try:
-            db_user_template = await create_user_template(db, new_user_template)
+            db_user_template = await create_user_template(
+                db,
+                new_user_template,
+                groups=validated_groups or None,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
         except IntegrityError:
             await self.raise_error("Template by this name already exists", 409, db=db)
 
@@ -61,15 +74,24 @@ class UserTemplateOperation(BaseOperation):
         self, db: AsyncSession, template_id: int, modified_user_template: UserTemplateModify, admin: Admin
     ) -> UserTemplateResponse:
         db_user_template = await self._get_template_with_access(db, template_id, admin)
+        validated_groups = None
         if modified_user_template.group_ids is not None:
-            await self.validate_all_groups(
+            validated_groups = await self.validate_all_groups(
                 db,
                 modified_user_template,
                 admin,
                 existing_group_ids=set(db_user_template.group_ids or []),
             )
+        tenant_id, workspace_id = await self._group_scope(db, admin)
         try:
-            db_user_template = await modify_user_template(db, db_user_template, modified_user_template)
+            db_user_template = await modify_user_template(
+                db,
+                db_user_template,
+                modified_user_template,
+                groups=validated_groups,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
         except IntegrityError:
             await self.raise_error("Template by this name already exists", 409, db=db)
 
@@ -91,14 +113,18 @@ class UserTemplateOperation(BaseOperation):
         self, db: AsyncSession, query: UserTemplateListQuery, admin: Admin
     ) -> list[UserTemplateResponse]:
         query.ids = apply_template_access(admin, query.ids)
-        return await get_user_templates(db, query)
+        tenant_id, workspace_id = await self._group_scope(db, admin)
+        return await get_user_templates(db, query, tenant_id=tenant_id, workspace_id=workspace_id)
 
     async def get_user_templates_simple(
         self, db: AsyncSession, query: UserTemplateSimpleListQuery, admin: Admin
     ) -> UserTemplatesSimpleResponse:
         """Get lightweight user template list with only id and name"""
         query.ids = apply_template_access(admin, query.ids)
-        rows, total = await get_user_templates_simple(db=db, query=query)
+        tenant_id, workspace_id = await self._group_scope(db, admin)
+        rows, total = await get_user_templates_simple(
+            db=db, query=query, tenant_id=tenant_id, workspace_id=workspace_id
+        )
         templates = [UserTemplateSimple(id=row[0], name=row[1]) for row in rows]
         return UserTemplatesSimpleResponse(templates=templates, total=total)
 
@@ -108,8 +134,11 @@ class UserTemplateOperation(BaseOperation):
         """Remove multiple user templates by ID"""
         requested_ids = list(bulk_templates.ids)
         allowed_ids = apply_template_access(admin, requested_ids)
+        tenant_id, workspace_id = await self._group_scope(db, admin)
         # Fetch all in one query
-        db_templates = await get_user_templates(db, UserTemplateListQuery(ids=allowed_ids or []))
+        db_templates = await get_user_templates(
+            db, UserTemplateListQuery(ids=allowed_ids or []), tenant_id=tenant_id, workspace_id=workspace_id
+        )
         found_ids = {t.id for t in db_templates}
         for tid in requested_ids:
             if tid not in found_ids:
@@ -143,7 +172,10 @@ class UserTemplateOperation(BaseOperation):
     ) -> BulkUserTemplatesActionResponse:
         requested_ids = list(bulk_templates.ids)
         allowed_ids = apply_template_access(admin, requested_ids)
-        db_templates = await get_user_templates(db, UserTemplateListQuery(ids=allowed_ids or []))
+        tenant_id, workspace_id = await self._group_scope(db, admin)
+        db_templates = await get_user_templates(
+            db, UserTemplateListQuery(ids=allowed_ids or []), tenant_id=tenant_id, workspace_id=workspace_id
+        )
         found_ids = {t.id for t in db_templates}
         for tid in requested_ids:
             if tid not in found_ids:

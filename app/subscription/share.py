@@ -12,8 +12,12 @@ from app.db.models import UserStatus
 from app.models.status_emojis import STATUS_EMOJIS
 from app.models.subscription import SubscriptionInboundData
 from app.models.user import UsersResponseWithInbounds
-from app.settings import subscription_settings
-from app.subscription.client_templates import subscription_client_templates, subscription_xray_templates
+from app.services.subscription_scope import (
+    resolve_user_workspace_id,
+    subscription_client_templates_for_workspace,
+    subscription_settings_for_user,
+    subscription_xray_templates_for_workspace,
+)
 from app.subscription.config_cache import get_sub_config, make_sub_config_key, put_sub_config
 from app.utils.system import readable_size
 
@@ -83,6 +87,7 @@ async def generate_subscription(
     config_format: str,
     as_base64: bool,
     randomize_order: bool = False,
+    user_agent: str = "",
 ) -> str | bytes:
     from app.db import GetDB
     from app.services.oc_subscription_runtime import (
@@ -91,22 +96,25 @@ async def generate_subscription(
     )
 
     runtime_oc_fingerprint: tuple = ()
+    workspace_id: int | None = None
     async with GetDB() as db:
         user_tenant_id = await resolve_user_tenant_id(db, user.id, getattr(user, "admin_id", None))
         runtime_oc_fingerprint = await runtime_oc_subscription_cache_fingerprint(db, user.id, user_tenant_id)
+        workspace_id = resolve_user_workspace_id(user)
+        client_templates = await subscription_client_templates_for_workspace(db, workspace_id)
+        xray_template_overrides = (
+            await subscription_xray_templates_for_workspace(db, workspace_id) if config_format == "xray" else None
+        )
+        sub_settings = await subscription_settings_for_user(db, user)
 
     cache_key = make_sub_config_key(user, config_format, as_base64, randomize_order, runtime_oc_fingerprint)
     cached = get_sub_config(cache_key)
     if cached is not None:
         return cached
 
-    client_templates = await subscription_client_templates()
-    xray_template_overrides = await subscription_xray_templates() if config_format == "xray" else None
     conf = _build_subscription_config(config_format, client_templates)
     if conf is None:
         raise ValueError(f'Unsupported format "{config_format}"')
-
-    sub_settings = await subscription_settings()
     custom_variables = get_effective_custom_variables(user, sub_settings.custom_variables)
     format_variables = setup_format_variables(user, sub_settings.custom_variables)
 
@@ -119,6 +127,18 @@ async def generate_subscription(
         randomize_order=randomize_order,
         custom_variables=custom_variables,
     )
+
+    if config_format not in ("links", "links_base64"):
+        from app.services.oc_upstream_subscription import append_oc_upstream_subscriptions
+
+        config = await append_oc_upstream_subscriptions(
+            config,
+            user.id,
+            getattr(user, "admin_id", None),
+            config_format,
+            as_base64=as_base64,
+            user_agent=user_agent,
+        )
 
     if as_base64 and not isinstance(config, bytes):
         config = base64.b64encode(config.encode()).decode()
@@ -483,23 +503,32 @@ async def process_inbounds_and_tags(
     proxy_settings = user.proxy_settings.dict()
     proxy_settings["_user_id"] = user.id
     hosts = await filter_hosts(list((await host_manager.get_hosts()).values()), user.status)
-    desired_oc_tags = [t for t in (user.inbounds or []) if t.startswith("oc_")]
+    user_inbounds = list(user.inbounds or [])
+    native_inbound_tags = [t for t in user_inbounds if not (t or "").startswith("oc_")]
+    desired_oc_tags = [t for t in user_inbounds if (t or "").startswith("oc_")]
     oc_tags = desired_oc_tags
+    oc_raw_links: list[str] = []
     if desired_oc_tags:
         from app.db import GetDB
         from app.services.oc_subscription_runtime import (
             filter_oc_inbound_tags_for_runtime_subscription,
             resolve_user_tenant_id,
         )
+        from app.services.oc_user_subscription_hosts import collect_oc_subscription_links_for_user
 
         async with GetDB() as db:
             user_tenant_id = await resolve_user_tenant_id(db, user.id, getattr(user, "admin_id", None))
             oc_tags = await filter_oc_inbound_tags_for_runtime_subscription(
                 db, user.id, desired_oc_tags, user_tenant_id
             )
-    if oc_tags:
-        oc_hosts = await resolve_oc_virtual_hosts(oc_tags, user.status, proxy_settings)
-        hosts.extend(oc_hosts)
+            if oc_tags:
+                oc_raw_links = await collect_oc_subscription_links_for_user(
+                    db,
+                    user.id,
+                    oc_tags,
+                    format_variables,
+                    user_tenant_id=user_tenant_id,
+                )
     if randomize_order and len(hosts) > 1:
         random.shuffle(hosts)
 
@@ -514,7 +543,9 @@ async def process_inbounds_and_tags(
         return xray_template_overrides.get(template_id)
 
     for host_data in hosts:
-        result = await process_host(host_data, format_variables, user.inbounds, proxy_settings, custom_variables)
+        if (host_data.inbound_tag or "").startswith("oc_"):
+            continue
+        result = await process_host(host_data, format_variables, native_inbound_tags, proxy_settings, custom_variables)
         if not result:
             continue
 
@@ -531,7 +562,7 @@ async def process_inbounds_and_tags(
                 processed_download_settings = await _prepare_download_settings(
                     download_settings,
                     format_variables,
-                    user.inbounds,
+                    native_inbound_tags,
                     proxy_settings,
                     client_templates,
                     custom_variables,
@@ -558,6 +589,22 @@ async def process_inbounds_and_tags(
                 inbound=inbound_copy,
                 settings=settings,
             )
+
+    from app.subscription.links import StandardLinks
+
+    if isinstance(conf, StandardLinks) and oc_raw_links:
+        for link in oc_raw_links:
+            conf.add_link(link)
+    elif desired_oc_tags and isinstance(conf, StandardLinks):
+        from app.utils.logger import get_logger
+
+        get_logger("oc-subscription").info(
+            "oc_sub_empty_output user=%s desired_oc_tags=%s filtered_oc_tags=%s native_hosts=%s",
+            user.id,
+            len(desired_oc_tags),
+            len(oc_tags),
+            len(native_inbound_tags),
+        )
 
     return conf.render()
 

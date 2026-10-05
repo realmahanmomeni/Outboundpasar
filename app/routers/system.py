@@ -18,6 +18,7 @@ from app.models.system import (
     WorkerHealth,
     WorkersHealth,
 )
+from app.services.assignable_hosts import GroupHostOption, list_group_host_options
 from app.nats import is_nats_enabled
 from app.nats.node_rpc import node_nats_client
 from app.nats.scheduler_rpc import scheduler_nats_client
@@ -69,9 +70,26 @@ async def get_system_users_stats(
 
 
 @router.get("/inbounds", response_model=list[str])
-async def get_inbounds(_: AdminDetails = Depends(require_permission("system", "read"))):
+async def get_inbounds(
+    db: AsyncSession = Depends(get_db),
+    _: AdminDetails = Depends(require_permission("system", "read")),
+):
     """Retrieve inbound configurations grouped by protocol."""
-    return await system_operator.get_inbounds()
+    return await system_operator.get_inbounds(db)
+
+
+@router.get("/group-host-options", response_model=list[GroupHostOption])
+async def get_group_host_options(
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(require_permission("groups", "read")),
+):
+    """Destination OC Hosts and native Hosts for Group assignment (stored as group.inbound_tags)."""
+    from app.services.workspace_scope import resolve_tenant_workspace_scope
+
+    tenant_id, workspace_id = (
+        (None, None) if admin.is_owner else await resolve_tenant_workspace_scope(db, admin)
+    )
+    return await list_group_host_options(db, tenant_id=tenant_id, workspace_id=workspace_id)
 
 
 @router.get("/inbounds/details", response_model=list[InboundSummary])

@@ -42,7 +42,7 @@ mock_oc_state = {
 
 fail_on_configs = False
 
-async def mock_call_oc_api(integration, method, path, json=None):
+async def mock_call_oc_api(integration, method, path, json=None, **kwargs):
     global fail_on_configs
     if "/configs" in path:
         if fail_on_configs:
@@ -55,10 +55,19 @@ async def mock_call_oc_api(integration, method, path, json=None):
     return None
 
 import app.routers.integration
-app.routers.integration.call_oc_api = mock_call_oc_api
+import app.services.oc_connection_credentials
+import app.services.oc_integration_client
+
+
+def _install_oc_api_mocks() -> None:
+    app.routers.integration.call_oc_api = mock_call_oc_api
+    app.services.oc_connection_credentials.call_oc_api = mock_call_oc_api
+    app.services.oc_integration_client.call_oc_api = mock_call_oc_api
+
 
 async def run_tests():
     global fail_on_configs
+    _install_oc_api_mocks()
     print("Running Phase 11 Tests...")
     
     async with GetDB() as db:
@@ -123,9 +132,11 @@ async def run_tests():
             assert c1.source_name == "Config 1"
             assert c1.panel_group_id == g1.id
             
-            # Check host/inbound
-            host1 = (await db.execute(select(ProxyHost).where(ProxyHost.inbound_tag == c1.virtual_inbound_tag))).scalar_one()
-            assert host1.remark == "Config 1"
+            assert c1.locally_hidden is True
+            catalog_host = (
+                await db.execute(select(ProxyHost).where(ProxyHost.inbound_tag == f"oc_{panel.id}_c1"))
+            ).scalar_one_or_none()
+            assert catalog_host is None
 
             # Assert TEST L: Phase 10 User Mapping is completely preserved
             refreshed_mapping = (await db.execute(
@@ -154,23 +165,16 @@ async def run_tests():
             
             print("   [x] Idempotency OK")
             
-            # --- TEST E, F, N: Config Rename preserves identity, tag, and host remark if changed ---
+            # --- TEST E, F, N: Config rename updates catalog metadata only ---
             mock_oc_state["configs"]["configs"][0]["name"] = "Config 1 Renamed"
-            # Simulate user changed remark
-            host1.remark = "User Custom Remark"
-            await db.commit()
-            
             await sync_panel_from_outbound_center(db, panel.id)
             await db.refresh(panel, ["configs"])
             
             c1 = next(c for c in panel.configs if c.source_config_id == "c1")
             assert c1.source_name == "Config 1 Renamed"
-            assert c1.virtual_inbound_tag == host1.inbound_tag # Tag preserved
+            assert c1.virtual_inbound_tag is None
             
-            host1_after = (await db.execute(select(ProxyHost).where(ProxyHost.inbound_tag == c1.virtual_inbound_tag))).scalar_one()
-            assert host1_after.remark == "User Custom Remark", "Phase 7 host remark must remain intact"
-            
-            print("   [x] Config Rename & Host Remark Preservation OK")
+            print("   [x] Config Rename (catalog metadata) OK")
             
             # --- TEST G: Config moves between groups ---
             mock_oc_state["configs"]["configs"][0]["group_mapping"]["groups"] = ["g2"]
@@ -227,16 +231,15 @@ async def run_tests():
             conc_configs = [c for c in panel.configs if c.source_config_id == "c_conc"]
             assert len(conc_configs) == 1, f"Expected exactly 1 concurrent config, got {len(conc_configs)}"
 
-            # Assert exactly one virtual inbound and host
             inbounds = (await db.execute(
                 select(ProxyInbound).where(ProxyInbound.tag == f"oc_{panel.id}_c_conc")
             )).scalars().all()
-            assert len(inbounds) == 1, f"Expected exactly 1 inbound, got {len(inbounds)}"
+            assert len(inbounds) == 0, "Catalog configs must not materialize ProxyInbound rows"
 
             hosts = (await db.execute(
                 select(ProxyHost).where(ProxyHost.inbound_tag == f"oc_{panel.id}_c_conc")
             )).scalars().all()
-            assert len(hosts) == 1, f"Expected exactly 1 host, got {len(hosts)}"
+            assert len(hosts) == 0, "Catalog configs must not materialize ProxyHost rows"
 
             print("   [x] Concurrent Synchronization OK")
 

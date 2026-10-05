@@ -82,6 +82,7 @@ class AdminBase(BaseModel):
     id: int | None = None
     username: str
     tenant_id: int | None = None
+    workspace_id: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -196,6 +197,7 @@ class AdminCreate(AdminModify):
     username: str
     password: str
     role_id: int
+    tenant_id: int | None = None
 
 
 class AdminInDB(AdminDetails):

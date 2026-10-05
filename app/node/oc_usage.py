@@ -10,6 +10,8 @@ from app.db import GetDB
 from app.db.models import Admin, User
 from app.db.models_oc import OCIntegration, OCPanel, OCUserMapping
 from app.operation.admin_sync import enforce_admin_limits_now
+from app.services.oc_connection_credentials import connection_token_for_panel
+from app.services.oc_integration_client import OcConnectionTokenMissing
 from app.utils.crypto import decrypt_secret
 from app.utils.logger import get_logger
 
@@ -24,6 +26,7 @@ async def fetch_oc_user_usage(
     source_panel_id: str | int,
     external_user_id: str,
     session: aiohttp.ClientSession | None = None,
+    connection_token: str | None = None,
 ) -> int | None:
     """
     Fetch cumulative usage for a user on an Outbound Center panel.
@@ -32,6 +35,8 @@ async def fetch_oc_user_usage(
     """
     url = f"{base_url.rstrip('/')}/v1/integration/panels/{source_panel_id}/users/{external_user_id}/usage"
     headers = {"X-Integration-Token": token}
+    if connection_token:
+        headers["X-OC-Connection-Token"] = connection_token
     timeout = aiohttp.ClientTimeout(total=15.0)
 
     owns_session = False
@@ -81,6 +86,14 @@ async def fetch_oc_user_usage(
                         "Authentication failed for panel %s integration (HTTP %s)",
                         source_panel_id,
                         status,
+                    )
+                    return None
+
+                if status == 409:
+                    logger.warning(
+                        "OC panel %s is inactive/unavailable; usage for %s not collected (HTTP 409)",
+                        source_panel_id,
+                        external_user_id,
                     )
                     return None
 
@@ -262,7 +275,8 @@ async def record_oc_user_usages(session: aiohttp.ClientSession | None = None) ->
 
     # Cache decrypted tokens per integration to avoid repeated decryption
     token_cache: dict[int, str | None] = {}
-    valid_targets: list[tuple[OCUserMapping, str, str]] = []
+    conn_cache: dict[tuple[int | None, int | None], str | None] = {}
+    valid_targets: list[tuple[OCUserMapping, str, str, str | None]] = []
 
     for mapping in mappings:
         panel = mapping.panel
@@ -282,7 +296,21 @@ async def record_oc_user_usages(session: aiohttp.ClientSession | None = None) ->
         if not token:
             continue
 
-        valid_targets.append((mapping, integ.base_url, token))
+        # Account-scoped credential of the tenant that owns the panel. A mapping whose tenant
+        # has no usable connection can't be authorised on OC, so it is skipped (not zeroed).
+        conn_key = (panel.tenant_id, panel.oc_account_id)
+        if conn_key not in conn_cache:
+            try:
+                async with GetDB() as cdb:
+                    conn_cache[conn_key] = await connection_token_for_panel(cdb, panel)
+            except OcConnectionTokenMissing as exc:
+                logger.warning("Skipping usage for panel %s: %s", panel.id, exc)
+                conn_cache[conn_key] = ""
+        connection_token = conn_cache[conn_key]
+        if connection_token == "":
+            continue
+
+        valid_targets.append((mapping, integ.base_url, token, connection_token))
 
     if not valid_targets:
         return 0
@@ -294,15 +322,17 @@ async def record_oc_user_usages(session: aiohttp.ClientSession | None = None) ->
 
     total_accounted = 0
     try:
-        async def _fetch_and_account(target: tuple[OCUserMapping, str, str]) -> int:
-            mapping, base_url, token = target
+        async def _fetch_and_account(target: tuple[OCUserMapping, str, str, str | None]) -> int:
+            mapping, base_url, token, connection_token = target
             try:
+                extra = {"connection_token": connection_token} if connection_token else {}
                 remote_cumulative = await fetch_oc_user_usage(
                     base_url=base_url,
                     token=token,
                     source_panel_id=mapping.panel.source_panel_id,
                     external_user_id=mapping.external_user_id,
                     session=session,
+                    **extra,
                 )
                 if remote_cumulative is not None:
                     return await account_mapping_usage(mapping.id, remote_cumulative)

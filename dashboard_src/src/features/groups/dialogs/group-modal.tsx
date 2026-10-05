@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/button'
 import { LoaderButton } from '@/components/ui/loader-button'
 import { useTranslation } from 'react-i18next'
 import { UseFormReturn } from 'react-hook-form'
-import { useCreateGroup, useModifyGroup, useGetInbounds } from '@/service/api'
+import { useCreateGroup, useModifyGroup } from '@/service/api'
+import { useGroupHostOptions } from '@/features/groups/service/group-host-options'
 import { toast } from 'sonner'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '@/components/ui/command'
 import { Badge } from '@/components/ui/badge'
@@ -30,18 +31,14 @@ export default function GroupModal({ isDialogOpen, onOpenChange, form, editingGr
   const handleError = useDynamicErrorHandler()
   const addGroupMutation = useCreateGroup()
   const modifyGroupMutation = useModifyGroup()
-  const { data: inbounds, isLoading: isLoadingInbounds } = useGetInbounds({
-    query: {
-      enabled: isDialogOpen,
-    },
-  })
+  const { data: hostOptions, isLoading: isLoadingHosts } = useGroupHostOptions(isDialogOpen)
 
   useEffect(() => {
-    if (!isDialogOpen || isLoadingInbounds || !inbounds) return
+    if (!isDialogOpen || isLoadingHosts || !hostOptions) return
 
     const currentTags = form.getValues('inbound_tags') || []
-    const availableInbounds = new Set(inbounds)
-    const validTags = currentTags.filter(tag => availableInbounds.has(tag))
+    const available = new Set(hostOptions.map(o => o.inbound_tag))
+    const validTags = currentTags.filter(tag => available.has(tag))
 
     if (validTags.length === currentTags.length) return
 
@@ -49,7 +46,7 @@ export default function GroupModal({ isDialogOpen, onOpenChange, form, editingGr
       shouldDirty: false,
       shouldValidate: true,
     })
-  }, [form, inbounds, isDialogOpen, isLoadingInbounds])
+  }, [form, hostOptions, isDialogOpen, isLoadingHosts])
 
   const onSubmit = async (values: GroupFormValues) => {
     try {
@@ -114,30 +111,40 @@ export default function GroupModal({ isDialogOpen, onOpenChange, form, editingGr
                 name="inbound_tags"
                 render={({ field }) => {
                   const currentTags = field.value || []
-                  const allSelected = inbounds && inbounds.length > 0 && inbounds.every(inbound => currentTags.includes(inbound))
+                  const allTags = hostOptions?.map(o => o.inbound_tag) || []
+                  const labelFor = (tag: string) =>
+                    hostOptions?.find(o => o.inbound_tag === tag)?.display_name || tag
+                  const allSelected =
+                    allTags.length > 0 && allTags.every(tag => currentTags.includes(tag))
                   const handleSelectAll = () => {
                     if (allSelected) {
                       field.onChange([])
                     } else {
-                      field.onChange(inbounds || [])
+                      field.onChange(allTags)
                     }
                   }
                   return (
                     <FormItem>
-                      <FormLabel>{t('inboundTags')}</FormLabel>
+                      <FormLabel>{t('hosts', { defaultValue: 'Hosts' })}</FormLabel>
+                      <p className="text-muted-foreground text-xs">
+                        {t('group.hostPickerHint', {
+                          defaultValue:
+                            'Select destination subscription hosts (imported OC configs). This is not a list of inbounds.',
+                        })}
+                      </p>
                       <div className="space-y-2">
-                        {inbounds && inbounds.length > 0 && (
+                        {allTags.length > 0 && (
                           <div className="mb-2 flex justify-end">
-                            <Button type="button" variant="ghost" size="sm" onClick={handleSelectAll} className="h-7 text-xs" disabled={isLoadingInbounds}>
+                            <Button type="button" variant="ghost" size="sm" onClick={handleSelectAll} className="h-7 text-xs" disabled={isLoadingHosts}>
                               {allSelected ? t('deselectAll') : t('selectAll')}
                             </Button>
                           </div>
                         )}
                         <Command className="mb-3 rounded-md border">
-                          <CommandInput placeholder={t('searchInbounds')} disabled={isLoadingInbounds} />
-                          {!isLoadingInbounds && <CommandEmpty>{t('noInboundsFound')}</CommandEmpty>}
+                          <CommandInput placeholder={t('searchHosts', { defaultValue: 'Search hosts…' })} disabled={isLoadingHosts} />
+                          {!isLoadingHosts && <CommandEmpty>{t('noHostsFound', { defaultValue: 'No hosts found' })}</CommandEmpty>}
                           <CommandGroup dir="ltr" className="max-h-40 overflow-auto">
-                            {isLoadingInbounds ? (
+                            {isLoadingHosts ? (
                               <div className="space-y-2 px-2 py-3">
                                 {Array.from({ length: 4 }).map((_, index) => (
                                   <div key={index} className="flex items-center gap-2">
@@ -147,16 +154,24 @@ export default function GroupModal({ isDialogOpen, onOpenChange, form, editingGr
                                 ))}
                               </div>
                             ) : (
-                              inbounds?.map(inbound => (
+                              hostOptions?.map(option => (
                                 <CommandItem
-                                  key={inbound}
+                                  key={option.inbound_tag}
                                   onSelect={() => {
-                                    const newTags = currentTags.includes(inbound) ? currentTags.filter(tag => tag !== inbound) : [...currentTags, inbound]
+                                    const tag = option.inbound_tag
+                                    const newTags = currentTags.includes(tag)
+                                      ? currentTags.filter(t => t !== tag)
+                                      : [...currentTags, tag]
                                     field.onChange(newTags)
                                   }}
                                 >
-                                  <div className={cn('mr-2 h-4 w-4 rounded-sm border', currentTags.includes(inbound) ? 'border-primary bg-primary' : 'border-muted')} />
-                                  {inbound}
+                                  <div
+                                    className={cn(
+                                      'mr-2 h-4 w-4 rounded-sm border',
+                                      currentTags.includes(option.inbound_tag) ? 'border-primary bg-primary' : 'border-muted',
+                                    )}
+                                  />
+                                  {option.display_name}
                                 </CommandItem>
                               ))
                             )}
@@ -165,7 +180,7 @@ export default function GroupModal({ isDialogOpen, onOpenChange, form, editingGr
                         <div className="flex flex-wrap gap-2">
                           {currentTags.map(tag => (
                             <Badge key={tag} variant="secondary" className="flex items-center gap-1">
-                              {tag}
+                              {labelFor(tag)}
                               <X
                                 className="h-3 w-3 cursor-pointer"
                                 onClick={() => {

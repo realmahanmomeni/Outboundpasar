@@ -42,9 +42,9 @@ async def authenticate_telegram_user(
     telegram_id = data.user.id
     
     # Find active integration
-    integration = (await db.execute(
-        select(OCIntegration).where(OCIntegration.is_active == True).limit(1)
-    )).scalar_one_or_none()
+    from app.services.oc_integration_client import get_active_integration_or_none
+
+    integration = await get_active_integration_or_none(db)
     
     if not integration:
         raise HTTPException(status_code=503, detail="No active OC integration")

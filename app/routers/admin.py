@@ -214,7 +214,7 @@ async def get_admin_usage(
     username: str,
     query: Annotated[AdminUsageQuery, Depends(get_admin_usage_query)],
     db: AsyncSession = Depends(get_db),
-    admin: AdminDetails = Depends(get_current),
+    admin: AdminDetails = Depends(require_permission("admins", "read")),
 ):
     """Get admin usage aggregated from user traffic."""
     return await admin_operator.get_admin_usage(db, username=username, admin=admin, query=query)

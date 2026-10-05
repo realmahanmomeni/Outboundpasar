@@ -18,6 +18,8 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { Power, PowerOff, Trash2 } from 'lucide-react'
 import HostModal from '../dialogs/host-modal'
+import { OcDestinationHostModal } from '../dialogs/oc-destination-host-modal'
+import { isOcDestinationInboundTag } from '../utils/oc-destination-host'
 import SortableHost from './sortable-host'
 import { BulkActionItem, BulkActionsBar } from '@/features/users/components/bulk-actions-bar'
 import { BulkActionAlertDialog } from '@/features/users/components/bulk-action-alert-dialog'
@@ -67,6 +69,14 @@ export default function HostsList({
   canUpdate = true,
 }: HostsListProps) {
   const [hosts, setHosts] = useState<BaseHost[] | undefined>(data)
+  const editingOcDestination = useMemo(
+    () =>
+      Boolean(
+        editingHost &&
+          (editingHost.is_oc_destination_host || isOcDestinationInboundTag(editingHost.inbound_tag)),
+      ),
+    [editingHost],
+  )
   const [isUpdatingPriorities, setIsUpdatingPriorities] = useState(false)
   const [filters, setFilters] = useState<HostListFilters>({})
   const [isAdvanceSearchOpen, setIsAdvanceSearchOpen] = useState(false)
@@ -1024,7 +1034,21 @@ export default function HostsList({
         isLoadingInbounds={isLoadingInbounds}
       />
 
-      {(canCreate || canUpdate) && (
+      {editingOcDestination && canUpdate && (
+        <OcDestinationHostModal
+          isDialogOpen={isDialogOpen}
+          onSubmit={handleSubmit}
+          onOpenChange={open => {
+            if (!open) {
+              setEditingHost(null)
+              form.reset(hostFormDefaultValues)
+            }
+            onAddHost(open)
+          }}
+          form={form}
+        />
+      )}
+      {(canCreate || canUpdate) && !editingOcDestination && (
         <HostModal
           isDialogOpen={isDialogOpen}
           onSubmit={handleSubmit}

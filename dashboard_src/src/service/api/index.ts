@@ -1120,6 +1120,7 @@ export interface FinalMask {
 export interface BaseHost {
   id?: number | null;
   remark: string;
+  is_oc_destination_host?: boolean;
   address?: string[];
   inbound_tag?: string | null;
   port?: number | null;

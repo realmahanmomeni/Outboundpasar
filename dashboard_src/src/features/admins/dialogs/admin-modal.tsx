@@ -108,8 +108,16 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
       }
     })
 
-    return Array.from(rolesById.values()).sort((a, b) => a.id - b.id)
-  }, [rolesQuery.data?.roles])
+    let options = Array.from(rolesById.values()).sort((a, b) => a.id - b.id)
+    const isTenantAdministrator =
+      currentAdmin != null &&
+      !currentAdmin.is_owner &&
+      (currentAdmin.role?.name === 'administrator' || currentAdmin.role?.id === 2)
+    if (isTenantAdministrator) {
+      options = options.filter(role => role.id === 3 || role.name === 'operator')
+    }
+    return options
+  }, [rolesQuery.data?.roles, currentAdmin])
   const selectedRoleExists = selectedRoleId == null || roleOptions.some(role => role.id === selectedRoleId)
 
   useEffect(() => {

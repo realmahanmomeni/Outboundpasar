@@ -6,11 +6,12 @@ from app.core.manager import core_manager
 from app.db import AsyncSession
 from app.db.crud.admin import build_admin_details, get_admin
 from app.db.crud.general import get_system_usage
-from app.db.crud.user import get_users_count_metrics
+from app.db.crud.user import get_users_count_metrics, get_workspace_used_traffic_total
 from app.db.models import UserStatus
 from app.models.admin import AdminDetails
 from app.models.system import InboundSummary, SystemResourceStats, SystemStats, SystemUsersStats
 from app.operation.permissions import PermissionDenied, enforce_permission, is_scope_all
+from app.services.workspace_scope import ensure_actor_admin_workspace_access, resolve_admin_workspace_id
 from app.utils.system import cpu_usage, disk_usage, get_uptime, memory_usage
 
 from . import BaseOperation
@@ -60,6 +61,8 @@ class SystemOperation(BaseOperation):
             if admin.is_owner or can_read_admins:
                 db_admin = await get_admin(db, admin_username, load_users=False, load_usage_logs=False)
                 if db_admin is not None:
+                    if not admin.is_owner:
+                        await ensure_actor_admin_workspace_access(db, db_admin, admin, False)
                     admin_param = build_admin_details(db_admin)
             else:
                 admin_param = admin
@@ -68,10 +71,13 @@ class SystemOperation(BaseOperation):
                 admin_param = admin
 
         system_task = None
-        if not admin_param:
+        if admin.is_owner and not admin_param:
             system_task = get_system_usage(db)
 
         admin_id = admin_param.id if admin_param else None
+        workspace_id = None
+        if not admin.is_owner:
+            workspace_id = await resolve_admin_workspace_id(db, admin, False)
 
         statuses = [UserStatus.active, UserStatus.disabled, UserStatus.on_hold, UserStatus.expired, UserStatus.limited]
         if system_task is not None:
@@ -79,14 +85,22 @@ class SystemOperation(BaseOperation):
         else:
             system = None
 
-        user_counts, online_users = await get_users_count_metrics(db, statuses, timedelta(minutes=2), admin_id)
+        user_counts, online_users = await get_users_count_metrics(
+            db, statuses, timedelta(minutes=2), admin_id, workspace_id=workspace_id
+        )
 
         if system is not None:
             uplink = system.uplink
             downlink = system.downlink
-        else:
+        elif admin_param is not None:
             uplink = 0
             downlink = admin_param.used_traffic
+        elif workspace_id is not None:
+            uplink = 0
+            downlink = await get_workspace_used_traffic_total(db, workspace_id)
+        else:
+            uplink = 0
+            downlink = 0
 
         return SystemUsersStats(
             total_user=user_counts["total"],
@@ -110,8 +124,10 @@ class SystemOperation(BaseOperation):
         return SystemStats(**resource_stats.model_dump(), **users_stats.model_dump())
 
     @staticmethod
-    async def get_inbounds() -> list[str]:
-        return await core_manager.get_inbounds()
+    async def get_inbounds(db: AsyncSession) -> list[str]:
+        from app.services.oc_inbound_tags import list_assignable_inbound_tags
+
+        return await list_assignable_inbound_tags(db)
 
     @staticmethod
     async def get_inbound_details() -> list[InboundSummary]:

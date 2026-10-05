@@ -33,14 +33,22 @@ from app.models.group import (
 )
 from app.models.user import BulkOperationDryRunResponse, UserListQuery
 from app.node.sync import sync_users
+from app.models.admin import AdminDetails
 from app.operation import BaseOperation, OperatorType
 from app.operation.permissions import apply_group_access
+from app.operation.user import _actor_workspace_id
+from app.services.workspace_scope import resolve_tenant_workspace_scope
 from app.utils.logger import get_logger
 
 logger = get_logger("group-operation")
 
 
 class GroupOperation(BaseOperation):
+    async def _resource_scope(self, db: AsyncSession, admin: Admin) -> tuple[int | None, int | None]:
+        if admin.is_owner:
+            return None, None
+        return await resolve_tenant_workspace_scope(db, admin)
+
     async def _get_group_with_access(self, db: AsyncSession, group_id: int, admin: Admin) -> Group:
         """Fetch a group, returning 404 if it doesn't exist or is outside the admin's allowed set."""
         allowed = apply_group_access(admin, [group_id])
@@ -63,9 +71,27 @@ class GroupOperation(BaseOperation):
         except ValueError as exc:  # WireGuard subnet exhausted
             await self.raise_error(message=str(exc), code=400, db=db)
 
+    async def check_inbound_tags(self, db: AsyncSession, tags: list[str], admin: Admin) -> None:
+        from app.services.oc_inbound_tags import validate_inbound_tags_for_group
+
+        tenant_id, workspace_id = await self._resource_scope(db, admin)
+        await validate_inbound_tags_for_group(
+            db,
+            tags,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            raise_error=self.raise_error,
+        )
+
     async def create_group(self, db: AsyncSession, new_group: GroupCreate, admin: Admin) -> Group:
-        await self.check_inbound_tags(new_group.inbound_tags)
-        db_group = await create_group(db, new_group, tenant_id=admin.tenant_id if not admin.is_owner else None)
+        await self.check_inbound_tags(db, new_group.inbound_tags, admin)
+        tenant_id, workspace_id = await self._resource_scope(db, admin)
+        db_group = await create_group(
+            db,
+            new_group,
+            tenant_id=tenant_id if not admin.is_owner else None,
+            workspace_id=workspace_id if not admin.is_owner else None,
+        )
 
         group = GroupResponse.model_validate(db_group)
 
@@ -76,7 +102,8 @@ class GroupOperation(BaseOperation):
 
     async def get_all_groups(self, db: AsyncSession, query: GroupListQuery, admin: Admin) -> GroupsResponse:
         query.ids = apply_group_access(admin, query.ids)
-        db_groups, count = await get_group(db, query, tenant_id=admin.tenant_id if not admin.is_owner else None)
+        tenant_id, workspace_id = await self._resource_scope(db, admin)
+        db_groups, count = await get_group(db, query, tenant_id=tenant_id, workspace_id=workspace_id)
         return GroupsResponse(groups=db_groups, total=count)
 
     async def get_groups_simple(
@@ -87,8 +114,9 @@ class GroupOperation(BaseOperation):
     ) -> GroupsSimpleResponse:
         """Get lightweight group list with only id and name"""
         query.ids = apply_group_access(admin, query.ids)
+        tenant_id, workspace_id = await self._resource_scope(db, admin)
         rows, total = await get_groups_simple(
-            db=db, query=query, tenant_id=admin.tenant_id if not admin.is_owner else None
+            db=db, query=query, tenant_id=tenant_id, workspace_id=workspace_id
         )
         groups = [GroupSimple(id=row[0], name=row[1]) for row in rows]
         return GroupsSimpleResponse(groups=groups, total=total)
@@ -96,13 +124,15 @@ class GroupOperation(BaseOperation):
     async def modify_group(self, db: AsyncSession, group_id: int, modified_group: GroupModify, admin: Admin) -> Group:
         db_group = await self._get_group_with_access(db, group_id, admin)
         if modified_group.inbound_tags is not None:
-            await self.check_inbound_tags(modified_group.inbound_tags)
+            await self.check_inbound_tags(db, modified_group.inbound_tags, admin)
         db_group = await modify_group(db, db_group, modified_group)
 
         users = await get_users(
             db,
             query=UserListQuery(group_ids=[db_group.id]),
             load_admin_role=True,
+            tenant_id=admin.tenant_id,
+            workspace_id=admin.workspace_id,
         )
         await self._sync_users_allocations(db, users)
         await self._enqueue_oc_sync_for_users(db, users)
@@ -119,12 +149,23 @@ class GroupOperation(BaseOperation):
     async def remove_group(self, db: AsyncSession, group_id: int, admin: Admin) -> None:
         db_group = await self._get_group_with_access(db, group_id, admin)
 
-        users = await get_users(db, query=UserListQuery(group_ids=[db_group.id]))
+        users = await get_users(
+            db,
+            query=UserListQuery(group_ids=[db_group.id]),
+            tenant_id=admin.tenant_id,
+            workspace_id=admin.workspace_id,
+        )
         username_list = [user.username for user in users]
 
         await remove_group(db, db_group)
 
-        users = await get_users(db, query=UserListQuery(username=username_list), load_admin_role=True)
+        users = await get_users(
+            db,
+            query=UserListQuery(username=username_list),
+            load_admin_role=True,
+            tenant_id=admin.tenant_id,
+            workspace_id=admin.workspace_id,
+        )
         await self._sync_users_allocations(db, users)
         await self._enqueue_oc_sync_for_users(db, users)
         await db.commit()
@@ -134,13 +175,14 @@ class GroupOperation(BaseOperation):
 
         asyncio.create_task(notification.remove_group(db_group.id, admin.username))
 
-    async def bulk_add_groups(self, db: AsyncSession, bulk_model: BulkGroup, admin: Admin):
+    async def bulk_add_groups(self, db: AsyncSession, bulk_model: BulkGroup, admin: AdminDetails):
         await self.validate_all_groups(db, bulk_model, admin)
+        workspace_id = await _actor_workspace_id(db, admin)
         if bulk_model.dry_run:
-            n = await count_bulk_group_scope(db, bulk_model)
+            n = await count_bulk_group_scope(db, bulk_model, workspace_id=workspace_id)
             return BulkOperationDryRunResponse(affected_users=n)
 
-        users, users_count = await add_groups_to_users(db, bulk_model)
+        users, users_count = await add_groups_to_users(db, bulk_model, workspace_id=workspace_id)
         await self._sync_users_allocations(db, users)
         await self._enqueue_oc_sync_for_users(db, users)
         await db.commit()
@@ -150,13 +192,14 @@ class GroupOperation(BaseOperation):
             return {"detail": f"operation has been successfuly done on {users_count} users"}
         return users_count
 
-    async def bulk_remove_groups(self, db: AsyncSession, bulk_model: BulkGroup, admin: Admin):
+    async def bulk_remove_groups(self, db: AsyncSession, bulk_model: BulkGroup, admin: AdminDetails):
         await self.validate_all_groups(db, bulk_model, admin)
+        workspace_id = await _actor_workspace_id(db, admin)
         if bulk_model.dry_run:
-            n = await count_bulk_group_scope(db, bulk_model)
+            n = await count_bulk_group_scope(db, bulk_model, workspace_id=workspace_id)
             return BulkOperationDryRunResponse(affected_users=n)
 
-        users, users_count = await remove_groups_from_users(db, bulk_model)
+        users, users_count = await remove_groups_from_users(db, bulk_model, workspace_id=workspace_id)
         await self._sync_users_allocations(db, users)
         await self._enqueue_oc_sync_for_users(db, users)
         await db.commit()
@@ -173,8 +216,14 @@ class GroupOperation(BaseOperation):
         requested_ids = list(bulk_groups.ids)
         allowed_ids = apply_group_access(admin, requested_ids)
         # Fetch all allowed groups in one query
+        tenant_id, workspace_id = await self._resource_scope(db, admin)
         db_groups = await get_groups_by_ids(
-            db, allowed_ids or [], load_users=False, load_inbounds=False, tenant_id=admin.tenant_id if not admin.is_owner else None
+            db,
+            allowed_ids or [],
+            load_users=False,
+            load_inbounds=False,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
         )
         # Verify all requested ids were found and accessible
         found_ids = {g.id for g in db_groups}
@@ -184,7 +233,12 @@ class GroupOperation(BaseOperation):
 
         all_affected_usernames = set()
         for db_group in db_groups:
-            users = await get_users(db, query=UserListQuery(group_ids=[db_group.id]))
+            users = await get_users(
+            db,
+            query=UserListQuery(group_ids=[db_group.id]),
+            tenant_id=admin.tenant_id,
+            workspace_id=admin.workspace_id,
+        )
             all_affected_usernames.update(user.username for user in users)
 
         group_ids = [g.id for g in db_groups]
@@ -194,7 +248,11 @@ class GroupOperation(BaseOperation):
 
         if all_affected_usernames:
             users = await get_users(
-                db, query=UserListQuery(username=list(all_affected_usernames)), load_admin_role=True
+                db,
+                query=UserListQuery(username=list(all_affected_usernames)),
+                load_admin_role=True,
+                tenant_id=admin.tenant_id,
+                workspace_id=admin.workspace_id,
             )
             await self._sync_users_allocations(db, users)
             await self._enqueue_oc_sync_for_users(db, users)
@@ -222,8 +280,14 @@ class GroupOperation(BaseOperation):
     ) -> BulkGroupsActionResponse:
         requested_ids = list(bulk_groups.ids)
         allowed_ids = apply_group_access(admin, requested_ids)
+        tenant_id, workspace_id = await self._resource_scope(db, admin)
         db_groups = await get_groups_by_ids(
-            db, allowed_ids or [], load_users=False, load_inbounds=False, tenant_id=admin.tenant_id if not admin.is_owner else None
+            db,
+            allowed_ids or [],
+            load_users=False,
+            load_inbounds=False,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
         )
         found_ids = {g.id for g in db_groups}
         for gid in requested_ids:
@@ -246,6 +310,8 @@ class GroupOperation(BaseOperation):
                 db,
                 query=UserListQuery(group_ids=[group.id for group in groups_to_update]),
                 load_admin_role=True,
+                tenant_id=admin.tenant_id,
+                workspace_id=admin.workspace_id,
             )
             await self._sync_users_allocations(db, users)
             await self._enqueue_oc_sync_for_users(db, users)

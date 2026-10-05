@@ -31,6 +31,12 @@ export const updatePanel = (id: number | string, data: { multiplier?: number; na
   })
 }
 
+export const deletePanel = (id: number | string): Promise<void> => {
+  return fetcher<void>(`/api/panels/${id}`, {
+    method: 'DELETE',
+  })
+}
+
 export const useGetPanels = () => {
   return useQuery<PanelItem[]>({
     queryKey: ['/api/panels'],
@@ -51,16 +57,44 @@ export interface OCPanelItem {
   panel_type: string
   name: string
   status: string
+  already_imported?: boolean
+  imported_panel_id?: number | null
+}
+
+export interface TelegramConnectionStatus {
+  status: string
+  active?: boolean
+  telegram_user_id?: number
+  oc_account_id?: number
+  verified_at?: string
+  connected_at?: string
+  bot_url?: string | null
+  step?: string | null
+}
+
+export function formatApiError(err: unknown, fallback: string): string {
+  const anyErr = err as {
+    data?: { detail?: unknown }
+    response?: { _data?: { detail?: unknown }; data?: { detail?: unknown } }
+    message?: string
+  }
+  const detail =
+    anyErr?.data?.detail ??
+    anyErr?.response?._data?.detail ??
+    anyErr?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail) && detail.length > 0) return String(detail[0])
+  if (anyErr?.message && !anyErr.message.startsWith('[')) return anyErr.message
+  return fallback
 }
 
 export const getTelegramConnection = () =>
-  fetcher<{ status: string; telegram_user_id?: number; oc_account_id?: number; verified_at?: string }>(
-    '/api/integration/telegram-connection'
-  )
+  fetcher<TelegramConnectionStatus>('/api/integration/telegram-connection')
 
 export const startTelegramConnection = () =>
   fetcher<{ intent_id: string; bot_url: string; status: string }>('/api/integration/telegram-connection/start', {
     method: 'POST',
+    body: JSON.stringify({}),
   })
 
 export const confirmTelegramConnection = (code: string) =>
@@ -68,6 +102,12 @@ export const confirmTelegramConnection = (code: string) =>
     '/api/integration/telegram-connection/confirm',
     { method: 'POST', body: JSON.stringify({ code }) }
   )
+
+export const revokeTelegramConnection = () =>
+  fetcher<void>('/api/integration/telegram-connection/revoke', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
 
 export const getAvailablePanels = () => fetcher<{ items: OCPanelItem[] }>('/api/integration/available-panels')
 
@@ -95,18 +135,30 @@ export const syncPanel = (panelId: number, data: { selected_group_ids: string[];
     body: JSON.stringify(data)
   })
 
+export interface OcHostTechnicalSummary {
+  protocol?: string | null
+  network?: string | null
+  address: string[]
+  port?: number | null
+  subscription_synced?: boolean
+}
+
 export interface PanelHostItem {
   id: number
   display_name: string
+  display_name_template?: string | null
   source_config_name: string
   group_name: string | null
   address: string[]
+  technical?: OcHostTechnicalSummary | null
   is_disabled: boolean
   multiplier: number
+  is_oc_imported?: boolean
 }
 
 export interface PanelHostUpdateData {
   display_name?: string
+  display_name_template?: string
   is_disabled?: boolean
 }
 

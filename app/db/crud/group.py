@@ -53,6 +53,7 @@ async def get_group_by_id(
     load_users: bool = True,
     load_inbounds: bool = True,
     tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> Group | None:
     """
     Retrieves a group by its ID.
@@ -67,13 +68,20 @@ async def get_group_by_id(
     stmt = select(Group).where(Group.id == group_id)
     if tenant_id is not None:
         stmt = stmt.where(Group.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(Group.workspace_id == workspace_id)
     group = (await db.execute(stmt)).unique().scalar_one_or_none()
     if group:
         await load_group_attrs(group, load_users=load_users, load_inbounds=load_inbounds)
     return group
 
 
-async def create_group(db: AsyncSession, group: GroupCreate, tenant_id: int | None = None) -> Group:
+async def create_group(
+    db: AsyncSession,
+    group: GroupCreate,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
+) -> Group:
     """
     Creates a new group in the database.
 
@@ -90,6 +98,7 @@ async def create_group(db: AsyncSession, group: GroupCreate, tenant_id: int | No
         inbounds=await get_inbounds_by_tags(db, group.inbound_tags),
         is_disabled=group.is_disabled,
         tenant_id=tenant_id,
+        workspace_id=workspace_id,
     )
     db.add(db_group)
     await db.commit()
@@ -98,7 +107,12 @@ async def create_group(db: AsyncSession, group: GroupCreate, tenant_id: int | No
     return db_group
 
 
-async def get_group(db: AsyncSession, query: GroupListQuery, tenant_id: int | None = None) -> tuple[list[Group], int]:
+async def get_group(
+    db: AsyncSession,
+    query: GroupListQuery,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
+) -> tuple[list[Group], int]:
     """
     Retrieves a list of groups with optional pagination.
 
@@ -116,6 +130,8 @@ async def get_group(db: AsyncSession, query: GroupListQuery, tenant_id: int | No
         groups = groups.where(Group.id.in_(query.ids))
     if tenant_id is not None:
         groups = groups.where(Group.tenant_id == tenant_id)
+    if workspace_id is not None:
+        groups = groups.where(Group.workspace_id == workspace_id)
 
     # Build count on the base filter before adding pagination or eager loads
     base_stmt = select(Group)
@@ -123,6 +139,8 @@ async def get_group(db: AsyncSession, query: GroupListQuery, tenant_id: int | No
         base_stmt = base_stmt.where(Group.id.in_(query.ids))
     if tenant_id is not None:
         base_stmt = base_stmt.where(Group.tenant_id == tenant_id)
+    if workspace_id is not None:
+        base_stmt = base_stmt.where(Group.workspace_id == workspace_id)
     count_query = select(func.count()).select_from(base_stmt.subquery())
 
     if query.offset:
@@ -142,6 +160,7 @@ async def get_groups_simple(
     db: AsyncSession,
     query: GroupSimpleListQuery,
     tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> tuple[list[tuple[int, str]], int]:
     """
     Retrieves lightweight group data with only id and name.
@@ -161,6 +180,8 @@ async def get_groups_simple(
         stmt = stmt.where(Group.name.ilike(f"%{query.search}%"))
     if tenant_id is not None:
         stmt = stmt.where(Group.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(Group.workspace_id == workspace_id)
 
     if query.sort:
         stmt = stmt.order_by(*[_build_group_simple_sort_clause(sort_option) for sort_option in query.sort])
@@ -192,6 +213,7 @@ async def get_groups_by_ids(
     load_users: bool = True,
     load_inbounds: bool = True,
     tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> list[Group]:
     """
     Retrieves a list of groups by their IDs.
@@ -209,6 +231,8 @@ async def get_groups_by_ids(
     stmt = select(Group).where(Group.id.in_(group_ids))
     if tenant_id is not None:
         stmt = stmt.where(Group.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(Group.workspace_id == workspace_id)
     options = []
     if load_users:
         options.append(selectinload(Group.users))

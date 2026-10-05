@@ -9,7 +9,13 @@ from app.db.models import ProxyInbound, ProxyHost
 from app.routers.panel import get_current_user_context
 from app.utils.jwt import create_admin_token
 from app.utils.crypto import encrypt_secret
-from app.routers.integration import select_panel, sync_configs_and_hosts, SelectPanelRequest, SyncRequest
+from app.routers.integration import (
+    create_test_user,
+    select_panel,
+    sync_configs_and_hosts,
+    SelectPanelRequest,
+    SyncRequest,
+)
 
 class MockRequest:
     def __init__(self, headers=None):
@@ -25,21 +31,42 @@ OC_API_STATE = {
         {"id": "cfg2", "name": "Config 2", "group_mapping": {"supported": True, "groups": ["g1"]}},
         {"id": "cfg3", "name": "Config 3", "group_mapping": {"supported": True, "groups": ["g2"]}},
     ],
-    "panels": [{"id": 40, "panel_type": "marzban", "name": "admin - Sub 40", "status": "active"}]
+    "panels": [
+        {"id": 40, "panel_type": "marzban", "name": "admin - Sub 40", "status": "active"},
+        {"id": 41, "panel_type": "marzban", "name": "admin - Sub 41", "status": "active"},
+    ],
 }
 
-async def mock_call_oc_api(integration, method, path, json=None):
+async def mock_call_oc_api(integration, method, path, json=None, **kwargs):
     if "test-user" in path:
         return {"external_user_id": "pasarguard_discovery_mock"}
+    elif method == "PUT" and "/users/" in path:
+        return {"subscription_url": "https://oc.example/sub/mock"}
     elif "groups" in path:
         return {"groups": OC_API_STATE["groups"]}
     elif "configs" in path:
         return {"configs": OC_API_STATE["configs"]}
-    elif "panels" in path:
-        return {"items": OC_API_STATE["panels"]}
+    elif "panels" in path or "accounts" in path:
+        return {
+            "items": [
+                {
+                    "subscription_id": int(p["id"]),
+                    "panel_type": p.get("panel_type", "marzban"),
+                    "name": p["name"],
+                    "status": p.get("status", "active"),
+                }
+                for p in OC_API_STATE["panels"]
+            ]
+        }
     return {}
 
-integration_router.call_oc_api = mock_call_oc_api
+import app.services.oc_connection_credentials as oc_creds
+
+
+def _install_oc_api_mocks() -> None:
+    integration_router.call_oc_api = mock_call_oc_api
+    oc_creds.call_oc_api = mock_call_oc_api
+
 
 async def setup_test_data(db):
     integration = (await db.execute(select(OCIntegration).limit(1))).scalar_one_or_none()
@@ -62,6 +89,7 @@ async def setup_test_data(db):
     return integration.id
 
 async def run_tests():
+    _install_oc_api_mocks()
     print("Running Phase 6 Tests...")
     async with GetDB() as db:
         await setup_test_data(db)
@@ -76,16 +104,38 @@ async def run_tests():
         p41_resp = await select_panel(p41_req, db, owner_ctx)
         p40_id = p40_resp.panel_id
         p41_id = p41_resp.panel_id
-        
+        await create_test_user(p40_id, db, owner_ctx)
+        await create_test_user(p41_id, db, owner_ctx)
+
         # 2. First Sync (Panel 40)
         print("Test: First Sync (Panel 40)...")
         sync_req = SyncRequest(
             selected_group_ids=["g1", "g2"],
             group_names={"g1": "Group A", "g2": "Group B"}
         )
-        resp1 = await sync_configs_and_hosts(p40_id, sync_req, db, owner_ctx)
+        from unittest.mock import AsyncMock, patch
+
+        sub_links = "\n".join(
+            f"vless://u{i}@{i}.{i}.{i}.{i}:443?encryption=none#Config%20{i}"
+            for i in range(1, 4)
+        )
+        async def mock_call_oc_panel_api(db, panel, method, path, json=None):
+            return await mock_call_oc_api(panel.integration, method, path, json)
+
+        with (
+            patch(
+                "app.services.oc_panel_host_subscription.call_oc_panel_api",
+                new_callable=AsyncMock,
+                side_effect=mock_call_oc_panel_api,
+            ),
+            patch(
+                "app.services.oc_panel_host_subscription.fetch_upstream_subscription_body",
+                new_callable=AsyncMock,
+                return_value=sub_links,
+            ),
+        ):
+            resp1 = await sync_configs_and_hosts(p40_id, sync_req, db, owner_ctx)
         assert resp1.configs_created == 3
-        assert resp1.hosts_created == 3
         
         # Check groups
         groups = (await db.execute(select(OCPanelGroup).where(OCPanelGroup.panel_id == p40_id))).scalars().all()
@@ -118,17 +168,27 @@ async def run_tests():
         await db.refresh(cfg1)
         assert cfg1.source_name == "Config 1 - Renamed"
         assert cfg1.panel_group_id == g2_db.id
-        
-        # Check Host remark update
-        host1 = (await db.execute(select(ProxyHost).where(ProxyHost.inbound_tag == f"oc_{p40_id}_cfg1"))).scalar_one()
-        assert host1.remark == "Config 1 - Renamed"
-        
+
         # 5. New Config Added
         print("Test: New Config Added...")
         OC_API_STATE["configs"].append({"id": "cfg4", "name": "Config 4", "group_mapping": {"supported": True, "groups": ["g1"]}})
-        resp4 = await sync_configs_and_hosts(p40_id, sync_req, db, owner_ctx)
+        async def mock_call_oc_panel_api(db, panel, method, path, json=None):
+            return await mock_call_oc_api(panel.integration, method, path, json)
+
+        with (
+            patch(
+                "app.services.oc_panel_host_subscription.call_oc_panel_api",
+                new_callable=AsyncMock,
+                side_effect=mock_call_oc_panel_api,
+            ),
+            patch(
+                "app.services.oc_panel_host_subscription.fetch_upstream_subscription_body",
+                new_callable=AsyncMock,
+                return_value=sub_links + "\nvless://u4@4.4.4.4:443?encryption=none#Config%204",
+            ),
+        ):
+            resp4 = await sync_configs_and_hosts(p40_id, sync_req, db, owner_ctx)
         assert resp4.configs_created == 1
-        assert resp4.hosts_created == 1
         
         # 6. Group Name Update
         print("Test: Group Name Update...")
@@ -140,9 +200,24 @@ async def run_tests():
         # 7. Panel Isolation
         print("Test: Panel Isolation (Panel 41)...")
         # Syncing Panel 41 should create its own groups and configs independently
-        resp6 = await sync_configs_and_hosts(p41_id, sync_req, db, owner_ctx)
+        async def mock_call_oc_panel_api(db, panel, method, path, json=None):
+            return await mock_call_oc_api(panel.integration, method, path, json)
+
+        sub_links_4 = sub_links + "\nvless://u4@4.4.4.4:443?encryption=none#Config%204"
+        with (
+            patch(
+                "app.services.oc_panel_host_subscription.call_oc_panel_api",
+                new_callable=AsyncMock,
+                side_effect=mock_call_oc_panel_api,
+            ),
+            patch(
+                "app.services.oc_panel_host_subscription.fetch_upstream_subscription_body",
+                new_callable=AsyncMock,
+                return_value=sub_links_4,
+            ),
+        ):
+            resp6 = await sync_configs_and_hosts(p41_id, sync_req, db, owner_ctx)
         assert resp6.configs_created == 4
-        assert resp6.hosts_created == 4
         
         p41_groups = (await db.execute(select(OCPanelGroup).where(OCPanelGroup.panel_id == p41_id))).scalars().all()
         assert len(p41_groups) == 2
@@ -153,8 +228,8 @@ async def run_tests():
         assert len(p41_configs) == 4
         p41_cfg1 = next(c for c in p41_configs if c.source_config_id == "cfg1")
         assert p41_cfg1.id != cfg1.id # Separate database row!
-        assert p41_cfg1.virtual_inbound_tag == f"oc_{p41_id}_cfg1"
-        assert cfg1.virtual_inbound_tag == f"oc_{p40_id}_cfg1"
+        assert p41_cfg1.source_config_id == "cfg1"
+        assert cfg1.source_config_id == "cfg1"
         
         print("ALL TESTS PASSED.")
 

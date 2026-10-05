@@ -143,10 +143,10 @@ async def get_node_settings(_: AdminDetails = Depends(require_permission("nodes"
 async def get_usage(
     query: Annotated[NodeUsageQuery, Depends(get_node_usage_query)],
     db: AsyncSession = Depends(get_db),
-    _: AdminDetails = Depends(require_permission("nodes", "stats")),
+    admin: AdminDetails = Depends(require_permission("nodes", "stats")),
 ):
     """Retrieve usage statistics for nodes within a specified date range."""
-    return await node_operator.get_usage(db=db, query=query)
+    return await node_operator.get_usage(db=db, query=query, admin=admin)
 
 
 @router.get("/user_counts/{metric}", response_model=UserCountMetricStatsList)
@@ -154,15 +154,10 @@ async def get_user_count_metric(
     metric: UserCountMetric,
     query: Annotated[NodeUsageQuery, Depends(get_node_usage_query)],
     db: AsyncSession = Depends(get_db),
-    _: AdminDetails = Depends(require_permission("nodes", "stats")),
+    admin: AdminDetails = Depends(require_permission("nodes", "stats")),
 ):
     """Retrieve one user activity/status count metric from node user usage rows."""
-    try:
-        validate_user_count_metric_scope(metric, node_id=query.node_id, group_by_node=query.group_by_node)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-    return await node_operator.get_user_count_metric(db=db, metric=metric, query=query)
+    return await node_operator.get_user_count_metric(db=db, metric=metric, query=query, admin=admin)
 
 
 @router.get("s", response_model=NodesResponse)
@@ -359,10 +354,12 @@ async def realtime_nodes_stats(_: AdminDetails = Depends(require_permission("nod
 
 @router.get("/online_stats/{user_id}/ip", response_model=UserIPListAll)
 async def user_online_ip_list_all_nodes(
-    user_id: int, db: AsyncSession = Depends(get_db), _: AdminDetails = Depends(require_permission("nodes", "stats"))
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(require_permission("nodes", "stats")),
 ):
     """Retrieve user ips from all nodes."""
-    return await node_operator.get_user_ip_list_all_nodes(db=db, user_id=user_id)
+    return await node_operator.get_user_ip_list_all_nodes(db=db, user_id=user_id, admin=admin)
 
 
 @router.get("/{node_id}/online_stats/{user_id}", response_model=dict[int, int])
@@ -370,10 +367,12 @@ async def user_online_stats(
     node_id: int,
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    _: AdminDetails = Depends(require_permission("nodes", "stats")),
+    admin: AdminDetails = Depends(require_permission("nodes", "stats")),
 ):
     """Retrieve user online stats by node."""
-    return await node_operator.get_user_online_stats_by_node(db=db, node_id=node_id, user_id=user_id)
+    return await node_operator.get_user_online_stats_by_node(
+        db=db, node_id=node_id, user_id=user_id, admin=admin
+    )
 
 
 @router.get("/{node_id}/online_stats/{user_id}/ip", response_model=UserIPList)
@@ -381,10 +380,12 @@ async def user_online_ip_list(
     node_id: int,
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    _: AdminDetails = Depends(require_permission("nodes", "stats")),
+    admin: AdminDetails = Depends(require_permission("nodes", "stats")),
 ):
     """Retrieve user ips by node."""
-    return await node_operator.get_user_ip_list_by_node(db=db, node_id=node_id, user_id=user_id)
+    return await node_operator.get_user_ip_list_by_node(
+        db=db, node_id=node_id, user_id=user_id, admin=admin
+    )
 
 
 @router.delete(
