@@ -3,6 +3,19 @@ import type { AdminDetails, AdminsResponse, GetAdminsParams } from '@/service/ap
 
 const ADMINS_QUERY_KEY = '/api/admins'
 
+/** Normalize orval-wrapped or raw API admin payloads for cache updates. */
+export const coerceAdminDetails = (value: unknown): AdminDetails => {
+  if (!value || typeof value !== 'object') {
+    return value as AdminDetails
+  }
+  const record = value as Record<string, unknown>
+  const nested = record.data
+  if (nested && typeof nested === 'object' && 'username' in nested) {
+    return nested as AdminDetails
+  }
+  return value as AdminDetails
+}
+
 const toNumber = (value: unknown): number | undefined => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string' && value.trim() !== '') {

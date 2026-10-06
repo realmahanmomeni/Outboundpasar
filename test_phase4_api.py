@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, delete
 
 from app.db import GetDB
-from app.db.models_oc import OCIntegration, OCPanel, OCPanelConfig
+from app.db.models_oc import OCIntegration, OCPanel, OCPanelConfig, OCPanelDestinationHost
 from app.routers.panel import list_panels, get_panel, get_current_user_context
 from app.utils.jwt import create_admin_token, create_customer_token
 from app.utils.crypto import encrypt_secret
@@ -86,6 +86,17 @@ async def setup_test_data(db):
     )
     db.add(cfg1)
     db.add(cfg2)
+    # User-facing config count is materialized destination hosts (not catalog rows).
+    for idx, dest_id in enumerate(("dest-a", "dest-b"), start=1):
+        db.add(
+            OCPanelDestinationHost(
+                panel_id=panel_mahan_1.id,
+                destination_config_id=dest_id,
+                display_name=f"test-host-{idx}",
+                source_missing=False,
+                locally_hidden=False,
+            )
+        )
     await db.commit()
 
     return {

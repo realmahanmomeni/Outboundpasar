@@ -172,6 +172,7 @@ class AdminModify(BaseModel):
     notification_enable: UserNotificationEnable | None = None
     role_id: int | None = None
     permission_overrides: RoleLimits | None = None
+    tenant_id: int | None = None
 
     @field_validator("discord_webhook")
     @classmethod

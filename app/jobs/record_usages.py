@@ -19,7 +19,6 @@ from app.db import GetDB
 from app.db.base import engine
 from app.db.models import Admin, Node, NodeUsage, NodeUserUsage, System, User
 from app.node import node_manager
-from app.node.oc_usage import record_oc_user_usages
 from app.node.user import parse_xray_identity
 from app.operation.admin_sync import enforce_admin_limits_now
 from app.utils.logger import get_logger
@@ -781,13 +780,6 @@ async def _record_user_usages_impl():
         await _record_node_user_usages_impl()
     except Exception:
         logger.exception("Native node user usage recording failed")
-
-    # 2. Outbound Center Usage Recording
-    try:
-        await record_oc_user_usages()
-    except Exception:
-        logger.exception("Outbound Center user usage recording failed")
-
 
 async def record_user_usages():
     """Record user usages. Overlapping ticks are skipped; there is no global kill.

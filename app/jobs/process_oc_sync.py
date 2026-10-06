@@ -18,6 +18,7 @@ from app.services.oc_integration_client import (
     _read_oc_error_detail,
 )
 from app.services.oc_connection_credentials import panel_has_active_connection
+from app.services.oc_user_mapping_state import OC_MAPPING_STATUS_DELETED
 from app.db.models import User
 from app.utils.crypto import decrypt_secret
 from app.utils.logger import get_logger
@@ -186,8 +187,46 @@ async def process_oc_sync():
                     )).scalar_one_or_none()
 
                     if job.operation in ("create", "update"):
-                        if not panel or not panel.integration.is_active:
-                            raise ValueError(f"Panel {panel_id} not found or integration disabled")
+                        mapping_precheck = (
+                            await db.execute(
+                                select(OCUserMapping).where(
+                                    OCUserMapping.user_id == user_id,
+                                    OCUserMapping.panel_id == panel_id,
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if not panel or mapping_precheck is None:
+                            logger.info(
+                                "OC_RECONCILE_SKIP stale %s job=%s user_id=%s panel_id=%s",
+                                job.operation,
+                                job.id,
+                                user_id,
+                                panel_id,
+                            )
+                            await db.execute(
+                                update(OCSyncState)
+                                .where(OCSyncState.id == job.id)
+                                .values(status="completed")
+                            )
+                            job.status = "completed"
+                            await db.commit()
+                            continue
+                        if mapping_precheck.status == OC_MAPPING_STATUS_DELETED:
+                            logger.info(
+                                "OC_RECONCILE_SKIP stale %s job=%s user_id=%s panel_id=%s mapping=deleted",
+                                job.operation,
+                                job.id,
+                                user_id,
+                                panel_id,
+                            )
+                            await db.execute(
+                                update(OCSyncState)
+                                .where(OCSyncState.id == job.id)
+                                .values(status="completed")
+                            )
+                            job.status = "completed"
+                            await db.commit()
+                            continue
                         db_user = await db.get(User, user_id)
                         if db_user is None:
                             raise ValueError(f"User {user_id} not found for sync job {job.id}")

@@ -158,7 +158,12 @@ async def get_admin(
     return admin
 
 
-async def create_admin(db: AsyncSession, admin: AdminCreate) -> Admin:
+async def create_admin(
+    db: AsyncSession,
+    admin: AdminCreate,
+    *,
+    commit: bool = True,
+) -> Admin:
     """
     Creates a new admin in the database.
 
@@ -169,13 +174,13 @@ async def create_admin(db: AsyncSession, admin: AdminCreate) -> Admin:
     Returns:
         Admin: The created admin object.
     """
-    db_admin = Admin(
-        **admin.model_dump(exclude={"password", "tenant_id"}),
-        hashed_password=await hash_password(admin.password),
-    )
+    db_admin = Admin(**admin.model_dump(exclude={"password"}), hashed_password=await hash_password(admin.password))
     db.add(db_admin)
-    await db.commit()
-    await db.refresh(db_admin)
+    if commit:
+        await db.commit()
+        await db.refresh(db_admin)
+    else:
+        await db.flush()
     await load_admin_attrs(db_admin)
     return db_admin
 

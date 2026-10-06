@@ -96,8 +96,20 @@ async def test_group_options_exclude_legacy_catalog_and_inbounds_api():
         assert errors
 
 
+async def test_group_host_options_ignore_core_inbound_tags():
+    """Core xray inbound tags must not appear unless backed by a ProxyHost row."""
+    core_only_tag = f"core_only_{uuid.uuid4().hex[:10]}"
+    async with GetDB() as db:
+        with patch("app.core.manager.core_manager.get_inbounds", new_callable=AsyncMock) as mock_inbounds:
+            mock_inbounds.return_value = [core_only_tag]
+            options = await list_group_host_options(db)
+        tags = {o.inbound_tag for o in options}
+        assert core_only_tag not in tags
+
+
 async def main():
     await test_group_options_exclude_legacy_catalog_and_inbounds_api()
+    await test_group_host_options_ignore_core_inbound_tags()
     print("test_oc_group_picker_inventory: OK")
 
 

@@ -43,8 +43,39 @@ def _normalize_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
+_CONFIGURATION_SCHEMES = (
+    "vless://",
+    "vmess://",
+    "trojan://",
+    "ss://",
+    "hysteria2://",
+    "hy2://",
+    "wireguard://",
+)
+
+
+def is_importable_configuration_link(link: str) -> bool:
+    """
+    True when a subscription line is a usable proxy share link (not plain/HTML metadata).
+
+    Remark content is not used to reject imports.
+    """
+    raw = (link or "").strip()
+    if not raw or len(raw) > 8192:
+        return False
+    lower = raw.lower()
+    if lower.startswith("<") or "<html" in lower or "<!doctype" in lower:
+        return False
+    if not any(lower.startswith(scheme) for scheme in _CONFIGURATION_SCHEMES):
+        return False
+    if parse_share_link(raw) is not None:
+        return True
+    return lower.startswith(("hysteria2://", "hy2://", "wireguard://"))
+
+
 def decode_subscription_links(body: str) -> list[str]:
-    return _decode_links_payload(body or "")
+    lines = _decode_links_payload(body or "")
+    return [line for line in lines if is_importable_configuration_link(line)]
 
 
 def subscription_link_uri_fingerprint(link: str) -> str | None:
@@ -60,6 +91,18 @@ def subscription_link_uri_fingerprint(link: str) -> str | None:
 
 def destination_virtual_inbound_tag(panel_id: int, destination_config_id: str) -> str:
     return f"oc_{panel_id}_d_{destination_config_id}"
+
+
+def effective_destination_inbound_tag(
+    panel_id: int,
+    destination_config_id: str,
+    stored_virtual_inbound_tag: str | None,
+) -> str:
+    """Canonical group/subscription tag for a panel destination row."""
+    stored = (stored_virtual_inbound_tag or "").strip()
+    if stored and is_oc_destination_inbound_tag(stored):
+        return stored
+    return destination_virtual_inbound_tag(panel_id, destination_config_id)
 
 
 def is_oc_destination_inbound_tag(tag: str | None) -> bool:
@@ -81,12 +124,16 @@ def parse_destination_tag(tag: str) -> tuple[int, str] | None:
 
 
 def subscription_config_links(links: list[str]) -> list[ParsedShareLink]:
-    """Destination subscription configs (excludes presentation-only links)."""
+    """Destination subscription configs (one per importable share link)."""
     out: list[ParsedShareLink] = []
     seen_uri: set[str] = set()
     for link in links:
+        if not is_importable_configuration_link(link):
+            continue
         parsed = parse_share_link(link)
-        if parsed is None or _is_presentation_only_link(parsed):
+        if parsed is None:
+            parsed = _parse_opaque_share_link(link)
+        if parsed is None:
             continue
         fp = subscription_link_uri_fingerprint(parsed.raw)
         if not fp or fp in seen_uri:
@@ -108,7 +155,39 @@ def parse_share_link(link: str) -> ParsedShareLink | None:
         return _parse_vmess(raw)
     if raw.startswith("ss://"):
         return _parse_shadowsocks(raw)
+    if raw.startswith("hysteria2://") or raw.startswith("hy2://"):
+        return _parse_opaque_share_link(raw)
+    if raw.startswith("wireguard://"):
+        return _parse_opaque_share_link(raw)
     return None
+
+
+def _parse_opaque_share_link(raw: str) -> ParsedShareLink | None:
+    """Minimal parser for schemes we materialize but do not fully decode."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if "#" in text:
+        base, frag = text.split("#", 1)
+        remark = unquote(frag)
+    else:
+        base, remark = text, ""
+    scheme = base.split("://", 1)[0].lower() if "://" in base else ""
+    if scheme in ("hysteria2", "hy2"):
+        protocol = "hysteria2"
+    elif scheme == "wireguard":
+        protocol = "wireguard"
+    else:
+        return None
+    return ParsedShareLink(
+        raw=text,
+        protocol=protocol,
+        address="",
+        port=None,
+        remark=remark,
+        network="tcp",
+        extra={},
+    )
 
 
 def _parse_vless_trojan(raw: str, protocol: str) -> ParsedShareLink | None:
@@ -235,20 +314,6 @@ def _remark_hints(remark: str) -> set[str]:
     return hints
 
 
-def _is_presentation_only_link(parsed: ParsedShareLink) -> bool:
-    remark = (parsed.remark or "").strip()
-    lower = remark.lower()
-    if remark.startswith(("📡", "👤", "📊", "⏰")):
-        return True
-    if "status|" in lower or "v1.7|" in lower:
-        return True
-    if lower.startswith("user:") or "data remaining" in lower or "days remaining" in lower:
-        return True
-    if "اپدیت" in remark or "update" in lower and "sub" in lower:
-        return True
-    return False
-
-
 def match_link_for_config(
     index: dict[str, ParsedShareLink],
     *,
@@ -257,14 +322,11 @@ def match_link_for_config(
     candidates: list[ParsedShareLink] | None = None,
 ) -> ParsedShareLink | None:
     pool = candidates if candidates is not None else list(index.values())
-    pool = [p for p in pool if not _is_presentation_only_link(p)]
 
     for candidate in (source_config_id, source_name):
         key = _normalize_key(candidate)
         if key and key in index:
-            parsed = index[key]
-            if not _is_presentation_only_link(parsed):
-                return parsed
+            return index[key]
     # Fuzzy: remark contains config id substring
     norm_id = _normalize_key(source_config_id)
     if norm_id:
@@ -334,8 +396,14 @@ def match_upstream_link_for_oc_source_config(
     if parsed is None:
         return None
     norm_remark = _normalize_key(parsed.remark)
-    if norm_remark and sum(1 for p in pool if _normalize_key(p.remark) == norm_remark) > 1:
-        return None
+    if norm_remark:
+        dupes = [p for p in pool if _normalize_key(p.remark) == norm_remark]
+        if len(dupes) > 1:
+            identities = {
+                vless_trojan_client_uuid(p.raw) or p.raw for p in dupes
+            }
+            if len(identities) > 1:
+                return None
     return parsed.raw
 
 
@@ -344,8 +412,13 @@ def match_links_to_configs(
     configs: list[tuple[str, str]],
 ) -> dict[str, ParsedShareLink]:
     """Map source_config_id -> parsed link (one link per config, no reuse)."""
-    parsed_links = [p for p in (parse_share_link(link) for link in links) if p is not None]
-    parsed_links = [p for p in parsed_links if not _is_presentation_only_link(p)]
+    parsed_links = []
+    for link in links:
+        if not is_importable_configuration_link(link):
+            continue
+        p = parse_share_link(link) or _parse_opaque_share_link(link)
+        if p is not None:
+            parsed_links.append(p)
     index = index_subscription_links(links)
     assigned: dict[str, ParsedShareLink] = {}
     used: set[str] = set()
@@ -364,8 +437,21 @@ def match_links_to_configs(
     return assigned
 
 
+def share_link_config_base(link: str) -> str:
+    """Share link URI without the ``#remark`` fragment (config identity for vless/trojan/ss)."""
+    return (link or "").split("#", 1)[0]
+
+
+def vless_trojan_client_uuid(link: str) -> str | None:
+    """Client UUID/user id embedded in a vless/trojan share link (not an OC internal tag)."""
+    parsed = urlparse(share_link_config_base(link))
+    if parsed.scheme not in ("vless", "trojan") or not parsed.username:
+        return None
+    return unquote(parsed.username)
+
+
 def replace_link_remark(link: str, remark: str) -> str:
     from urllib.parse import quote
 
-    base = link.split("#", 1)[0]
+    base = share_link_config_base(link)
     return f"{base}#{quote(remark)}"

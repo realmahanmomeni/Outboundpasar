@@ -3,7 +3,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import User, ProxyHost, ProxyInbound, inbounds_groups_association
+from app.db.models import User, ProxyHost, ProxyInbound
 from app.db.models_oc import (
     OCIntegration,
     OCPanel,
@@ -16,10 +16,16 @@ from app.db.models_oc import (
 )
 from app.node.user import _bucket_inbounds, _inbounds_from_loaded_groups
 from app.services.oc_connection_credentials import panel_has_active_connection
+from app.services.oc_reconcile import (
+    ReconcileAction,
+    classify_mapping_action,
+    normalize_config_set,
+)
 from app.services.oc_user_mapping_state import (
     OC_MAPPING_STATUS_ACTIVE,
     OC_MAPPING_STATUS_DELETED,
     OC_MAPPING_STATUS_PENDING,
+    mapping_needs_subscription_url_repair,
     resolve_oc_sync_operation,
 )
 from app.utils.logger import get_logger
@@ -52,6 +58,12 @@ def _user_panel_workspace_compatible(db_user: User, panel: OCPanel) -> bool:
     return db_user.workspace_id == panel.workspace_id
 
 
+def owned_mapping_external_user_id(mapping: OCUserMapping) -> str | None:
+    """Remote OC user id PasarGuard may delete (must come from a local mapping row)."""
+    ext = str(mapping.external_user_id or "").strip()
+    return ext if ext else None
+
+
 def _delete_sync_payload(
     mapping: OCUserMapping,
     *,
@@ -62,7 +74,10 @@ def _delete_sync_payload(
     connection_id: int | None = None,
 ) -> dict[str, Any]:
     """Self-contained OC delete job payload (survives OCPanel / mapping CASCADE)."""
-    payload: dict[str, Any] = {"external_user_id": mapping.external_user_id}
+    external_user_id = owned_mapping_external_user_id(mapping)
+    if not external_user_id:
+        raise ValueError("OC delete payload requires a non-empty external_user_id from OCUserMapping")
+    payload: dict[str, Any] = {"external_user_id": external_user_id}
     if source_panel_id is not None:
         payload["source_panel_id"] = source_panel_id
     if integration_id is not None:
@@ -85,6 +100,13 @@ async def enqueue_mapping_delete_sync(
     *,
     connection_id: int | None = None,
 ) -> None:
+    if mapping.panel_id != panel_id:
+        raise ValueError(
+            f"OCUserMapping panel_id {mapping.panel_id} does not match delete target panel {panel_id}"
+        )
+    if not owned_mapping_external_user_id(mapping):
+        return
+
     last_configs = mapping.last_synced_configs
     if last_configs is not None:
         last_configs = sorted(last_configs)
@@ -215,44 +237,24 @@ async def remove_imported_panel(db_session: AsyncSession, panel: OCPanel) -> Non
     removes local virtual inbounds/hosts and the OCPanel row (does not delete
     remote Outbound Center infrastructure).
     """
-    await enqueue_discovery_user_delete_sync(db_session, panel)
-    await enqueue_panel_user_deletions(db_session, panel.id)
-    catalog_tags = (
+    mapping_count = (
         await db_session.execute(
-            select(OCPanelConfig.virtual_inbound_tag).where(OCPanelConfig.panel_id == panel.id)
+            select(OCUserMapping.id).where(OCUserMapping.panel_id == panel.id)
         )
     ).scalars().all()
-    dest_rows = (
-        await db_session.execute(
-            select(
-                OCPanelDestinationHost.virtual_inbound_tag,
-                OCPanelDestinationHost.destination_config_id,
-            ).where(OCPanelDestinationHost.panel_id == panel.id)
-        )
-    ).all()
-    from app.services.oc_share_link import destination_virtual_inbound_tag
+    logger.info(
+        "OC_PANEL_DELETE_CLEANUP panel_id=%s mapping_count=%s source_panel_id=%s",
+        panel.id,
+        len(mapping_count),
+        panel.source_panel_id,
+    )
+    await enqueue_discovery_user_delete_sync(db_session, panel)
+    await enqueue_panel_user_deletions(db_session, panel.id)
+    from app.services.oc_destination_host_lifecycle import teardown_imported_panel_local_resources
 
-    dest_tags: list[str] = []
-    for virt_tag, dest_id in dest_rows:
-        if virt_tag:
-            dest_tags.append(virt_tag)
-        elif dest_id:
-            dest_tags.append(destination_virtual_inbound_tag(panel.id, dest_id))
-    tags = [t for t in (*catalog_tags, *dest_tags) if t]
+    await teardown_imported_panel_local_resources(db_session, panel)
     await db_session.delete(panel)
     await db_session.flush()
-    if tags:
-        inbound_ids = (
-            await db_session.execute(select(ProxyInbound.id).where(ProxyInbound.tag.in_(tags)))
-        ).scalars().all()
-        if inbound_ids:
-            await db_session.execute(
-                delete(inbounds_groups_association).where(
-                    inbounds_groups_association.c.inbound_id.in_(inbound_ids)
-                )
-            )
-        await db_session.execute(delete(ProxyHost).where(ProxyHost.inbound_tag.in_(tags)))
-        await db_session.execute(delete(ProxyInbound).where(ProxyInbound.tag.in_(tags)))
 
 
 async def enqueue_workspace_panel_user_deletions(
@@ -361,6 +363,49 @@ async def selected_oc_panel_group_ids(db_session: AsyncSession, panel_id: int) -
     return sorted(set(rows))
 
 
+async def resolve_desired_config_ids_for_panel(
+    db_session: AsyncSession, panel_id: int, tags: list[str]
+) -> list[str]:
+    from app.services.oc_destination_runtime import source_config_ids_for_panel_tags
+
+    if not tags:
+        return []
+    configs = await source_config_ids_for_panel_tags(db_session, panel_id, tags)
+    if not configs:
+        configs = list(
+            (
+                await db_session.execute(
+                    select(OCPanelConfig.source_config_id).where(
+                        OCPanelConfig.panel_id == panel_id,
+                        OCPanelConfig.virtual_inbound_tag.in_(tags),
+                        OCPanelConfig.source_missing == False,
+                    )
+                )
+            ).scalars().all()
+        )
+    return sorted(configs)
+
+
+def _log_reconcile_action(
+    action: ReconcileAction,
+    *,
+    user_id: int,
+    panel_id: int,
+    mapping_id: int | None,
+    external_user_id: str | None,
+    reason: str,
+) -> None:
+    logger.info(
+        "%s user_id=%s panel_id=%s mapping_id=%s external_user_id=%s reason=%s",
+        action.value,
+        user_id,
+        panel_id,
+        mapping_id,
+        external_user_id or "-",
+        reason,
+    )
+
+
 async def build_oc_user_put_payload(
     db_session: AsyncSession, panel_id: int, config_ids: list[str]
 ) -> dict[str, list[str]]:
@@ -402,6 +447,10 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
     
     existing_panel_ids = {m.panel_id: m for m in existing_mappings}
 
+    from app.services.oc_reconcile import DesiredPanelState
+
+    desired_panel_ids: set[int] = set()
+
     for panel_id in active_panel_ids:
         if not await tenant_panel_allows_oc_user_mutations(db_session, panel_id):
             continue
@@ -410,6 +459,32 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
         if panel_row is not None and not _user_panel_workspace_compatible(db_user, panel_row):
             continue
 
+        tags = buckets.get(panel_id) or []
+        configs = await resolve_desired_config_ids_for_panel(db_session, panel_id, tags)
+        from app.services.oc_share_link import parse_destination_tag
+
+        has_destination_host_tags = any(parse_destination_tag(t) for t in tags)
+        if not configs and not has_destination_host_tags:
+            mapping = existing_panel_ids.get(panel_id)
+            if mapping is not None:
+                action = classify_mapping_action(
+                    mapping,
+                    DesiredPanelState(panel_id=panel_id, desired_active=False, config_ids=frozenset()),
+                )
+                if action == ReconcileAction.DELETE:
+                    _log_reconcile_action(
+                        action,
+                        user_id=db_user.id,
+                        panel_id=panel_id,
+                        mapping_id=mapping.id,
+                        external_user_id=mapping.external_user_id,
+                        reason="empty_desired_configs",
+                    )
+                    await enqueue_mapping_delete_sync(db_session, db_user.id, panel_id, mapping)
+            continue
+
+        desired_panel_ids.add(panel_id)
+        desired_set = normalize_config_set(configs)
         mapping = existing_panel_ids.get(panel_id)
         is_new_mapping = False
         if not mapping:
@@ -420,80 +495,101 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
                 status=OC_MAPPING_STATUS_PENDING,
             )
             db_session.add(mapping)
-            await db_session.flush() # flush to get external_user_id ready if needed
+            await db_session.flush()
             existing_panel_ids[panel_id] = mapping
             is_new_mapping = True
-        
-        # Determine source_config_ids from the virtual inbound tags
-        tags = buckets.get(panel_id)
-        if tags:
-            from app.services.oc_destination_runtime import source_config_ids_for_panel_tags
 
-            configs = await source_config_ids_for_panel_tags(db_session, panel_id, tags)
-            if not configs:
-                configs = list(
-                    (
-                        await db_session.execute(
-                            select(OCPanelConfig.source_config_id).where(
-                                OCPanelConfig.panel_id == panel_id,
-                                OCPanelConfig.virtual_inbound_tag.in_(tags),
-                                OCPanelConfig.source_missing == False,
-                            )
-                        )
-                    ).scalars().all()
-                )
-        else:
-            configs = []
-            
-        configs = sorted(configs)
-        
-        # Phase 10: check drift
+        action = classify_mapping_action(
+            mapping,
+            DesiredPanelState(panel_id=panel_id, desired_active=True, config_ids=desired_set),
+        )
+        if action == ReconcileAction.NOOP:
+            continue
+
         last_configs = mapping.last_synced_configs
         if last_configs is not None:
             last_configs = sorted(last_configs)
-            
+
         needs_sync = (
             is_new_mapping
             or last_configs is None
             or mapping.status != OC_MAPPING_STATUS_ACTIVE
-            or last_configs != configs
+            or normalize_config_set(last_configs) != desired_set
+            or mapping_needs_subscription_url_repair(mapping, desired_set)
         )
-        if needs_sync:
-            if mapping.status != OC_MAPPING_STATUS_ACTIVE:
-                mapping.status = OC_MAPPING_STATUS_PENDING
-            entity_id = f"{db_user.id}_{panel_id}"
-            
-            pending_job = (await db_session.execute(
-                select(OCSyncState)
-                .where(
+        if not needs_sync:
+            continue
+
+        log_action = (
+            ReconcileAction.CREATE
+            if action in (ReconcileAction.CREATE, ReconcileAction.REPAIR)
+            and is_new_mapping
+            else action
+        )
+        if action == ReconcileAction.REPAIR:
+            log_action = ReconcileAction.REPAIR
+        _log_reconcile_action(
+            log_action,
+            user_id=db_user.id,
+            panel_id=panel_id,
+            mapping_id=mapping.id,
+            external_user_id=mapping.external_user_id,
+            reason=f"status={mapping.status} configs={sorted(desired_set)}",
+        )
+
+        if mapping.status != OC_MAPPING_STATUS_ACTIVE:
+            mapping.status = OC_MAPPING_STATUS_PENDING
+        entity_id = f"{db_user.id}_{panel_id}"
+
+        pending_job = (
+            await db_session.execute(
+                select(OCSyncState).where(
                     OCSyncState.entity_type == "user_mapping",
                     OCSyncState.entity_id == entity_id,
-                    OCSyncState.status == "pending"
+                    OCSyncState.status == "pending",
                 )
-            )).scalars().first()
-
-            operation = resolve_oc_sync_operation(
-                mapping, is_new_mapping=is_new_mapping, last_configs=last_configs
             )
-            payload = await build_oc_user_put_payload(db_session, panel_id, configs)
+        ).scalars().first()
 
-            if pending_job:
+        operation = resolve_oc_sync_operation(
+            mapping, is_new_mapping=is_new_mapping, last_configs=last_configs
+        )
+        payload = await build_oc_user_put_payload(db_session, panel_id, configs)
+
+        if pending_job:
+            if pending_job.operation == "delete":
                 pending_job.operation = operation
-                pending_job.payload = payload
-                pending_job.revision += 1
-            else:
-                job = OCSyncState(
-                    entity_type="user_mapping",
-                    entity_id=entity_id,
-                    operation=operation,
-                    idempotency_key=f"sync_{db_user.id}_{panel_id}_{uuid.uuid4()}",
-                    payload=payload,
-                    status="pending"
-                )
-                db_session.add(job)
-        
+            pending_job.payload = payload
+            pending_job.revision += 1
+        else:
+            job = OCSyncState(
+                entity_type="user_mapping",
+                entity_id=entity_id,
+                operation=operation,
+                idempotency_key=f"sync_{db_user.id}_{panel_id}_{uuid.uuid4()}",
+                payload=payload,
+                status="pending",
+            )
+            db_session.add(job)
+
     for panel_id, mapping in existing_panel_ids.items():
-        if panel_id not in active_panel_ids:
+        if panel_id in desired_panel_ids:
+            continue
+        if panel_id in active_panel_ids:
+            continue
+        action = classify_mapping_action(
+            mapping,
+            DesiredPanelState(panel_id=panel_id, desired_active=False, config_ids=frozenset()),
+        )
+        if action == ReconcileAction.DELETE:
+            _log_reconcile_action(
+                action,
+                user_id=db_user.id,
+                panel_id=panel_id,
+                mapping_id=mapping.id,
+                external_user_id=mapping.external_user_id,
+                reason="panel_not_desired",
+            )
             await enqueue_mapping_delete_sync(db_session, db_user.id, panel_id, mapping)
 
 def oc_panel_status_to_sync_status(oc_status: Any) -> str:

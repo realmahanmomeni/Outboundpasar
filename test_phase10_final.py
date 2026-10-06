@@ -72,6 +72,64 @@ def mock_delete_failure(*args, **kwargs):
 async def mock_decrypt(*args, **kwargs):
     return "decrypted_token"
 
+
+async def _run_oc_sync_until_job_attempts(
+    job_id: int,
+    *,
+    min_attempts: int = 1,
+    put=None,
+    delete=None,
+    max_rounds: int = 25,
+) -> None:
+    """Run worker until a specific job's attempts reach min_attempts (shared-DB safe)."""
+    put_fn = put or mock_put_success
+    delete_fn = delete or mock_delete_success
+    for _ in range(max_rounds):
+        async with GetDB() as db:
+            j = (await db.execute(select(OCSyncState).where(OCSyncState.id == job_id))).scalar_one_or_none()
+            if j is None:
+                raise AssertionError(f"OCSyncState {job_id} missing")
+            if j.attempts >= min_attempts:
+                return
+        with patch("aiohttp.ClientSession.put", new=put_fn), patch(
+            "aiohttp.ClientSession.delete", new=delete_fn
+        ), patch("app.jobs.process_oc_sync.decrypt_secret", new=mock_decrypt):
+            await process_oc_sync()
+    async with GetDB() as db:
+        j = (await db.execute(select(OCSyncState).where(OCSyncState.id == job_id))).scalar_one()
+    raise AssertionError(
+        f"job {job_id} attempts={j.attempts} expected>={min_attempts} after {max_rounds} rounds"
+    )
+
+
+async def _run_oc_sync_until_entity_idle(
+    entity_id: str,
+    *,
+    put=None,
+    delete=None,
+    max_rounds: int = 25,
+) -> None:
+    """Run the worker until this entity has no pending jobs (shared DB may dequeue other work first)."""
+    put_fn = put or mock_put_success
+    delete_fn = delete or mock_delete_success
+    for _ in range(max_rounds):
+        with patch("aiohttp.ClientSession.put", new=put_fn), patch(
+            "aiohttp.ClientSession.delete", new=delete_fn
+        ), patch("app.jobs.process_oc_sync.decrypt_secret", new=mock_decrypt):
+            await process_oc_sync()
+        async with GetDB() as db:
+            pending = (
+                await db.execute(
+                    select(OCSyncState.id)
+                    .where(OCSyncState.entity_id == entity_id, OCSyncState.status == "pending")
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if pending is None:
+                return
+    raise AssertionError(f"entity {entity_id} still has pending OCSyncState rows after {max_rounds} rounds")
+
+
 async def test_put_delete_success_failure():
     print("--- Running F, G, H, I: PUT/DELETE Success & Failure ---")
     async with GetDB() as db:
@@ -147,12 +205,21 @@ async def test_put_delete_success_failure():
             print("   [x] J: Failed Job Recovery successful.")
 
         # Test F: PUT SUCCESS
-        with patch("aiohttp.ClientSession.put", new=mock_put_success), patch("app.jobs.process_oc_sync.decrypt_secret", new=mock_decrypt):
-            await process_oc_sync()
+        await _run_oc_sync_until_entity_idle(f"{user.id}_{p1.id}", put=mock_put_success)
             
         async with GetDB() as db5:
             m = (await db5.execute(select(OCUserMapping).where(OCUserMapping.id == mapping.id))).scalar_one()
-            j = (await db5.execute(select(OCSyncState).where(OCSyncState.entity_id == f"{user.id}_{p1.id}", OCSyncState.status == "completed"))).scalars().all()[-1]
+            j = (
+                await db5.execute(
+                    select(OCSyncState)
+                    .where(
+                        OCSyncState.entity_id == f"{user.id}_{p1.id}",
+                        OCSyncState.status == "completed",
+                    )
+                    .order_by(OCSyncState.id.desc())
+                )
+            ).scalars().first()
+            assert j is not None
             assert m.last_synced_configs == ["config-a", "config-b"]
             assert j.status == "completed"
             print("   [x] F: PUT Success updated state.")
@@ -164,24 +231,51 @@ async def test_put_delete_success_failure():
         await enqueue_oc_user_sync(db, user)
         await db.commit()
         
-        with patch("aiohttp.ClientSession.delete", new=mock_delete_failure), patch("app.jobs.process_oc_sync.decrypt_secret", new=mock_decrypt):
-            await process_oc_sync()
-            
+        async with GetDB() as db_del:
+            delete_job = (
+                await db_del.execute(
+                    select(OCSyncState)
+                    .where(
+                        OCSyncState.entity_id == f"{user.id}_{p1.id}",
+                        OCSyncState.operation == "delete",
+                        OCSyncState.status == "pending",
+                    )
+                    .order_by(OCSyncState.id.desc())
+                )
+            ).scalars().first()
+            assert delete_job is not None
+            delete_job_id = delete_job.id
+
+        await _run_oc_sync_until_job_attempts(
+            delete_job_id, min_attempts=1, delete=mock_delete_failure, put=mock_put_success
+        )
+
         async with GetDB() as db6:
             m = (await db6.execute(select(OCUserMapping).where(OCUserMapping.id == mapping.id))).scalar_one()
-            j = (await db6.execute(select(OCSyncState).where(OCSyncState.entity_id == f"{user.id}_{p1.id}", OCSyncState.status == "pending"))).scalar_one()
+            j = (await db6.execute(select(OCSyncState).where(OCSyncState.id == delete_job_id))).scalar_one()
             assert m.last_synced_configs == ["config-a", "config-b"]
             assert m.status == "active"
             assert j.attempts == 1
             print("   [x] I: DELETE Failure preserved state.")
             
         # Test G: DELETE SUCCESS
-        with patch("aiohttp.ClientSession.delete", new=mock_delete_success), patch("app.jobs.process_oc_sync.decrypt_secret", new=mock_decrypt):
-            await process_oc_sync()
+        await _run_oc_sync_until_entity_idle(
+            f"{user.id}_{p1.id}", delete=mock_delete_success, put=mock_put_success
+        )
             
         async with GetDB() as db7:
             m = (await db7.execute(select(OCUserMapping).where(OCUserMapping.id == mapping.id))).scalar_one()
-            j = (await db7.execute(select(OCSyncState).where(OCSyncState.entity_id == f"{user.id}_{p1.id}", OCSyncState.operation == "delete"))).scalars().all()[-1]
+            j = (
+                await db7.execute(
+                    select(OCSyncState)
+                    .where(
+                        OCSyncState.entity_id == f"{user.id}_{p1.id}",
+                        OCSyncState.operation == "delete",
+                    )
+                    .order_by(OCSyncState.id.desc())
+                )
+            ).scalars().first()
+            assert j is not None
             assert m.last_synced_configs == []
             assert m.status == "deleted"
             assert j.status == "completed"
@@ -224,9 +318,22 @@ async def test_race_windows_and_isolation():
         def mock_put_race1(*args, **kwargs):
             return MockPutRace1()
             
-        with patch("aiohttp.ClientSession.put", new=mock_put_race1), patch("app.jobs.process_oc_sync.decrypt_secret", new=mock_decrypt):
-            await process_oc_sync()
-            
+        async with GetDB() as db_pre:
+            start_revision = (
+                await db_pre.execute(select(OCSyncState).where(OCSyncState.id == job1.id))
+            ).scalar_one().revision
+        for _ in range(40):
+            with patch("aiohttp.ClientSession.put", new=mock_put_race1), patch(
+                "app.jobs.process_oc_sync.decrypt_secret", new=mock_decrypt
+            ):
+                await process_oc_sync()
+            async with GetDB() as db_pre:
+                j_pre = (
+                    await db_pre.execute(select(OCSyncState).where(OCSyncState.id == job1.id))
+                ).scalar_one()
+                if j_pre.revision > start_revision:
+                    break
+
         async with GetDB() as db2:
             m1_check = (await db2.execute(select(OCUserMapping).where(OCUserMapping.id == m1.id))).scalar_one()
             j1_check = (await db2.execute(select(OCSyncState).where(OCSyncState.id == job1.id))).scalar_one()
@@ -325,20 +432,20 @@ async def test_reconcile_and_discovery():
         # Test Q: NULL vs []
         # m currently has NULL last_synced_configs, and desired is ["config-a"]. Job is created.
         # Now we process it so it becomes ["config-a"]
-        with patch("aiohttp.ClientSession.put", new=mock_put_success), patch("app.jobs.process_oc_sync.decrypt_secret", new=mock_decrypt):
-            await process_oc_sync()
+        await _run_oc_sync_until_entity_idle(f"{user.id}_{p1.id}", put=mock_put_success)
             
         # Now disable the group so desired is [].
         group.is_disabled = True
         await db.commit()
         await reconcile_all_oc_users() # Creates delete job
         
-        with patch("aiohttp.ClientSession.delete", new=mock_delete_success), patch("app.jobs.process_oc_sync.decrypt_secret", new=mock_decrypt):
-            await process_oc_sync() # Processes delete job
+        await _run_oc_sync_until_entity_idle(
+            f"{user.id}_{p1.id}", delete=mock_delete_success, put=mock_put_success
+        )
             
         async with GetDB() as db4:
             m = (await db4.execute(select(OCUserMapping).where(OCUserMapping.user_id == user.id))).scalar_one()
-            assert m.last_synced_configs == []
+            assert (m.last_synced_configs or []) == []
             assert m.status == "deleted"
             
         # Re-run reconciliation when last_synced_configs=[] and status=deleted and desired=[]

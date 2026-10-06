@@ -20,9 +20,38 @@ from app.services.oc_integration_client import (
 from app.services.oc_actor_connection import resolve_oc_telegram_connection_for_actor
 from app.services.oc_telegram_connection import require_active_telegram_for_tenant_admin
 from app.services.tenant_admin_scope import require_admin_tenant_id
+from app.services.oc_panel_available_configs import (
+    available_config_counts_by_panel,
+    panel_available_config_count,
+)
 from app.services.workspace_scope import ensure_actor_panel_access, require_admin_workspace_id
 
 router = APIRouter(prefix="/api/panels", tags=["Panels"])
+
+
+def _panel_list_stmt():
+    return select(OCPanel).options(selectinload(OCPanel.integration)).order_by(OCPanel.id.asc())
+
+
+def _panel_by_id_stmt(panel_id: int):
+    return select(OCPanel).options(selectinload(OCPanel.integration)).where(OCPanel.id == panel_id)
+
+
+def _panel_response(panel: OCPanel, *, available_configs: int) -> OCPanelResponse:
+    return OCPanelResponse(
+        id=panel.id,
+        integration_id=panel.integration_id,
+        name=panel.name,
+        source_panel_id=panel.source_panel_id,
+        purchaser_identity=panel.purchaser_identity,
+        sync_status=panel.sync_status,
+        multiplier=float(panel.multiplier) if panel.multiplier is not None else 1.0,
+        configs_count=available_configs,
+        test_user_id=panel.test_user_id,
+        last_sync_at=panel.last_sync_at,
+        created_at=panel.created_at,
+        updated_at=panel.updated_at,
+    )
 
 
 async def _tenant_oc_panel_filter(
@@ -222,7 +251,7 @@ async def list_panels(
     user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_user_context),
 ):
     identity, is_owner, admin = user_context
-    stmt = select(OCPanel).options(selectinload(OCPanel.configs)).order_by(OCPanel.id.asc())
+    stmt = _panel_list_stmt()
     if not is_owner:
         if admin is not None:
             tenant_id, oc_state, oc_account_id = await _tenant_oc_panel_filter(db, admin, is_owner=is_owner)
@@ -239,22 +268,10 @@ async def list_panels(
 
     result = await db.execute(stmt)
     panels = result.scalars().all()
+    available_counts = await available_config_counts_by_panel(db, panels)
 
     return [
-        OCPanelResponse(
-            id=p.id,
-            integration_id=p.integration_id,
-            name=p.name,
-            source_panel_id=p.source_panel_id,
-            purchaser_identity=p.purchaser_identity,
-            sync_status=p.sync_status,
-            multiplier=float(p.multiplier) if p.multiplier is not None else 1.0,
-            configs_count=len(p.configs) if p.configs else 0,
-            test_user_id=p.test_user_id,
-            last_sync_at=p.last_sync_at,
-            created_at=p.created_at,
-            updated_at=p.updated_at,
-        )
+        _panel_response(p, available_configs=available_counts.get(p.id, 0))
         for p in panels
     ]
 
@@ -266,7 +283,7 @@ async def get_panel(
     user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_user_context),
 ):
     identity, is_owner, admin = user_context
-    stmt = select(OCPanel).options(selectinload(OCPanel.configs)).where(OCPanel.id == panel_id)
+    stmt = _panel_by_id_stmt(panel_id)
     result = await db.execute(stmt)
     panel = result.scalar_one_or_none()
 
@@ -280,20 +297,8 @@ async def get_panel(
             if oc_state == "disconnected" or panel.oc_account_id != oc_account_id:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
 
-    return OCPanelResponse(
-        id=panel.id,
-        integration_id=panel.integration_id,
-        name=panel.name,
-        source_panel_id=panel.source_panel_id,
-        purchaser_identity=panel.purchaser_identity,
-        sync_status=panel.sync_status,
-        multiplier=float(panel.multiplier) if panel.multiplier is not None else 1.0,
-        configs_count=len(panel.configs) if panel.configs else 0,
-        test_user_id=panel.test_user_id,
-        last_sync_at=panel.last_sync_at,
-        created_at=panel.created_at,
-        updated_at=panel.updated_at,
-    )
+    available = await panel_available_config_count(db, panel)
+    return _panel_response(panel, available_configs=available)
 
 
 @router.delete("/{panel_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -325,7 +330,7 @@ async def update_panel(
     user_context: tuple[str, bool, AdminDetails] = Depends(get_current_admin_user_context),
 ):
     identity, is_owner, admin = user_context
-    stmt = select(OCPanel).options(selectinload(OCPanel.configs)).where(OCPanel.id == panel_id)
+    stmt = _panel_by_id_stmt(panel_id)
     result = await db.execute(stmt)
     panel = result.scalar_one_or_none()
 
@@ -340,22 +345,10 @@ async def update_panel(
         panel.multiplier = float(update_data.multiplier)
 
     await db.commit()
-    await db.refresh(panel)
+    await db.refresh(panel, attribute_names=["integration"])
 
-    return OCPanelResponse(
-        id=panel.id,
-        integration_id=panel.integration_id,
-        name=panel.name,
-        source_panel_id=panel.source_panel_id,
-        purchaser_identity=panel.purchaser_identity,
-        sync_status=panel.sync_status,
-        multiplier=float(panel.multiplier) if panel.multiplier is not None else 1.0,
-        configs_count=len(panel.configs) if panel.configs else 0,
-        test_user_id=panel.test_user_id,
-        last_sync_at=panel.last_sync_at,
-        created_at=panel.created_at,
-        updated_at=panel.updated_at,
-    )
+    available = await panel_available_config_count(db, panel)
+    return _panel_response(panel, available_configs=available)
 
 @router.post("/{panel_id}/sync", response_model=SyncPanelResponse)
 async def sync_panel(

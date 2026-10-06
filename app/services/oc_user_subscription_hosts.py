@@ -16,6 +16,7 @@ from app.services.oc_share_link import (
     index_subscription_links,
     match_link_for_config,
     parse_destination_tag,
+    parse_share_link,
     replace_link_remark,
 )
 from app.services.oc_subscription_runtime import load_runtime_oc_subscription_state
@@ -105,10 +106,16 @@ async def collect_oc_subscription_links_for_user(
             catalog_names[(panel_id, sid)] = sname
 
     if dest_tags:
+        desired_by_key = {
+            parsed: tag
+            for tag in dest_tags
+            for parsed in [parse_destination_tag(tag)]
+            if parsed is not None
+        }
         dest_rows = await load_destination_hosts_for_tags(db, dest_tags, list(allowed_panels))
         links_by_panel: dict[int, list[str]] = {}
         for dest_host, _proxy in dest_rows:
-            tag = dest_host.virtual_inbound_tag
+            tag = desired_by_key.get((dest_host.panel_id, dest_host.destination_config_id))
             if not tag or tag not in oc_tags:
                 continue
             mapping = mappings.get(dest_host.panel_id)
@@ -119,17 +126,36 @@ async def collect_oc_subscription_links_for_user(
             oc_sid = str(payload.get("oc_source_config_id") or "").strip()
             if oc_sid and synced and oc_sid not in synced:
                 continue
-            if not oc_sid:
-                continue
             if dest_host.panel_id not in links_by_panel:
                 user_links = await _fetch_user_links(mapping)
                 links_by_panel[dest_host.panel_id] = user_links or []
-            source_name = catalog_names.get((dest_host.panel_id, oc_sid), oc_sid)
-            raw = match_upstream_link_for_destination(
-                links_by_panel[dest_host.panel_id],
-                oc_sid,
-                source_name=source_name,
-            )
+            panel_links = links_by_panel[dest_host.panel_id]
+            raw: str | None = None
+            if oc_sid and panel_links:
+                source_name = catalog_names.get((dest_host.panel_id, oc_sid), oc_sid)
+                raw = match_upstream_link_for_destination(
+                    panel_links,
+                    oc_sid,
+                    source_name=source_name,
+                )
+            elif panel_links:
+                index = index_subscription_links(panel_links)
+                parsed_match = match_link_for_config(
+                    index,
+                    source_config_id=dest_host.display_name,
+                    source_name=dest_host.display_name,
+                )
+                raw = parsed_match.raw if parsed_match else None
+                if not raw:
+                    stored = str(payload.get("subscription_link") or "").strip()
+                    disc = parse_share_link(stored) if stored else None
+                    if disc is not None:
+                        parsed_match = match_link_for_config(
+                            index,
+                            source_config_id=disc.remark or dest_host.display_name,
+                            source_name=dest_host.display_name,
+                        )
+                        raw = parsed_match.raw if parsed_match else None
             if not raw:
                 continue
             remark_source = resolve_oc_subscription_remark_source(

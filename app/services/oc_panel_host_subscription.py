@@ -7,11 +7,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models_oc import OCPanel, OCPanelGroup
+from app.db.models_oc import OCPanel, OCPanelConfig, OCPanelGroup
+from app.services.oc_panel_materialization import oc_config_import_eligible
 from app.services.oc_connection_credentials import call_oc_panel_api
 from app.services.oc_integration_client import OcIntegrationApiError
 from app.services.oc_panel_destination_hosts import reconcile_panel_destination_hosts
-from app.services.oc_share_link import decode_subscription_links
+from app.services.oc_share_link import decode_subscription_links, is_importable_configuration_link
 from app.services.oc_upstream_subscription import fetch_upstream_subscription_body
 from app.utils.logger import get_logger
 
@@ -49,21 +50,45 @@ async def refresh_panel_hosts_from_discovery_subscription(
         logger.info("oc_host_sub_skip panel=%s reason=no_selected_groups", panel.id)
         return 0
 
+    catalog_rows = (
+        await db.execute(
+            select(OCPanelConfig).where(
+                OCPanelConfig.panel_id == panel.id,
+                OCPanelConfig.source_missing.is_(False),
+            )
+        )
+    ).scalars().all()
+    catalog_config_ids: list[str] = []
+    for row in catalog_rows:
+        payload = row.source_payload if isinstance(row.source_payload, dict) else {}
+        mapping = payload.get("group_mapping") or {}
+        if oc_config_import_eligible(mapping, groups):
+            catalog_config_ids.append(row.source_config_id)
+
     base = f"/v1/integration/panels/{panel.source_panel_id}"
     path = f"{base}/users/{panel.test_user_id}"
-    body: dict[str, Any] = {"groups": groups, "configs": []}
+    body: dict[str, Any] = {"groups": groups, "configs": catalog_config_ids}
 
     try:
         user_data = await call_oc_panel_api(db, panel, "PUT", path, body)
     except OcIntegrationApiError as exc:
-        if exc.code in ("CONFIG_NOT_ALLOWED", "CONFIG_NOT_IN_GROUPS"):
+        if exc.code in ("CONFIG_NOT_ALLOWED", "CONFIG_NOT_IN_GROUPS") and catalog_config_ids:
+            logger.warning(
+                "oc_host_sub_put_retry_groups_only panel=%s code=%s",
+                panel.id,
+                exc.code,
+            )
+            body = {"groups": groups, "configs": []}
+            user_data = await call_oc_panel_api(db, panel, "PUT", path, body)
+        elif exc.code in ("CONFIG_NOT_ALLOWED", "CONFIG_NOT_IN_GROUPS"):
             logger.warning(
                 "oc_host_sub_put_failed panel=%s code=%s",
                 panel.id,
                 exc.code,
             )
             return 0
-        raise
+        else:
+            raise
     subscription_url = str((user_data or {}).get("subscription_url") or "").strip()
     if not subscription_url:
         logger.warning("oc_host_sub_no_url panel=%s test_user=%s", panel.id, panel.test_user_id)
@@ -80,11 +105,7 @@ async def refresh_panel_hosts_from_discovery_subscription(
         return 0
 
     raw_links = decode_subscription_links(sub_body if isinstance(sub_body, str) else sub_body.decode())
-    links = [
-        link
-        for link in raw_links
-        if link.startswith(("vless://", "vmess://", "trojan://", "ss://", "hysteria2://", "wireguard://"))
-    ]
+    links = [link for link in raw_links if is_importable_configuration_link(link)]
     updated = await reconcile_panel_destination_hosts(db, panel, links)
     from app.services.oc_panel_destination_hosts import ensure_panel_destination_hosts_materialized
 

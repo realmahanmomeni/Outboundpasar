@@ -196,10 +196,11 @@ class BaseOperation:
         scope_resource: str = "users",
         scope_action: str = "read",
     ) -> tuple[int | None, int | None, int | None]:
+        from app.services.tenant_admin_scope import tenant_id_for_actor_queries
         from app.services.workspace_scope import resolve_admin_workspace_id
 
         admin_id = get_scope_admin_id(admin, scope_resource, scope_action)
-        tenant_id = admin.tenant_id if not admin.is_owner else None
+        tenant_id = await tenant_id_for_actor_queries(db, admin)
         workspace_id = None
         if not admin.is_owner:
             workspace_id = await resolve_admin_workspace_id(db, admin, False)

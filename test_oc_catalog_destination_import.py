@@ -98,7 +98,7 @@ async def test_import_metadata_only_two_destination_hosts():
             resp = await sync_configs_and_hosts(panel_id, sync_req, db, owner_ctx)
 
         assert resp.configs_created == 31
-        assert resp.hosts_created == 2
+        assert resp.hosts_created == 3
 
         cfg_count = await db.scalar(
             select(func.count()).select_from(OCPanelConfig).where(OCPanelConfig.panel_id == panel_id)
@@ -113,7 +113,7 @@ async def test_import_metadata_only_two_destination_hosts():
                 OCPanelDestinationHost.source_missing.is_(False),
             )
         )
-        assert dest_count == 2
+        assert dest_count == 3
 
         catalog_hosts = (
             await db.execute(
@@ -123,13 +123,13 @@ async def test_import_metadata_only_two_destination_hosts():
         assert catalog_hosts == []
 
         hosts_api = await list_panel_hosts(panel_id, db, owner_ctx)
-        assert len(hosts_api) == 2
+        assert len(hosts_api) == 3
 
         with patch("app.core.manager.core_manager.get_inbounds", new_callable=AsyncMock) as mock_inbounds:
             mock_inbounds.return_value = []
             options = await list_group_host_options(db)
         oc_opts = [o for o in options if o.panel_id == panel_id]
-        assert len(oc_opts) == 2
+        assert len(oc_opts) == 3
 
         with (
             patch(
@@ -151,7 +151,7 @@ async def test_import_metadata_only_two_destination_hosts():
             .select_from(OCPanelDestinationHost)
             .where(OCPanelDestinationHost.panel_id == panel_id)
         )
-        assert dest_count2 == 2
+        assert dest_count2 == 3
         rows = (
             await db.execute(select(OCPanelDestinationHost).where(OCPanelDestinationHost.panel_id == panel_id))
         ).scalars().all()

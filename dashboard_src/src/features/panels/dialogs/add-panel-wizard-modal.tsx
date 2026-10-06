@@ -188,7 +188,21 @@ export default function AddPanelWizardModal({
   const syncMut = useMutation({
     mutationFn: (data: { panelId: number; req: { selected_group_ids: string[]; group_names: Record<string, string> } }) =>
       syncPanel(data.panelId, data.req),
-    onSuccess: () => {
+    onSuccess: (data: {
+      status?: string
+      warnings?: string[]
+      destination_hosts_total?: number
+      catalog_configs_total?: number
+    }) => {
+      if (data?.warnings?.length) {
+        setErrorMsg(data.warnings.join(' '))
+      }
+      if (data?.status === 'partial') {
+        setErrorMsg(
+          (data.warnings ?? []).join(' ') ||
+            `Partial sync: ${data.destination_hosts_total ?? 0} destination hosts from ${data.catalog_configs_total ?? 0} catalog configs.`,
+        )
+      }
       advanceToNextPanelOrFinish()
     },
     onError: (err: unknown) => setErrorMsg(formatApiError(err, 'Failed to sync configs')),

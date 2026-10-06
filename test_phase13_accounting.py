@@ -420,16 +420,13 @@ async def run_tests():
         # =========================================================================
         # 10. Scheduler Job Integration (_record_user_usages_impl)
         # =========================================================================
-        print("--- 10. Testing Scheduler Job Integration ---")
-        from app.jobs.record_usages import _record_user_usages_impl
+        print("--- 10. Testing OC usage scheduler job ---")
+        from app.jobs.record_oc_usages import record_oc_usages_job
 
-        # Running the full scheduler job with mocked OC API
-        with patch("app.node.oc_usage.fetch_oc_user_usage", new=AsyncMock(return_value=5_000_000)), \
-             patch("app.node.oc_usage.decrypt_secret", new=AsyncMock(return_value="valid_tok")):
-            # Should execute both node usage and OC usage cleanly
-            await _record_user_usages_impl()
+        with patch("app.node.oc_usage.record_oc_user_usages", new=AsyncMock(return_value=0)):
+            await record_oc_usages_job()
 
-        print("   [x] _record_user_usages_impl runs successfully without errors.")
+        print("   [x] record_oc_usages_job runs successfully without errors.")
 
         print("\nALL PHASE 13 TRAFFIC ACCOUNTING TESTS PASSED SUCCESSFULLY!")
 

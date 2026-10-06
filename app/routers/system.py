@@ -14,6 +14,7 @@ from app.models.system import (
     SystemResourceStats,
     SystemStats,
     SystemUsersStats,
+    TenantSummary,
     WireGuardSubnetUsage,
     WorkerHealth,
     WorkersHealth,
@@ -76,6 +77,15 @@ async def get_inbounds(
 ):
     """Retrieve inbound configurations grouped by protocol."""
     return await system_operator.get_inbounds(db)
+
+
+@router.get("/tenants", response_model=list[TenantSummary])
+async def list_tenants(
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(require_permission("admins", "read")),
+):
+    """Tenants available when assigning tenant administrators (filtered, not all integration rows)."""
+    return await system_operator.list_tenants(db, admin)
 
 
 @router.get("/group-host-options", response_model=list[GroupHostOption])

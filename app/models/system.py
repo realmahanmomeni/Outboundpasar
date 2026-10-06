@@ -1,5 +1,13 @@
 from pydantic import BaseModel
 
+from app.db.models import TenantStatus
+
+
+class TenantSummary(BaseModel):
+    id: int
+    name: str
+    status: TenantStatus
+
 
 class InboundSummary(BaseModel):
     tag: str

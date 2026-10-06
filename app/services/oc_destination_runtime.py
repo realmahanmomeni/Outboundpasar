@@ -6,8 +6,10 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ProxyHost
-from app.db.models_oc import OCPanelConfig, OCPanelDestinationHost
+from app.db.models_oc import OCPanel, OCPanelConfig, OCPanelDestinationHost
 from app.services.oc_share_link import (
+    effective_destination_inbound_tag,
+    match_links_to_configs,
     match_upstream_link_for_oc_source_config,
     parse_destination_tag,
 )
@@ -47,11 +49,30 @@ async def source_config_ids_for_panel_tags(
                 )
             )
         ).scalars().all()
+        unmatched_discovery_links: list[str] = []
         for row in rows:
             payload = row.source_payload if isinstance(row.source_payload, dict) else {}
             sid = str(payload.get("oc_source_config_id") or "").strip()
             if sid:
                 config_ids.add(sid)
+                continue
+            raw = str(payload.get("subscription_link") or "").strip()
+            if raw:
+                unmatched_discovery_links.append(raw)
+
+        if unmatched_discovery_links:
+            catalog_configs = (
+                await db.execute(
+                    select(OCPanelConfig).where(
+                        OCPanelConfig.panel_id == panel_id,
+                        OCPanelConfig.source_missing.is_(False),
+                    )
+                )
+            ).scalars().all()
+            if catalog_configs:
+                pairs = [(c.source_config_id, c.source_name) for c in catalog_configs]
+                matched = match_links_to_configs(unmatched_discovery_links, pairs)
+                config_ids.update(matched.keys())
 
     if legacy_tags:
         legacy = (
@@ -82,38 +103,111 @@ def match_upstream_link_for_destination(
     )
 
 
+def _desired_tags_by_destination_key(oc_tags: list[str]) -> dict[tuple[int, str], str]:
+    out: dict[tuple[int, str], str] = {}
+    for tag in oc_tags:
+        parsed = parse_destination_tag(tag)
+        if parsed is not None:
+            out[parsed] = tag
+    return out
+
+
+def _scope_proxy_host_stmt(stmt, panel: OCPanel):
+    if panel.tenant_id is not None:
+        stmt = stmt.where(ProxyHost.tenant_id == panel.tenant_id)
+    if panel.workspace_id is not None:
+        stmt = stmt.where(ProxyHost.workspace_id == panel.workspace_id)
+    return stmt
+
+
+async def _first_proxy_host(db: AsyncSession, stmt) -> ProxyHost | None:
+    return (await db.execute(stmt.order_by(ProxyHost.id.asc()).limit(1))).scalars().first()
+
+
+async def _proxy_host_for_destination(
+    db: AsyncSession,
+    panel: OCPanel,
+    dest: OCPanelDestinationHost,
+    effective_tag: str,
+) -> ProxyHost | None:
+    if dest.virtual_inbound_tag:
+        stmt = _scope_proxy_host_stmt(
+            select(ProxyHost).where(ProxyHost.inbound_tag == dest.virtual_inbound_tag),
+            panel,
+        )
+        host = await _first_proxy_host(db, stmt)
+        if host is not None:
+            return host
+    stmt = _scope_proxy_host_stmt(
+        select(ProxyHost).where(ProxyHost.inbound_tag == effective_tag),
+        panel,
+    )
+    host = await _first_proxy_host(db, stmt)
+    if host is not None:
+        return host
+    remark = (dest.display_name or "").strip()
+    if not remark:
+        return None
+    stmt = select(ProxyHost).where(
+        ProxyHost.inbound_tag.is_(None),
+        ProxyHost.remark == remark,
+        or_(ProxyHost.is_disabled.is_(False), ProxyHost.is_disabled.is_(None)),
+    )
+    stmt = _scope_proxy_host_stmt(stmt, panel)
+    return await _first_proxy_host(db, stmt)
+
+
 async def load_destination_hosts_for_tags(
     db: AsyncSession,
     oc_tags: list[str],
     panel_ids: list[int],
-) -> list[tuple[OCPanelDestinationHost, ProxyHost]]:
-    if not oc_tags:
+) -> list[tuple[OCPanelDestinationHost, ProxyHost | None]]:
+    if not oc_tags or not panel_ids:
         return []
-    parsed_tags = [(t, parse_destination_tag(t)) for t in oc_tags]
-    dest_keys = {p for _, p in parsed_tags if p}
-    if not dest_keys:
+    desired_by_key = _desired_tags_by_destination_key(oc_tags)
+    if not desired_by_key:
         return []
+
     key_clauses = [
         and_(
             OCPanelDestinationHost.panel_id == pid,
             OCPanelDestinationHost.destination_config_id == did,
         )
-        for pid, did in dest_keys
+        for pid, did in desired_by_key
+        if pid in panel_ids
     ]
+    if not key_clauses:
+        return []
+
     tag_clause = OCPanelDestinationHost.virtual_inbound_tag.in_(oc_tags)
     identity_clause = or_(tag_clause, or_(*key_clauses))
 
-    rows = (
+    dest_rows = (
         await db.execute(
-            select(OCPanelDestinationHost, ProxyHost)
-            .join(ProxyHost, ProxyHost.inbound_tag == OCPanelDestinationHost.virtual_inbound_tag)
+            select(OCPanelDestinationHost)
             .where(
                 OCPanelDestinationHost.panel_id.in_(panel_ids),
                 identity_clause,
                 OCPanelDestinationHost.source_missing.is_(False),
                 OCPanelDestinationHost.locally_hidden.is_(False),
-                or_(ProxyHost.is_disabled.is_(False), ProxyHost.is_disabled.is_(None)),
             )
         )
-    ).all()
-    return list(rows)
+    ).scalars().all()
+
+    panels = {
+        p.id: p
+        for p in (await db.execute(select(OCPanel).where(OCPanel.id.in_(panel_ids)))).scalars().all()
+    }
+
+    out: list[tuple[OCPanelDestinationHost, ProxyHost | None]] = []
+    for dest in dest_rows:
+        panel = panels.get(dest.panel_id)
+        if panel is None:
+            continue
+        key = (dest.panel_id, dest.destination_config_id)
+        if key not in desired_by_key:
+            continue
+        effective_tag = desired_by_key[key]
+        proxy = await _proxy_host_for_destination(db, panel, dest, effective_tag)
+        out.append((dest, proxy))
+    return out

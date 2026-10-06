@@ -91,6 +91,20 @@ async def require_admin_tenant_id(
     return tenant_id
 
 
+async def tenant_id_for_actor_queries(
+    db: AsyncSession,
+    admin: AdminDetails,
+) -> int | None:
+    """
+    Tenant filter for non-owner list/read queries.
+
+    Owner receives ``None`` (global). Tenant staff must resolve to a tenant or receive 403.
+    """
+    if admin.is_owner:
+        return None
+    return await require_admin_tenant_id(db, admin, False)
+
+
 async def get_admin_role(db: AsyncSession, role_id: int) -> AdminRole | None:
     return await db.get(AdminRole, role_id)
 

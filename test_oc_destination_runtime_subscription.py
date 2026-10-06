@@ -119,6 +119,13 @@ async def test_duplicate_remark_fails_closed():
     assert match_upstream_link_for_oc_source_config([a, b], "cfg-a", source_name="Same Name") is None
 
 
+async def test_duplicate_remark_same_client_uuid_allowed():
+    a = _customer_link("u1", "Same Name")
+    b = _customer_link("u1", "Same Name")
+    matched = match_upstream_link_for_oc_source_config([a, b], "cfg-a", source_name="Same Name")
+    assert matched == a
+
+
 async def test_collect_subscription_selected_configs_only():
     catalog_a, catalog_b, catalog_c = "Name-A", "Name-B", "Name-C"
     discovery_links = [

@@ -17,7 +17,7 @@ import useDynamicErrorHandler from '@/hooks/use-dynamic-errors.ts'
 import { useCreateAdmin, useGetRolesSimple, useModifyAdminById } from '@/service/api'
 import type { RoleLimits } from '@/service/api'
 import { builtInVariableKeys, normalizeCustomVariablesForPayload } from '@/features/subscriptions/components/subscription-settings-schema'
-import { upsertAdminInAdminsCache } from '@/utils/adminsCache'
+import { coerceAdminDetails, upsertAdminInAdminsCache } from '@/utils/adminsCache'
 import { removeAuthToken } from '@/utils/authStorage'
 import { bytesToFormGigabytes, formatBytes, gbToBytes } from '@/utils/formatByte'
 import { useQueryClient } from '@tanstack/react-query'
@@ -95,10 +95,13 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
   const addAdminMutation = useCreateAdmin()
   const modifyAdminMutation = useModifyAdminById()
   const rolesQuery = useGetRolesSimple()
+  const isOwnerActor =
+    currentAdmin?.is_owner === true || currentAdmin?.role?.is_owner === true || currentAdmin?.role?.id === 1
   const selectedRoleId = form.watch('role_id')
   const customVariables = form.watch('custom_variables') || []
   const typedCustomVariables = customVariables.filter((v): v is { key: string; value?: string } => v.key !== undefined)
   const builtInKeys = new Set<string>(builtInVariableKeys)
+
   const roleOptions = useMemo(() => {
     const rolesById = new Map<number, { id: number; name: string; is_owner: boolean }>()
     BUILTIN_ADMIN_ROLES.forEach(role => rolesById.set(role.id, role))
@@ -109,15 +112,12 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
     })
 
     let options = Array.from(rolesById.values()).sort((a, b) => a.id - b.id)
-    const isTenantAdministrator =
-      currentAdmin != null &&
-      !currentAdmin.is_owner &&
-      (currentAdmin.role?.name === 'administrator' || currentAdmin.role?.id === 2)
-    if (isTenantAdministrator) {
+    // Match backend tenant policy: only owners may assign the administrator role.
+    if (!isOwnerActor) {
       options = options.filter(role => role.id === 3 || role.name === 'operator')
     }
     return options
-  }, [rolesQuery.data?.roles, currentAdmin])
+  }, [rolesQuery.data?.roles, isOwnerActor])
   const selectedRoleExists = selectedRoleId == null || roleOptions.some(role => role.id === selectedRoleId)
 
   useEffect(() => {
@@ -125,6 +125,13 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
       setOpenSection(undefined)
     }
   }, [isDialogOpen])
+
+  useEffect(() => {
+    if (!isDialogOpen || editingAdmin || isOwnerActor) return
+    if (form.getValues('role_id') !== 3) {
+      form.setValue('role_id', 3, { shouldDirty: false, shouldValidate: true })
+    }
+  }, [editingAdmin, form, isDialogOpen, isOwnerActor])
 
   // Accordion: only one section open at a time
   const [openSection, setOpenSection] = useState<string | undefined>(undefined)
@@ -202,17 +209,19 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
         permission_overrides: normalizePermissionOverrides(values.permission_overrides),
       }
       if (editingAdmin && editingAdminId != null) {
-        const updatedAdmin = await modifyAdminMutation.mutateAsync({
-          adminId: editingAdminId,
-          data: editData,
-        })
+        const updatedAdmin = coerceAdminDetails(
+          await modifyAdminMutation.mutateAsync({
+            adminId: editingAdminId,
+            data: editData,
+          }),
+        )
         upsertAdminInAdminsCache(queryClient, updatedAdmin, { allowInsert: true })
+        await queryClient.invalidateQueries({ queryKey: ['/api/admins'] })
         if (passwordChanged && isEditingCurrentAdmin) {
           toast.success(t('admins.passwordChangedTitle', { defaultValue: 'Password changed' }), {
             description: t('admins.passwordChangedLogout', { defaultValue: 'Please sign in again with your new password.' }),
           })
-          onOpenChange(false)
-          form.reset()
+          handleClose(false)
           await queryClient.cancelQueries()
           removeAuthToken()
           queryClient.clear()
@@ -244,10 +253,13 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
           role_id: values.role_id,
           permission_overrides: normalizePermissionOverrides(values.permission_overrides),
         }
-        const createdAdmin = await addAdminMutation.mutateAsync({
-          data: createData,
-        })
+        const createdAdmin = coerceAdminDetails(
+          await addAdminMutation.mutateAsync({
+            data: createData,
+          }),
+        )
         upsertAdminInAdminsCache(queryClient, createdAdmin, { allowInsert: true })
+        await queryClient.invalidateQueries({ queryKey: ['/api/admins'] })
         toast.success(
           t('admins.createSuccess', {
             name: values.username,
@@ -255,8 +267,7 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
           }),
         )
       }
-      onOpenChange(false)
-      form.reset()
+      handleClose(false)
     } catch (error: any) {
       const fields = [
         'username',
@@ -739,7 +750,7 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
               </Accordion>
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              <Button type="button" variant="outline" onClick={() => handleClose(false)}>
                 {t('cancel')}
               </Button>
               <LoaderButton type="submit" isLoading={addAdminMutation.isPending || modifyAdminMutation.isPending} loadingText={editingAdmin ? t('modifying') : t('creating')}>

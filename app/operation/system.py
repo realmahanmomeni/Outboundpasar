@@ -7,9 +7,11 @@ from app.db import AsyncSession
 from app.db.crud.admin import build_admin_details, get_admin
 from app.db.crud.general import get_system_usage
 from app.db.crud.user import get_users_count_metrics, get_workspace_used_traffic_total
-from app.db.models import UserStatus
+from sqlalchemy import select
+
+from app.db.models import Tenant, TenantStatus, UserStatus
 from app.models.admin import AdminDetails
-from app.models.system import InboundSummary, SystemResourceStats, SystemStats, SystemUsersStats
+from app.models.system import InboundSummary, SystemResourceStats, SystemStats, SystemUsersStats, TenantSummary
 from app.operation.permissions import PermissionDenied, enforce_permission, is_scope_all
 from app.services.workspace_scope import ensure_actor_admin_workspace_access, resolve_admin_workspace_id
 from app.utils.system import cpu_usage, disk_usage, get_uptime, memory_usage
@@ -145,3 +147,27 @@ class SystemOperation(BaseOperation):
                 kwargs["wireguard_addresses"] = list(addrs) if isinstance(addrs, list) else None
             summaries.append(InboundSummary(**kwargs))
         return summaries
+
+    @staticmethod
+    async def list_tenants(db: AsyncSession, admin: AdminDetails) -> list[TenantSummary]:
+        """Owner-only tenant picker for administrator provisioning (not raw integration tenants)."""
+        if not admin.is_owner:
+            from fastapi import HTTPException, status
+
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+        from app.services.admin_provision import list_provision_tenants
+
+        rows = await list_provision_tenants(db)
+        if not rows:
+            return []
+        tenant_ids = [tid for tid, _ in rows]
+        status_by_id = {
+            int(t.id): t.status
+            for t in (
+                await db.execute(select(Tenant).where(Tenant.id.in_(tenant_ids)))
+            ).scalars().all()
+        }
+        return [
+            TenantSummary(id=tid, name=name, status=status_by_id.get(tid, TenantStatus.active))
+            for tid, name in rows
+        ]

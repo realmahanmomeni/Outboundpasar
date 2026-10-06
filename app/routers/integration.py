@@ -9,6 +9,7 @@ from app.db.models_oc import (
     OCPanel,
     OCPanelGroup,
     OCPanelConfig,
+    OCPanelDestinationHost,
     TenantTelegramConnection,
 )
 from app.db.models import ProxyInbound, ProxyHost
@@ -119,6 +120,10 @@ class SyncResponse(BaseModel):
     status: str
     configs_created: int
     hosts_created: int
+    catalog_configs_total: int = 0
+    destination_hosts_total: int = 0
+    discovery_links_matched: int = 0
+    warnings: list[str] = Field(default_factory=list)
 
 async def _register_oc_intent(integration: OCIntegration, intent_id: str) -> dict:
     data = await call_oc_api(
@@ -691,16 +696,61 @@ async def sync_configs_and_hosts(
 
     from app.services.oc_panel_host_subscription import refresh_panel_hosts_from_discovery_subscription
 
+    warnings: list[str] = []
+    discovery_hosts = 0
     if panel.test_user_id:
         try:
-            hosts_created += await refresh_panel_hosts_from_discovery_subscription(db, panel)
-        except Exception:
-            pass
+            discovery_hosts = await refresh_panel_hosts_from_discovery_subscription(db, panel)
+            hosts_created += discovery_hosts
+        except Exception as exc:
+            warnings.append(f"Discovery subscription sync failed: {type(exc).__name__}")
+    else:
+        warnings.append("No test user on panel; destination hosts were not refreshed from subscription.")
 
     await db.commit()
-    
-    # Update panel status
+
+    from sqlalchemy import func
+
+    catalog_total = int(
+        await db.scalar(select(func.count()).select_from(OCPanelConfig).where(OCPanelConfig.panel_id == panel.id))
+        or 0
+    )
+    dest_total = int(
+        await db.scalar(
+            select(func.count())
+            .select_from(OCPanelDestinationHost)
+            .where(
+                OCPanelDestinationHost.panel_id == panel.id,
+                OCPanelDestinationHost.source_missing.is_(False),
+                OCPanelDestinationHost.locally_hidden.is_(False),
+            )
+        )
+        or 0
+    )
+    if catalog_total > 0 and dest_total == 0:
+        warnings.append(
+            "Catalog configs were imported but no destination hosts were materialized. "
+            "Check test user, selected groups, and discovery subscription content."
+        )
+    elif catalog_total > dest_total:
+        warnings.append(
+            f"Only {dest_total} of {catalog_total} catalog configs have destination hosts "
+            "(subscription discovery defines selectable hosts, not the catalog list)."
+        )
+
+    status = "success"
+    if warnings and dest_total == 0 and catalog_total > 0:
+        status = "partial"
+
     panel.sync_status = "connected"
     await db.commit()
-    
-    return SyncResponse(status="success", configs_created=configs_created, hosts_created=hosts_created)
+
+    return SyncResponse(
+        status=status,
+        configs_created=configs_created,
+        hosts_created=hosts_created,
+        catalog_configs_total=catalog_total,
+        destination_hosts_total=dest_total,
+        discovery_links_matched=discovery_hosts,
+        warnings=warnings,
+    )

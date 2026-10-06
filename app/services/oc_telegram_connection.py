@@ -217,10 +217,38 @@ async def revoke_connection(
 
     # Order matters: user deletions are queued first (they stay authorised with the revoked
     # token on OC), then the revoke itself is propagated to OC with retries.
+    from app.db.models_oc import OCPanel
+    from sqlalchemy import func, select
+
+    from app.utils.logger import get_logger
+
+    _log = get_logger("oc-telegram")
+
     workspace_id = await workspace_id_for_binding_admin(db, tenant_id, binding_admin_id)
     if workspace_id is not None:
+        panel_count = (
+            await db.scalar(
+                select(func.count()).select_from(OCPanel).where(OCPanel.workspace_id == workspace_id)
+            )
+        ) or 0
+        _log.info(
+            "OC_TELEGRAM_DISCONNECT_CLEANUP tenant_id=%s workspace_id=%s panel_count=%s",
+            tenant_id,
+            workspace_id,
+            panel_count,
+        )
         await enqueue_workspace_panel_user_deletions(db, workspace_id, connection_id=row.id)
     else:
+        panel_count = (
+            await db.scalar(
+                select(func.count()).select_from(OCPanel).where(OCPanel.tenant_id == tenant_id)
+            )
+        ) or 0
+        _log.info(
+            "OC_TELEGRAM_DISCONNECT_CLEANUP tenant_id=%s workspace_id=null panel_count=%s",
+            tenant_id,
+            panel_count,
+        )
         await enqueue_tenant_panel_user_deletions(db, tenant_id, connection_id=row.id)
     await enqueue_oc_connection_revoke(db, row)
 
@@ -241,5 +269,8 @@ async def require_active_telegram_for_tenant_admin(
         return
     tenant_id = await resolve_admin_tenant_id(db, admin, is_owner)
     if tenant_id is None:
-        return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tenant scope required",
+        )
     await require_oc_telegram_connection_for_actor(db, admin, is_owner, tenant_id)

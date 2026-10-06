@@ -156,11 +156,17 @@ async def _resolve_users_usage_admins_filter(
 
 
 async def _actor_workspace_id(db: AsyncSession, admin: AdminDetails) -> int | None:
-    from app.services.workspace_scope import resolve_admin_workspace_id
+    from app.services.workspace_scope import require_admin_workspace_id
 
     if admin.is_owner:
         return None
-    return await resolve_admin_workspace_id(db, admin, False)
+    return await require_admin_workspace_id(db, admin, False)
+
+
+async def _actor_tenant_id(db: AsyncSession, admin: AdminDetails) -> int | None:
+    from app.services.tenant_admin_scope import tenant_id_for_actor_queries
+
+    return await tenant_id_for_actor_queries(db, admin)
 
 
 logger = get_logger("user-operation")

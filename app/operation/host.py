@@ -24,6 +24,7 @@ from app.models.host import (
 )
 from app.operation import BaseOperation
 from app.services.workspace_scope import resolve_tenant_workspace_scope
+from app.services.oc_destination_host_lifecycle import teardown_oc_destination_inbound_tag
 from app.services.oc_panel_destination_hosts import update_oc_destination_host_display_name
 from app.services.oc_share_link import is_oc_destination_inbound_tag
 from app.utils.logger import get_logger
@@ -150,10 +151,15 @@ class HostOperation(BaseOperation):
 
     async def remove_host(self, db: AsyncSession, host_id: int, admin: AdminDetails):
         db_host = await self.get_validated_host(db, host_id, admin=admin)
-        await remove_host(db, db_host)
-        logger.info(f'Host "{db_host.id}" deleted by admin "{admin.username}"')
-
         host = BaseHost.model_validate(db_host)
+        if is_oc_destination_inbound_tag(db_host.inbound_tag):
+            if await teardown_oc_destination_inbound_tag(db, db_host.inbound_tag or ""):
+                await db.commit()
+            else:
+                await remove_host(db, db_host)
+        else:
+            await remove_host(db, db_host)
+        logger.info(f'Host "{db_host.id}" deleted by admin "{admin.username}"')
 
         asyncio.create_task(notification.remove_host(host, admin.username))
 
@@ -222,10 +228,18 @@ class HostOperation(BaseOperation):
         if missing:
             await self.raise_error(message="Host not found", code=404)
 
-        host_ids = [h.id for h in db_hosts]
+        oc_hosts = [h for h in db_hosts if is_oc_destination_inbound_tag(h.inbound_tag)]
+        native_hosts = [h for h in db_hosts if not is_oc_destination_inbound_tag(h.inbound_tag)]
 
-        # Batch delete using CRUD function
-        await remove_hosts(db, host_ids)
+        for db_host in oc_hosts:
+            await teardown_oc_destination_inbound_tag(db, db_host.inbound_tag or "")
+        if oc_hosts:
+            await db.commit()
+
+        host_ids = [h.id for h in native_hosts]
+        if host_ids:
+            await remove_hosts(db, host_ids)
+        db_hosts = oc_hosts + native_hosts
 
         # Update host manager and notify
         for db_host in db_hosts:

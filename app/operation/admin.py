@@ -86,19 +86,21 @@ class AdminOperation(BaseOperation):
                 await self.raise_error(message="Telegram ID is already assigned to another admin.", code=409, db=db)
 
         try:
-            db_admin = await create_admin(db, new_admin)
+            db_admin = await create_admin(db, new_admin, commit=False)
         except IntegrityError:
             await self.raise_error(message="Admin already exists", code=409, db=db)
 
         if admin.is_owner:
-            if new_admin.role_id in (BUILTIN_ADMINISTRATOR_ROLE_ID, BUILTIN_OPERATOR_ROLE_ID):
-                if new_admin.tenant_id is None:
-                    await self.raise_error(
-                        message="tenant_id is required when creating tenant administrators or operators.",
-                        code=400,
-                        db=db,
-                    )
-                db_admin.tenant_id = new_admin.tenant_id
+            if new_admin.role_id == BUILTIN_ADMINISTRATOR_ROLE_ID:
+                from app.services.admin_provision import auto_provision_administrator_scope
+
+                await auto_provision_administrator_scope(db, db_admin)
+            elif new_admin.role_id == BUILTIN_OPERATOR_ROLE_ID:
+                creator_tenant_id = await resolve_admin_tenant_id(db, admin, False)
+                if creator_tenant_id is not None:
+                    db_admin.tenant_id = creator_tenant_id
+                elif new_admin.tenant_id is not None:
+                    db_admin.tenant_id = new_admin.tenant_id
         else:
             creator_tenant_id = await resolve_admin_tenant_id(db, admin, False)
             if creator_tenant_id is None:
@@ -115,11 +117,12 @@ class AdminOperation(BaseOperation):
             )
         await db.commit()
         await db.refresh(db_admin)
+        await load_admin_attrs(db_admin, load_role=True)
 
         logger.info(f'New admin "{db_admin.username}" with id "{db_admin.id}" added by admin "{admin.username}"')
         new_admin_details = build_admin_details(db_admin, include_loaded_metrics=True)
         asyncio.create_task(notification.create_admin(new_admin_details, admin.username))
-        return db_admin
+        return new_admin_details
 
     async def modify_admin(
         self, db: AsyncSession, username: str, modified_admin: AdminModify, current_admin: AdminDetails
@@ -180,6 +183,9 @@ class AdminOperation(BaseOperation):
             if existing_admins:
                 await self.raise_error(message="Telegram ID is already assigned to another admin.", code=409, db=db)
 
+        if modified_admin.tenant_id is not None and not current_admin.is_owner:
+            await self.raise_error(message="Only the platform owner may change tenant assignment.", code=403)
+
         old_users_sync_blocked = await admin_users_sync_blocked(db_admin)
         db_admin = await update_admin(db, db_admin, modified_admin)
 
@@ -235,11 +241,13 @@ class AdminOperation(BaseOperation):
     async def get_admins(self, db: AsyncSession, query: AdminListQuery, admin: AdminDetails) -> AdminsResponse:
         """Retrieve a list of admins with optional filters and pagination."""
         caller_tenant_id = await self._caller_tenant_id(db, admin)
+        if not admin.is_owner and caller_tenant_id is None:
+            await self.raise_error(message="Tenant scope required", code=403)
         workspace_id = None
         if not admin.is_owner:
-            from app.services.workspace_scope import resolve_admin_workspace_id
+            from app.services.workspace_scope import require_admin_workspace_id
 
-            workspace_id = await resolve_admin_workspace_id(db, admin, False)
+            workspace_id = await require_admin_workspace_id(db, admin, False)
         admins, total, active, disabled, limited = await get_admins(
             db,
             query,
@@ -256,11 +264,13 @@ class AdminOperation(BaseOperation):
     ) -> AdminsSimpleResponse:
         """Get lightweight admin list with only id and username."""
         caller_tenant_id = await self._caller_tenant_id(db, admin)
+        if not admin.is_owner and caller_tenant_id is None:
+            await self.raise_error(message="Tenant scope required", code=403)
         workspace_id = None
         if not admin.is_owner:
-            from app.services.workspace_scope import resolve_admin_workspace_id
+            from app.services.workspace_scope import require_admin_workspace_id
 
-            workspace_id = await resolve_admin_workspace_id(db, admin, False)
+            workspace_id = await require_admin_workspace_id(db, admin, False)
         rows, total = await get_admins_simple(
             db=db,
             query=query,
