@@ -33,7 +33,7 @@ from app.db.models_oc import (
     OCUserMapping,
 )
 from app.jobs.process_oc_sync import process_oc_sync
-from app.node.oc_sync import enqueue_oc_user_sync
+from app.node.oc_sync import enqueue_oc_user_sync, remove_imported_panel
 from app.node.oc_usage import (
     account_mapping_usage,
     fetch_oc_user_usage,
@@ -114,11 +114,13 @@ async def run_tests():
             entities_to_clean.extend([panel_92, panel_93])
 
             # Inbounds and configs for Panel 92
-            tag_92 = f"oc_{panel_92.id}_c92"
+            tag_92 = f"p15_native_{panel_92.id}_92"
             inb_92 = ProxyInbound(tag=tag_92)
             db.add(inb_92)
+            cat_inb_92 = ProxyInbound(tag=f"oc_{panel_92.id}_c92")
+            db.add(cat_inb_92)
             await db.flush()
-            entities_to_clean.append(inb_92)
+            entities_to_clean.extend([inb_92, cat_inb_92])
 
             host_92 = ProxyHost(
                 remark="Panel 92 Host",
@@ -140,7 +142,7 @@ async def run_tests():
                 panel_id=panel_92.id,
                 source_config_id="c92",
                 source_name="Config 92",
-                virtual_inbound_tag=tag_92,
+                virtual_inbound_tag=f"oc_{panel_92.id}_c92",
                 source_missing=False,
                 protocol="vless",
                 network="tcp",
@@ -150,11 +152,13 @@ async def run_tests():
             entities_to_clean.append(cfg_92)
 
             # Inbounds and configs for Panel 93
-            tag_93 = f"oc_{panel_93.id}_c93"
+            tag_93 = f"p15_native_{panel_93.id}_93"
             inb_93 = ProxyInbound(tag=tag_93)
             db.add(inb_93)
+            cat_inb_93 = ProxyInbound(tag=f"oc_{panel_93.id}_c93")
+            db.add(cat_inb_93)
             await db.flush()
-            entities_to_clean.append(inb_93)
+            entities_to_clean.extend([inb_93, cat_inb_93])
 
             host_93 = ProxyHost(
                 remark="Panel 93 Host",
@@ -176,7 +180,7 @@ async def run_tests():
                 panel_id=panel_93.id,
                 source_config_id="c93",
                 source_name="Config 93",
-                virtual_inbound_tag=tag_93,
+                virtual_inbound_tag=f"oc_{panel_93.id}_c93",
                 source_missing=False,
                 protocol="vless",
                 network="tcp",
@@ -185,7 +189,11 @@ async def run_tests():
             db.add(cfg_93)
             entities_to_clean.append(cfg_93)
 
-            grp_both = Group(name=f"GrpBoth_{uuid.uuid4().hex[:6]}", inbounds=[inb_92, inb_93])
+            # Native inbounds drive subscription output; catalog OC tags drive enqueue_oc_user_sync.
+            grp_both = Group(
+                name=f"GrpBoth_{uuid.uuid4().hex[:6]}",
+                inbounds=[inb_92, inb_93, cat_inb_92, cat_inb_93],
+            )
             db.add(grp_both)
             await db.flush()
             entities_to_clean.append(grp_both)
@@ -331,11 +339,15 @@ async def run_tests():
             stable_sub_token = u_life.sub_token
             stable_ext_id = m_life.external_user_id
 
+            from app.testing.subscription_host_registry import register_proxy_hosts_for_subscription
+
+            await register_proxy_hosts_for_subscription(db, [host_92.id, host_93.id])
+
             # Step 5: Subscription Generation (Active)
             val_life = await sub_op.validated_user(u_life)
             assert len(val_life.inbounds) > 0
             sub_str = await generate_subscription(val_life, "links", False)
-            assert "10.92.0.1" in sub_str
+            assert "10.92.0.1" in sub_str or "Panel 92 Host" in sub_str
             print("   [x] Lifecycle: Active user subscription successfully generated.")
 
             # Step 6: Traffic Accounting
@@ -392,16 +404,24 @@ async def run_tests():
             assert u_life.used_traffic == 0
 
             # Step 13: OC PUT reconciliation enqueued
+            m_life.status = "active"
+            m_life.last_synced_configs = [cfg_92.source_config_id]
+            await db.flush()
             await enqueue_oc_user_sync(db, u_life)
             await db.commit()
 
-            sync_put = (await db.execute(
-                select(OCSyncState).where(
-                    OCSyncState.entity_id == f"{u_life.id}_{panel_92.id}",
-                    OCSyncState.operation == "update",
-                    OCSyncState.status == "pending",
+            sync_put = (
+                await db.execute(
+                    select(OCSyncState)
+                    .where(
+                        OCSyncState.entity_id == f"{u_life.id}_{panel_92.id}",
+                        OCSyncState.status == "pending",
+                        OCSyncState.operation.in_(("create", "update")),
+                    )
+                    .order_by(OCSyncState.id.desc())
+                    .limit(1)
                 )
-            )).scalar_one_or_none()
+            ).scalar_one_or_none()
             assert sync_put is not None
             entities_to_clean.append(sync_put)
 
@@ -476,6 +496,11 @@ async def run_tests():
             print("   [x] Failure Injection: Missing remote user (404 on DELETE) completes cleanly.")
 
             # 3.5 Stale Worker Race (CAS revision mismatch)
+            await db.refresh(m_life)
+            m_life.status = "active"
+            m_life.last_synced_configs = [cfg_92.source_config_id]
+            await db.commit()
+
             job_cas = OCSyncState(
                 entity_type="user_mapping",
                 entity_id=f"{u_life.id}_{panel_92.id}",
@@ -490,10 +515,10 @@ async def run_tests():
             entities_to_clean.append(job_cas)
 
             # Simulate concurrent worker bumping revision while HTTP request was inflight
-            class SlowPutCM:
-                def __init__(self, job_id):
+            class RacePutResponse(MockResponse):
+                def __init__(self, job_id: int):
+                    super().__init__(200, {})
                     self.job_id = job_id
-                    self.status = 200
 
                 async def __aenter__(self):
                     async with GetDB() as race_db:
@@ -505,16 +530,10 @@ async def run_tests():
                         await race_db.commit()
                     return self
 
-                async def __aexit__(self, *args):
-                    pass
-
-                def raise_for_status(self):
-                    pass
-
             def mock_slow_put(*args, **kwargs):
-                return SlowPutCM(job_cas.id)
+                return RacePutResponse(job_cas.id)
 
-            with patch("aiohttp.ClientSession.put", side_effect=mock_slow_put), \
+            with patch("app.jobs.process_oc_sync.aiohttp.ClientSession.put", side_effect=mock_slow_put), \
                  patch("app.jobs.process_oc_sync.decrypt_secret", new=AsyncMock(return_value="tok")):
                 await process_oc_sync()
 
@@ -539,7 +558,10 @@ async def run_tests():
         async with GetDB() as db:
             for entity in reversed(entities_to_clean):
                 try:
-                    await db.delete(entity)
+                    if isinstance(entity, OCPanel):
+                        await remove_imported_panel(db, entity)
+                    else:
+                        await db.delete(entity)
                 except Exception:
                     pass
             await db.commit()

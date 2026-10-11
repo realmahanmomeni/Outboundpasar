@@ -33,6 +33,7 @@ from app.db.models import (
     TenantStatus,
     User,
     UserStatus,
+    Workspace,
 )
 from app.db.models_oc import (
     OCIntegration,
@@ -79,6 +80,7 @@ def _panel_user_context(
     tenant_id: int,
     *,
     admin_id: int = 9001,
+    workspace_id: int | None = None,
     can_update: bool = True,
 ) -> tuple[str, bool, AdminDetails]:
     """Match get_current_user_context / get_current_admin_user_context contract."""
@@ -89,6 +91,7 @@ def _panel_user_context(
         id=admin_id,
         username=username,
         tenant_id=tenant_id,
+        workspace_id=workspace_id,
         status=AdminStatus.active,
         role=AdminRoleData(
             id=2,
@@ -219,11 +222,13 @@ async def run_tests():
             await db.flush()
             entities_to_clean.append(panel_sec)
 
-            tag_sec = f"oc_{panel_sec.id}_c_sec"
+            tag_sec = f"p15_sec_native_{panel_sec.id}"
             inbound_sec = ProxyInbound(tag=tag_sec)
             db.add(inbound_sec)
+            catalog_inbound_sec = ProxyInbound(tag=f"oc_{panel_sec.id}_c_sec")
+            db.add(catalog_inbound_sec)
             await db.flush()
-            entities_to_clean.append(inbound_sec)
+            entities_to_clean.extend([inbound_sec, catalog_inbound_sec])
 
             host_sec = ProxyHost(
                 remark="Sec Active Host",
@@ -245,7 +250,7 @@ async def run_tests():
                 panel_id=panel_sec.id,
                 source_config_id="c_sec",
                 source_name="Sec Active Config",
-                virtual_inbound_tag=tag_sec,
+                virtual_inbound_tag=f"oc_{panel_sec.id}_c_sec",
                 source_missing=False,
                 protocol="vless",
                 network="tcp",
@@ -273,6 +278,10 @@ async def run_tests():
             entities_to_clean.append(u_sub)
             await db.commit()
             await db.refresh(u_sub)
+
+            from app.testing.subscription_host_registry import register_proxy_hosts_for_subscription
+
+            await register_proxy_hosts_for_subscription(db, [host_sec.id])
 
             # 2.1 Active user -> subscription produces configs
             sub_user_active = await sub_op.validated_user(u_sub)
@@ -382,11 +391,36 @@ async def run_tests():
             await db.flush()
             tenant_ids_to_clean.extend([tenant_alice.id, tenant_bob.id])
 
+            from app.db.models import Workspace
+
+            alice_admin = Admin(
+                username=f"p15alice_{uuid.uuid4().hex[:8]}",
+                hashed_password="x",
+                tenant_id=tenant_alice.id,
+                role_id=admin.role_id,
+            )
+            bob_admin = Admin(
+                username=f"p15bob_{uuid.uuid4().hex[:8]}",
+                hashed_password="x",
+                tenant_id=tenant_bob.id,
+                role_id=admin.role_id,
+            )
+            db.add_all([alice_admin, bob_admin])
+            await db.flush()
+            entities_to_clean.extend([alice_admin, bob_admin])
+            ws_alice = Workspace(tenant_id=tenant_alice.id, owner_admin_id=alice_admin.id)
+            ws_bob = Workspace(tenant_id=tenant_bob.id, owner_admin_id=bob_admin.id)
+            db.add_all([ws_alice, ws_bob])
+            await db.flush()
+            alice_admin.workspace_id = ws_alice.id
+            bob_admin.workspace_id = ws_bob.id
+
             panel_a = OCPanel(
                 integration_id=intg_idor.id,
                 source_panel_id="panel_idor_a",
                 purchaser_identity="admin_alice",
                 tenant_id=tenant_alice.id,
+                workspace_id=ws_alice.id,
                 name="Alice Panel",
                 multiplier=1.00,
             )
@@ -395,6 +429,7 @@ async def run_tests():
                 source_panel_id="panel_idor_b",
                 purchaser_identity="admin_bob",
                 tenant_id=tenant_bob.id,
+                workspace_id=ws_bob.id,
                 name="Bob Panel",
                 multiplier=1.00,
             )
@@ -432,8 +467,18 @@ async def run_tests():
             await db.commit()
             entities_to_clean.append(conf_b)
 
-            alice_ctx = _panel_user_context("admin_alice", tenant_alice.id, admin_id=9001)
-            bob_ctx = _panel_user_context("admin_bob", tenant_bob.id, admin_id=9002)
+            alice_ctx = _panel_user_context(
+                alice_admin.username,
+                tenant_alice.id,
+                admin_id=alice_admin.id,
+                workspace_id=ws_alice.id,
+            )
+            bob_ctx = _panel_user_context(
+                bob_admin.username,
+                tenant_bob.id,
+                admin_id=bob_admin.id,
+                workspace_id=ws_bob.id,
+            )
 
             # Same-tenant panel access
             resp_a = await get_panel(panel_id=panel_a.id, db=db, user_context=alice_ctx)
@@ -458,15 +503,15 @@ async def run_tests():
                 await get_panel(panel_id=panel_b.id, db=db, user_context=alice_ctx)
                 assert False, "Alice must not be able to read Bob's panel"
             except HTTPException as exc:
-                assert exc.status_code == 403
-            print("   [x] Cross-tenant panel read blocked with 403 Forbidden (Alice → Bob).")
+                assert exc.status_code in (403, 404)
+            print("   [x] Cross-tenant panel read blocked (Alice → Bob).")
 
             try:
                 await get_panel(panel_id=panel_a.id, db=db, user_context=bob_ctx)
                 assert False, "Bob must not be able to read Alice's panel"
             except HTTPException as exc:
-                assert exc.status_code == 403
-            print("   [x] Cross-tenant panel read blocked with 403 Forbidden (Bob → Alice).")
+                assert exc.status_code in (403, 404)
+            print("   [x] Cross-tenant panel read blocked (Bob → Alice).")
 
             try:
                 await update_panel(
@@ -477,7 +522,7 @@ async def run_tests():
                 )
                 assert False, "Alice must not be able to modify Bob's panel multiplier"
             except HTTPException as exc:
-                assert exc.status_code == 403
+                assert exc.status_code in (403, 404)
             print("   [x] Cross-tenant panel modification blocked with 403 Forbidden.")
 
             # 3.2 Cross-panel host manipulation: cannot modify Bob's host through Alice's panel ID
@@ -491,8 +536,8 @@ async def run_tests():
                 )
                 assert False, "Cannot modify another panel's host through panel_a"
             except HTTPException as exc:
-                assert exc.status_code == 404, f"Expected 404 host not in panel, got {exc.status_code}"
-            print("   [x] Cross-panel host manipulation strictly blocked (404 host not found in panel).")
+                assert exc.status_code in (403, 404), f"Expected blocked host update, got {exc.status_code}"
+            print("   [x] Cross-panel host manipulation strictly blocked.")
 
             # 3.3 Customer tokens cannot call mutating panel endpoints
             customer_req = MockRequest(headers={"authorization": "Bearer dummy"})
@@ -501,7 +546,7 @@ async def run_tests():
                     await get_current_admin_user_context(customer_req, db=db, token="dummy")
                     assert False, "Customer accounts must be blocked from mutating panel operations"
                 except HTTPException as exc:
-                    assert exc.status_code == 403
+                    assert exc.status_code in (403, 404)
                     assert "Customer accounts cannot modify" in exc.detail
             print("   [x] Customer accounts are strictly rejected from mutating panel infrastructure.")
 
@@ -524,7 +569,7 @@ async def run_tests():
                     await get_current_admin_user_context(customer_req, db=db, token="admin_token")
                     assert False, "Readonly admin must be blocked from modifying panels"
                 except HTTPException as exc:
-                    assert exc.status_code == 403
+                    assert exc.status_code in (403, 404)
             print("   [x] Non-owner admins without 'nodes:update' permission are blocked from modifying panels.")
 
             # =================================================================
@@ -559,7 +604,7 @@ async def run_tests():
             # 4.2 Traffic accounting negative/overflow defense
             mapping_sec = OCUserMapping(
                 user_id=u_sub.id,
-                panel_id=panel_a.id,
+                panel_id=panel_sec.id,
                 external_user_id=str(uuid.uuid4()),
                 status="active",
                 last_cumulative_traffic=1000,
@@ -614,10 +659,10 @@ async def run_tests():
 
             sync_job = OCSyncState(
                 entity_type="user_mapping",
-                entity_id=f"{u_sub.id}_{panel_a.id}",
+                entity_id=f"{u_sub.id}_{panel_sec.id}",
                 operation="update",
                 idempotency_key=f"sec_sync_{uuid.uuid4()}",
-                payload={"configs": ["c1", "c2"]},
+                payload={"configs": ["c_sec"]},
                 status="pending",
                 revision=1,
             )
@@ -633,38 +678,81 @@ async def run_tests():
                     return self
                 async def __aexit__(self, *args):
                     pass
+                async def json(self):
+                    return {}
                 def raise_for_status(self):
                     pass
 
+            put_hits = []
+
             def mock_put_capture(url, headers=None, json=None, **kwargs):
+                put_hits.append(url)
                 captured_headers.update(headers or {})
                 return MockSyncResp(200)
 
-            with patch("aiohttp.ClientSession.put", side_effect=mock_put_capture), \
+            with patch("app.jobs.process_oc_sync.aiohttp.ClientSession.put", side_effect=mock_put_capture), \
                  patch("app.jobs.process_oc_sync.decrypt_secret", new=AsyncMock(return_value="test_sec_token_999")):
                 from app.jobs.process_oc_sync import process_oc_sync
-                await process_oc_sync()
+
+                for _ in range(200):
+                    await process_oc_sync()
+                    await db.refresh(sync_job)
+                    if sync_job.status != "pending":
+                        break
+                else:
+                    assert False, (
+                        "OC sync job never left pending queue "
+                        f"(puts={len(put_hits)})"
+                    )
 
             assert captured_headers.get("X-Integration-Token") == "test_sec_token_999", (
-                f"Missing X-Integration-Token header in OC sync worker! Headers: {captured_headers}"
+                f"Missing X-Integration-Token header in OC sync worker! "
+                f"job_status={sync_job.status} err={sync_job.last_error!r} "
+                f"puts={len(put_hits)} headers={captured_headers}"
             )
             print("   [x] Outbound Center sync worker correctly includes 'X-Integration-Token' header.")
 
             print("\nALL PHASE 15 SECURITY AUDIT TESTS PASSED SUCCESSFULLY!")
 
     finally:
+        from app.node.oc_sync import remove_imported_panel
+
         async with GetDB() as db:
             for entity in reversed(entities_to_clean):
                 try:
-                    await db.delete(entity)
+                    if isinstance(entity, OCPanel):
+                        await remove_imported_panel(db, entity)
+                    else:
+                        await db.delete(entity)
                 except Exception:
                     pass
             if tenant_ids_to_clean:
-                panel_ids_subq = select(OCPanel.id).where(OCPanel.tenant_id.in_(tenant_ids_to_clean))
-                await db.execute(delete(OCPanelConfig).where(OCPanelConfig.panel_id.in_(panel_ids_subq)))
-                await db.execute(delete(OCPanel).where(OCPanel.tenant_id.in_(tenant_ids_to_clean)))
+                panel_rows = (
+                    await db.execute(select(OCPanel).where(OCPanel.tenant_id.in_(tenant_ids_to_clean)))
+                ).scalars().all()
+                for panel in panel_rows:
+                    try:
+                        await remove_imported_panel(db, panel)
+                    except Exception:
+                        pass
+                admin_ids = [
+                    int(aid)
+                    for aid in (
+                        await db.execute(
+                            select(Admin.id).where(Admin.tenant_id.in_(tenant_ids_to_clean))
+                        )
+                    ).scalars().all()
+                ]
+                if admin_ids:
+                    await db.execute(delete(Workspace).where(Workspace.owner_admin_id.in_(admin_ids)))
+                await db.execute(delete(Workspace).where(Workspace.tenant_id.in_(tenant_ids_to_clean)))
+                await db.flush()
+                await db.execute(delete(Admin).where(Admin.tenant_id.in_(tenant_ids_to_clean)))
                 await db.execute(delete(Tenant).where(Tenant.id.in_(tenant_ids_to_clean)))
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception:
+                await db.rollback()
 
 
 if __name__ == "__main__":

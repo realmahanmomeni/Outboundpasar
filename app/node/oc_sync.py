@@ -1,9 +1,9 @@
 import uuid
 from typing import Any
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import User, ProxyHost, ProxyInbound
+from app.db.models import Group, ProxyHost, ProxyInbound, User, users_groups_association
 from app.db.models_oc import (
     OCIntegration,
     OCPanel,
@@ -386,6 +386,19 @@ async def resolve_desired_config_ids_for_panel(
     return sorted(configs)
 
 
+async def _explicit_loss_of_access(db_session: AsyncSession, db_user: User, access_allowed: bool) -> bool:
+    """True when losing the user's desired panels is explained by explicit user/group state."""
+    if not access_allowed:
+        return True
+    enabled_groups = await db_session.scalar(
+        select(func.count())
+        .select_from(Group)
+        .join(users_groups_association, users_groups_association.c.groups_id == Group.id)
+        .where(users_groups_association.c.user_id == db_user.id, Group.is_disabled.is_(False))
+    )
+    return not enabled_groups
+
+
 def _log_reconcile_action(
     action: ReconcileAction,
     *,
@@ -421,15 +434,24 @@ async def build_oc_user_put_payload(
     return {"groups": groups, "configs": config_ids}
 
 
-async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
+async def enqueue_oc_user_sync(
+    db_session: AsyncSession, db_user: User, *, periodic_reconcile: bool = False
+) -> None:
     """
     Enqueue synchronization events (Create, Update, Delete) to Outbound Center
     by diffing the user's active virtual inbounds against their current mappings.
+
+    ``periodic_reconcile=True`` is the 5-minute safety-net tick. Missing local membership there is
+    indistinguishable from a transient inconsistency (cleanup race, incomplete import, empty catalog), so
+    the tick may create/update/repair but only deletes the provisioned OC user when the loss is explained by
+    explicit state: the user no longer has access (disabled/expired/limited) or none of the user's groups is
+    enabled. Event-driven calls (user/group/panel edits, expiry review, panel removal) keep full semantics.
     """
     from app.operation.access_control import check_user_access_allowed
 
     # Determine user access
-    if await check_user_access_allowed(db_user, db_session):
+    access_allowed = await check_user_access_allowed(db_user, db_session)
+    if access_allowed:
         inbounds = _inbounds_from_loaded_groups(db_user)
         if inbounds is None:
             inbounds = await db_user.inbounds()
@@ -472,15 +494,16 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
                     DesiredPanelState(panel_id=panel_id, desired_active=False, config_ids=frozenset()),
                 )
                 if action == ReconcileAction.DELETE:
+                    # The user still holds host tags for this panel but none resolve to configs:
+                    # an incomplete/empty catalog or transient inconsistency, not an intentional removal.
                     _log_reconcile_action(
-                        action,
+                        ReconcileAction.SKIP,
                         user_id=db_user.id,
                         panel_id=panel_id,
                         mapping_id=mapping.id,
                         external_user_id=mapping.external_user_id,
-                        reason="empty_desired_configs",
+                        reason="empty_desired_configs_keep_remote_user",
                     )
-                    await enqueue_mapping_delete_sync(db_session, db_user.id, panel_id, mapping)
             continue
 
         desired_panel_ids.add(panel_id)
@@ -582,6 +605,16 @@ async def enqueue_oc_user_sync(db_session: AsyncSession, db_user: User) -> None:
             DesiredPanelState(panel_id=panel_id, desired_active=False, config_ids=frozenset()),
         )
         if action == ReconcileAction.DELETE:
+            if periodic_reconcile and not await _explicit_loss_of_access(db_session, db_user, access_allowed):
+                _log_reconcile_action(
+                    ReconcileAction.SKIP,
+                    user_id=db_user.id,
+                    panel_id=panel_id,
+                    mapping_id=mapping.id,
+                    external_user_id=mapping.external_user_id,
+                    reason="panel_not_desired_unexplained_by_user_or_group_state",
+                )
+                continue
             _log_reconcile_action(
                 action,
                 user_id=db_user.id,

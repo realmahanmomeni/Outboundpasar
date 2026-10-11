@@ -60,7 +60,7 @@ async def test_reconcile_idempotent_and_restores_virtual_tags():
         count2 = await db.scalar(
             select(func.count()).select_from(OCPanelDestinationHost).where(OCPanelDestinationHost.panel_id == panel.id)
         )
-        assert count1 == count2 == 2
+        assert count1 == count2 == 3
         assert n2 >= 0
         rows = (
             await db.execute(select(OCPanelDestinationHost).where(OCPanelDestinationHost.panel_id == panel.id))
@@ -87,15 +87,16 @@ async def test_reconcile_idempotent_and_restores_virtual_tags():
         await db.rollback()
 
 
-async def test_presentation_links_not_destination_hosts():
+async def test_presentation_remarks_do_not_exclude_valid_share_links():
+    """Remarks with emoji or status-like text must not drop importable destination configs."""
     raw = [
         "vless://u1@a:1?encryption=none#📡Status|x",
         "vless://u2@a:2?encryption=none#👤user|name",
         "vless://u3@a:3?encryption=none#🇸🇪|CDN",
     ]
     configs = subscription_config_links(raw)
-    assert len(configs) == 1
-    assert configs[0].remark == "🇸🇪|CDN"
+    assert len(configs) == 3
+    assert {c.remark for c in configs} == {"📡Status|x", "👤user|name", "🇸🇪|CDN"}
 
 
 async def test_legacy_catalog_tag_rejected_for_groups():

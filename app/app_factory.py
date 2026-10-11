@@ -6,7 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.routing import APIRoute
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.db.base import database_pool_summary
 from app.lifecycle import on_shutdown, on_startup
@@ -157,7 +157,19 @@ async def _ignore_worker_sync_message(_: dict):
     return None
 
 
+async def database_integrity_error_handler(request: Request, exc: IntegrityError):
+    orig = getattr(exc, "orig", None)
+    error_summary = f"{type(orig).__name__}: {orig}" if orig else type(exc).__name__
+    logger.warning(f"Database integrity error while handling {request.method} {request.url.path}: {error_summary}")
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": "Operation conflicts with existing related records."},
+    )
+
+
 async def database_operational_error_handler(request: Request, exc: DBAPIError):
+    if isinstance(exc, IntegrityError):
+        return await database_integrity_error_handler(request, exc)
     orig = getattr(exc, "orig", None)
     error_summary = f"{type(orig).__name__}: {orig}" if orig else type(exc).__name__
     logger.warning(f"Database unavailable while handling {request.method} {request.url.path}: {error_summary}")
@@ -409,6 +421,7 @@ def create_app() -> FastAPI:
             content=jsonable_encoder({"detail": details}),
         )
 
+    app.add_exception_handler(IntegrityError, database_integrity_error_handler)
     app.add_exception_handler(DBAPIError, database_operational_error_handler)
 
     from app.operation.permissions import LimitExceeded, PermissionDenied

@@ -15,7 +15,7 @@ from app.db.models import Workspace
 from app.db.models_oc import OCPanel, TenantTelegramConnection, TenantTelegramConnectionStatus
 from app.models.admin import AdminDetails
 from app.services.oc_actor_connection import resolve_telegram_binding_admin_id
-from app.services.oc_integration_client import OcConnectionTokenMissing, call_oc_api
+from app.services.oc_integration_client import OcConnectionTokenMissing, OcIntegrationApiError, call_oc_api
 from app.services.oc_telegram_connection import _binding_filter, get_active_connection
 from app.utils.crypto import decrypt_secret
 
@@ -188,5 +188,41 @@ async def call_oc_panel_api(
     allow_revoked: bool = False,
 ) -> Any:
     """Account-scoped OC call for an imported panel (integration must be loaded)."""
+    from app.services.oc_panel_buyer_auth import (
+        panel_uses_local_rebecca_ops,
+        resolve_buyer_auth,
+        try_refresh_buyer_auth_from_oc,
+    )
+
     token = await connection_token_for_panel(db, panel, allow_revoked=allow_revoked)
-    return await call_oc_api(panel.integration, method, path, json, connection_token=token)
+
+    from app.services.oc_panel_metadata_sync import ensure_panel_metadata_for_ops
+
+    await ensure_panel_metadata_for_ops(db, panel, connection_token=token)
+
+    try:
+        return await call_oc_api(panel.integration, method, path, json, connection_token=token)
+    except OcIntegrationApiError as exc:
+        if exc.code == "PANEL_TYPE_UNSUPPORTED" and token:
+            await ensure_panel_metadata_for_ops(db, panel, connection_token=token)
+        if exc.code == "PANEL_TYPE_UNSUPPORTED" and panel_uses_local_rebecca_ops(panel) and token:
+            from app.services.oc_panel_local_ops import execute_local_panel_api, local_integration_error_to_oc
+            from app.services.oc_rebecca_integration import LocalIntegrationError
+
+            if await try_refresh_buyer_auth_from_oc(db, panel, connection_token=token):
+                auth = await resolve_buyer_auth(db, panel)
+                if auth is not None:
+                    try:
+                        return await execute_local_panel_api(db, panel, method, path, json, auth)
+                    except LocalIntegrationError as local_exc:
+                        raise local_integration_error_to_oc(local_exc) from local_exc
+            raise OcIntegrationApiError(
+                oc_status=exc.oc_status,
+                detail=(
+                    "REBECCA_BUYER_CREDENTIALS_REQUIRED: Outbound Center does not expose buyer "
+                    "sub-admin credentials via the integration API, and none are stored for this "
+                    "panel. Rebecca panel operations require buyer credentials on the OCPanel row "
+                    "or an OC buyer-sub-admin integration endpoint."
+                ),
+            ) from exc
+        raise

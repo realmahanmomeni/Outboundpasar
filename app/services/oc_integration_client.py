@@ -113,14 +113,21 @@ def http_exception_from_oc_error(err: OcIntegrationApiError) -> HTTPException:
     if err.oc_status == status.HTTP_404_NOT_FOUND:
         return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Outbound Center integration endpoint error")
 
-    if err.oc_status == status.HTTP_502_BAD_GATEWAY:
+    if err.oc_status in (status.HTTP_502_BAD_GATEWAY, status.HTTP_503_SERVICE_UNAVAILABLE, status.HTTP_504_GATEWAY_TIMEOUT):
+        upstream_hint = (err.detail or "").strip()
         if "<!doctype html>" in detail_lower or "bad gateway" in detail_lower:
             return HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
-                    "Outbound Center could not reach the remote panel API while creating the test user. "
-                    "Verify the panel is online and sub-admin credentials are valid on Outbound Center."
+                    "Outbound Center could not reach the remote panel (upstream HTTP "
+                    f"{err.oc_status}). The panel may be offline or returning an error page — "
+                    "this is not necessarily invalid credentials."
                 ),
+            )
+        if upstream_hint and code not in ("PANEL_AUTH_FAILED", "PANEL_CREDENTIALS_MISSING"):
+            return HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Outbound Center panel upstream error (HTTP {err.oc_status}): {upstream_hint}",
             )
 
     if err.oc_status >= 500:

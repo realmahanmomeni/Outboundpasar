@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -36,11 +37,28 @@ class ParsedShareLink:
         return keys
 
 
+# Arabic-script variants that Persian/Arabic keyboards and panels mix freely.
+_SCRIPT_FOLD = str.maketrans({"ي": "ی", "ى": "ی", "ك": "ک", "ۀ": "ه", "ة": "ه"})
+_STRIPPED_FORMAT_CHARS = {"\u200c", "\u200d", "\u200e", "\u200f", "\u0640", "\ufeff"}  # ZWNJ/ZWJ/marks/tatweel/BOM
+
+
+def _unicode_fold(value: str) -> str:
+    """NFKC (folds stylized math alphabets, full-width, ligatures) + casefold + Persian/Arabic unification."""
+    text = unicodedata.normalize("NFKC", value or "").casefold().translate(_SCRIPT_FOLD)
+    text = "".join(
+        ch for ch in text if ch not in _STRIPPED_FORMAT_CHARS and unicodedata.category(ch) not in ("Mn", "Me", "Cf")
+    )
+    # Persian / Arabic-Indic / other decimal digits -> ASCII digits
+    return "".join(str(unicodedata.decimal(ch)) if unicodedata.category(ch) == "Nd" else ch for ch in text)
+
+
 def _normalize_key(value: str) -> str:
-    text = (value or "").strip().lower()
-    if not text:
-        return ""
-    return re.sub(r"[^a-z0-9]+", "", text)
+    """Letters and digits of any script, folded; whitespace, punctuation, emoji and flags are ignored.
+
+    Remarks made only of emoji/punctuation fold to ``""``: an empty key never matches anything.
+    """
+    text = _unicode_fold((value or "").strip())
+    return "".join(ch for ch in text if ch.isalnum())
 
 
 _CONFIGURATION_SCHEMES = (
@@ -273,24 +291,34 @@ def _parse_shadowsocks(raw: str) -> ParsedShareLink | None:
 
 
 def index_subscription_links(links: list[str]) -> dict[str, ParsedShareLink]:
-    """Map normalized remark/config keys to parsed links (first wins)."""
-    out: dict[str, ParsedShareLink] = {}
+    """Map normalized remark/config keys to parsed links.
+
+    A key shared by links that point at *different endpoints* is ambiguous and is left out of the
+    index (callers then fall through to endpoint/structural matching) instead of silently handing the
+    first link to whichever config asked first.
+    """
+    seen: dict[str, ParsedShareLink] = {}
+    ambiguous: set[str] = set()
     for link in links:
         parsed = parse_share_link(link)
         if parsed is None:
             continue
         for key in parsed.match_keys():
-            out.setdefault(key, parsed)
-    return out
+            prior = seen.get(key)
+            if prior is None:
+                seen[key] = parsed
+            elif share_link_structural_key(prior.raw) != share_link_structural_key(parsed.raw):
+                ambiguous.add(key)
+    return {k: v for k, v in seen.items() if k not in ambiguous}
 
 
 def _tokens(value: str) -> set[str]:
-    return {t for t in re.findall(r"[a-z0-9]+", (value or "").lower()) if len(t) >= 2}
+    return {t for t in re.findall(r"[^\W_]+", _unicode_fold(value or "")) if len(t) >= 2}
 
 
 def _remark_hints(remark: str) -> set[str]:
     """ASCII keywords in subscription remarks (handles stylized Unicode labels)."""
-    upper = (remark or "").upper()
+    upper = _unicode_fold(remark or "").upper()
     hints: set[str] = set()
     for keyword in (
         "TUNNEL",
@@ -448,6 +476,52 @@ def vless_trojan_client_uuid(link: str) -> str | None:
     if parsed.scheme not in ("vless", "trojan") or not parsed.username:
         return None
     return unquote(parsed.username)
+
+
+def share_link_structural_key(link: str) -> str | None:
+    """
+    Endpoint identity of a share link that ignores the per-user credential and the remark.
+
+    A panel renders the same endpoint (address, port, transport, TLS/Reality parameters) for every
+    user and only the client UUID/password and the ``#remark`` differ.  The discovery (test) user's
+    link and a customer's link for the same destination host therefore share this key, which makes
+    it a stable identity even when remarks are stylized Unicode or duplicated.
+
+    Returns ``None`` when the scheme carries per-user material that cannot be separated.
+    """
+    from urllib.parse import urlencode
+
+    base = share_link_config_base((link or "").strip())
+    if not base:
+        return None
+    lower = base.lower()
+    try:
+        if lower.startswith("vmess://"):
+            data = json.loads(base64.b64decode(base[len("vmess://") :] + "==", validate=False).decode("utf-8", "replace"))
+            if not isinstance(data, dict):
+                return None
+            data = {k: v for k, v in data.items() if k not in ("id", "ps", "remark")}
+            return "vmess:" + json.dumps(data, sort_keys=True, separators=(",", ":"))
+        if lower.startswith(("vless://", "trojan://", "ss://", "hysteria2://", "hy2://")):
+            scheme = "hysteria2" if lower.startswith("hy2://") else lower.split("://", 1)[0]
+            parsed = urlparse(base)
+            host, port = parsed.hostname, parsed.port
+            if not host and scheme == "ss":
+                # Legacy ss://BASE64(method:password@host:port)
+                decoded = base64.urlsafe_b64decode(parsed.netloc + "=" * (-len(parsed.netloc) % 4)).decode(
+                    "utf-8", "replace"
+                )
+                tail = decoded.rsplit("@", 1)[-1]
+                host, _, port_text = tail.rpartition(":")
+                port = int(port_text) if port_text.isdigit() else None
+            if not host or not port:
+                return None
+            query = sorted(parse_qs(parsed.query, keep_blank_values=True).items())
+            flat = [(k, v[0] if v else "") for k, v in query]
+            return f"{scheme}://{host.lower()}:{port}?{urlencode(flat)}"
+    except Exception:
+        return None
+    return None
 
 
 def replace_link_remark(link: str, remark: str) -> str:

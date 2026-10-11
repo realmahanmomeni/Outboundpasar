@@ -30,7 +30,16 @@ async def count_materialized_destination_configs(db: AsyncSession, panel_id: int
 
 async def count_importable_links_in_subscription_body(body: str) -> int:
     links = decode_subscription_links(body or "")
-    return sum(1 for link in links if is_importable_configuration_link(link))
+    seen: set[str] = set()
+    count = 0
+    for link in links:
+        if not is_importable_configuration_link(link):
+            continue
+        if link in seen:
+            continue
+        seen.add(link)
+        count += 1
+    return count
 
 
 async def count_importable_links_from_subscription_url(subscription_url: str) -> int:

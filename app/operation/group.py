@@ -1,7 +1,7 @@
 import asyncio
 
 from app import notification
-from app.db import AsyncSession
+from app.db import AsyncSession, GetDB
 from app.db.crud.bulk import add_groups_to_users, count_bulk_group_scope, remove_groups_from_users
 from app.db.crud.group import (
     create_group,
@@ -41,6 +41,14 @@ from app.services.workspace_scope import resolve_tenant_workspace_scope
 from app.utils.logger import get_logger
 
 logger = get_logger("group-operation")
+
+
+def _group_response(db_group) -> GroupResponse:
+    group = GroupResponse.model_validate(db_group)
+    count = len(group.inbound_tags or [])
+    group.inbound_association_count = count
+    group.needs_inbound_assignment = count == 0 and not group.is_disabled
+    return group
 
 
 class GroupOperation(BaseOperation):
@@ -93,7 +101,7 @@ class GroupOperation(BaseOperation):
             workspace_id=workspace_id if not admin.is_owner else None,
         )
 
-        group = GroupResponse.model_validate(db_group)
+        group = _group_response(db_group)
 
         asyncio.create_task(notification.create_group(group, admin.username))
 
@@ -104,7 +112,7 @@ class GroupOperation(BaseOperation):
         query.ids = apply_group_access(admin, query.ids)
         tenant_id, workspace_id = await self._resource_scope(db, admin)
         db_groups, count = await get_group(db, query, tenant_id=tenant_id, workspace_id=workspace_id)
-        return GroupsResponse(groups=db_groups, total=count)
+        return GroupsResponse(groups=[_group_response(g) for g in db_groups], total=count)
 
     async def get_groups_simple(
         self,
@@ -121,26 +129,44 @@ class GroupOperation(BaseOperation):
         groups = [GroupSimple(id=row[0], name=row[1]) for row in rows]
         return GroupsSimpleResponse(groups=groups, total=total)
 
+    async def _sync_users_after_group_change(
+        self,
+        group_id: int,
+        *,
+        tenant_id: int | None,
+        workspace_id: int | None,
+    ) -> None:
+        try:
+            async with GetDB() as db:
+                users = await get_users(
+                    db,
+                    query=UserListQuery(group_ids=[group_id]),
+                    load_admin_role=True,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                )
+                await self._sync_users_allocations(db, users)
+                await self._enqueue_oc_sync_for_users(db, users)
+                await db.commit()
+                await sync_users(users)
+        except Exception:
+            logger.exception("Background user sync after group %s change failed", group_id)
+
     async def modify_group(self, db: AsyncSession, group_id: int, modified_group: GroupModify, admin: Admin) -> Group:
         db_group = await self._get_group_with_access(db, group_id, admin)
-        if modified_group.inbound_tags is not None:
+        if modified_group.inbound_tags is not None and modified_group.inbound_tags:
             await self.check_inbound_tags(db, modified_group.inbound_tags, admin)
         db_group = await modify_group(db, db_group, modified_group)
 
-        users = await get_users(
-            db,
-            query=UserListQuery(group_ids=[db_group.id]),
-            load_admin_role=True,
-            tenant_id=admin.tenant_id,
-            workspace_id=admin.workspace_id,
+        group = _group_response(db_group)
+
+        asyncio.create_task(
+            self._sync_users_after_group_change(
+                db_group.id,
+                tenant_id=admin.tenant_id,
+                workspace_id=admin.workspace_id,
+            )
         )
-        await self._sync_users_allocations(db, users)
-        await self._enqueue_oc_sync_for_users(db, users)
-        await db.commit()
-        await sync_users(users)
-
-        group = GroupResponse.model_validate(db_group)
-
         asyncio.create_task(notification.modify_group(group, admin.username))
 
         logger.info(f'Group "{group.name}" modified by admin "{admin.username}"')
@@ -319,7 +345,7 @@ class GroupOperation(BaseOperation):
             await sync_users(users)
 
         for db_group in groups_to_update:
-            group = GroupResponse.model_validate(db_group)
+            group = _group_response(db_group)
             asyncio.create_task(notification.modify_group(group, admin.username))
             logger.info(
                 f'Group "{db_group.name}" bulk {"disabled" if is_disabled else "enabled"} by admin "{admin.username}"'

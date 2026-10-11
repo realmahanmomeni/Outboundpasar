@@ -7,7 +7,7 @@ from .validators import ListValidator
 
 class Group(BaseModel):
     name: str = Field(min_length=3, max_length=64)
-    inbound_tags: list[str] | None = []
+    inbound_tags: list[str] = Field(default_factory=list)
     is_disabled: bool = False
 
     model_config = ConfigDict(from_attributes=True)
@@ -22,16 +22,19 @@ class GroupCreate(Group):
         return ListValidator.not_null_list(v, "inbound")
 
 
-class GroupModify(Group):
-    @field_validator("inbound_tags", mode="after")
-    @classmethod
-    def inbound_tags_validator(cls, v):
-        return ListValidator.nullable_list(v, "inbound")
+class GroupModify(BaseModel):
+    """PUT semantics: omitted ``inbound_tags`` preserves associations; ``[]`` clears them."""
+
+    name: str = Field(min_length=3, max_length=64)
+    inbound_tags: list[str] | None = None
+    is_disabled: bool | None = None
 
 
 class GroupResponse(Group):
     id: int
     total_users: int = 0
+    inbound_association_count: int = 0
+    needs_inbound_assignment: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

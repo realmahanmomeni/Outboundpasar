@@ -151,7 +151,14 @@ async def filter_oc_inbound_tags_for_runtime_subscription(
             payload = source_payload if isinstance(source_payload, dict) else {}
             oc_sid = str(payload.get("oc_source_config_id") or "").strip()
             synced = synced_by_panel.get(panel_id, set())
-            if oc_sid and synced and oc_sid not in synced:
+            from app.services.oc_destination_runtime import destination_config_allowed_by_sync
+
+            if synced and not destination_config_allowed_by_sync(
+                oc_source_config_id=oc_sid,
+                panel_id=panel_id,
+                destination_config_id=dest_id,
+                synced=synced,
+            ):
                 continue
             allowed_tag_set.add(tag)
 

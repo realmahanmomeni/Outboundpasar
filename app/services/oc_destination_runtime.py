@@ -15,6 +15,59 @@ from app.services.oc_share_link import (
 )
 
 
+async def catalog_source_config_id_for_destination(
+    db: AsyncSession,
+    panel_id: int,
+    destination_config_id: str,
+) -> str | None:
+    """Resolve catalog config id for a destination fingerprint (when payload omits oc_source_config_id)."""
+    dest_id = (destination_config_id or "").strip()
+    if not dest_id:
+        return None
+    row = (
+        await db.execute(
+            select(OCPanelDestinationHost.source_payload).where(
+                OCPanelDestinationHost.panel_id == panel_id,
+                OCPanelDestinationHost.destination_config_id == dest_id,
+                OCPanelDestinationHost.source_missing.is_(False),
+            )
+        )
+    ).scalar_one_or_none()
+    if isinstance(row, dict):
+        sid = str(row.get("oc_source_config_id") or "").strip()
+        if sid:
+            return sid
+    legacy = (
+        await db.execute(
+            select(OCPanelConfig.source_config_id).where(
+                OCPanelConfig.panel_id == panel_id,
+                OCPanelConfig.source_config_id == dest_id,
+                OCPanelConfig.source_missing.is_(False),
+            )
+        )
+    ).scalar_one_or_none()
+    return str(legacy) if legacy else None
+
+
+def destination_config_allowed_by_sync(
+    *,
+    oc_source_config_id: str,
+    panel_id: int,
+    destination_config_id: str,
+    synced: set[str],
+) -> bool:
+    """True when a destination host tag should be included for runtime/subscription output."""
+    if not synced:
+        return True
+    sid = (oc_source_config_id or "").strip()
+    if not sid:
+        return True
+    if sid in synced:
+        return True
+    dest = (destination_config_id or "").strip()
+    return bool(dest and dest in synced)
+
+
 async def source_config_ids_for_panel_tags(
     db: AsyncSession,
     panel_id: int,

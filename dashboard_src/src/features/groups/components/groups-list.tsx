@@ -87,7 +87,6 @@ export default function GroupsList({ isDialogOpen, onOpenChange }: GroupsListPro
         groupId: group.id,
         data: {
           name: group.name,
-          inbound_tags: group.inbound_tags,
           is_disabled: !group.is_disabled,
         },
       })

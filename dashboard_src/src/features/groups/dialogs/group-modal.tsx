@@ -16,7 +16,6 @@ import { cn } from '@/lib/utils'
 import { queryClient } from '@/utils/query-client'
 import useDynamicErrorHandler from '@/hooks/use-dynamic-errors.ts'
 import type { GroupFormValues } from '@/features/groups/forms/group-form'
-import { useEffect } from 'react'
 
 interface GroupModalProps {
   isDialogOpen: boolean
@@ -32,21 +31,6 @@ export default function GroupModal({ isDialogOpen, onOpenChange, form, editingGr
   const addGroupMutation = useCreateGroup()
   const modifyGroupMutation = useModifyGroup()
   const { data: hostOptions, isLoading: isLoadingHosts } = useGroupHostOptions(isDialogOpen)
-
-  useEffect(() => {
-    if (!isDialogOpen || isLoadingHosts || !hostOptions) return
-
-    const currentTags = form.getValues('inbound_tags') || []
-    const available = new Set(hostOptions.map(o => o.inbound_tag))
-    const validTags = currentTags.filter(tag => available.has(tag))
-
-    if (validTags.length === currentTags.length) return
-
-    form.setValue('inbound_tags', validTags, {
-      shouldDirty: false,
-      shouldValidate: true,
-    })
-  }, [form, hostOptions, isDialogOpen, isLoadingHosts])
 
   const onSubmit = async (values: GroupFormValues) => {
     try {
@@ -112,8 +96,10 @@ export default function GroupModal({ isDialogOpen, onOpenChange, form, editingGr
                 render={({ field }) => {
                   const currentTags = field.value || []
                   const allTags = hostOptions?.map(o => o.inbound_tag) || []
+                  const availableTagSet = new Set(hostOptions?.map(o => o.inbound_tag) || [])
                   const labelFor = (tag: string) =>
                     hostOptions?.find(o => o.inbound_tag === tag)?.display_name || tag
+                  const unresolvedTags = currentTags.filter(tag => !availableTagSet.has(tag))
                   const allSelected =
                     allTags.length > 0 && allTags.every(tag => currentTags.includes(tag))
                   const handleSelectAll = () => {
@@ -132,6 +118,15 @@ export default function GroupModal({ isDialogOpen, onOpenChange, form, editingGr
                             'Select destination subscription hosts (imported OC configs). This is not a list of inbounds.',
                         })}
                       </p>
+                      {unresolvedTags.length > 0 && (
+                        <p className="text-amber-600 dark:text-amber-500 text-xs">
+                          {t('group.unresolvedHostTags', {
+                            count: unresolvedTags.length,
+                            defaultValue:
+                              '{{count}} saved host(s) are not in the current picker list (they remain selected until you remove them).',
+                          })}
+                        </p>
+                      )}
                       <div className="space-y-2">
                         {allTags.length > 0 && (
                           <div className="mb-2 flex justify-end">

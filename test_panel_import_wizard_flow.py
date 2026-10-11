@@ -61,6 +61,17 @@ async def test_import_panels_returns_multiple_panel_ids_for_sequential_wizard(en
         )
     assert [r.subscription_id for r in out.imported] == [11, 12]
     assert len({r.panel_id for r in out.imported}) == 2
+    async with env_fixture.factory() as db:
+        for sub_id, expected_type in ((11, "PASARGUARD"), (12, "PASARGUARD")):
+            panel = (
+                await db.execute(
+                    select(OCPanel).where(
+                        OCPanel.source_panel_id == str(sub_id),
+                        OCPanel.tenant_id == env_fixture.tenant_id,
+                    )
+                )
+            ).scalar_one()
+            assert panel.panel_type == expected_type
 
 
 @pytest.mark.asyncio

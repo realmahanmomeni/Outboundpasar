@@ -52,6 +52,37 @@ def _apply_panel_scope_to_host(host: ProxyHost, panel: OCPanel) -> None:
         host.workspace_id = panel.workspace_id
 
 
+async def _adopt_orphaned_destination_host(
+    db: AsyncSession,
+    *,
+    inbound: ProxyInbound,
+    display_name: str,
+    panel: OCPanel | None,
+) -> ProxyHost | None:
+    """
+    Re-attach a host whose virtual inbound was removed (``hosts.inbound_tag`` became NULL).
+
+    Without this, every re-materialization created a second ``ProxyHost`` for the same
+    destination config and left the previous one orphaned in the Hosts view.  Only hosts in the
+    same workspace/tenant scope with an identical remark are adopted; the lowest id wins.
+    """
+    remark = (display_name or "").strip()
+    if not remark or panel is None:
+        return None
+    stmt = select(ProxyHost).where(ProxyHost.inbound_tag.is_(None), ProxyHost.remark == remark)
+    if panel.workspace_id is not None:
+        stmt = stmt.where(ProxyHost.workspace_id == panel.workspace_id)
+    elif panel.tenant_id is not None:
+        stmt = stmt.where(ProxyHost.tenant_id == panel.tenant_id)
+    else:
+        return None
+    host = (await db.execute(stmt.order_by(ProxyHost.id.asc()).limit(1))).scalars().first()
+    if host is None:
+        return None
+    host.inbound = inbound
+    return host
+
+
 async def _ensure_inbound_host(
     db: AsyncSession,
     *,
@@ -67,6 +98,8 @@ async def _ensure_inbound_host(
 
     host = (await db.execute(select(ProxyHost).where(ProxyHost.inbound_tag == tag))).scalar_one_or_none()
     created = False
+    if host is None:
+        host = await _adopt_orphaned_destination_host(db, inbound=inbound, display_name=display_name, panel=panel)
     if host is None:
         host = ProxyHost(
             remark=display_name,

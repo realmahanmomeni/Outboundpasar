@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from pydantic import BaseModel
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import ProxyHost
 from app.db.models_oc import OCPanel, OCPanelDestinationHost
 from app.services.oc_share_link import effective_destination_inbound_tag
+
+logger = logging.getLogger(__name__)
 
 
 class GroupHostOption(BaseModel):
@@ -38,6 +42,11 @@ async def list_group_host_options(
     a destination row or a workspace ``ProxyHost`` appear.
 
     Legacy OC catalog virtual inbounds (``oc_<panel>_<catalog_id>``) are never group options.
+
+    Count invariant (tenant UI vs one Group):
+    - ``len(list_group_host_options)`` = tenant/workspace destination hosts assignable to any Group.
+    - A single Group's association count = only tags explicitly saved on that Group (often 0--N, not the tenant total).
+    Inventory dashboards that count catalog or upstream lines use other APIs; do not expect equality with this list.
     """
     by_tag: dict[str, GroupHostOption] = {}
 
@@ -121,7 +130,16 @@ async def list_group_host_options(
             ),
         )
 
-    return sorted(by_tag.values(), key=lambda item: (item.display_name.lower(), item.inbound_tag))
+    options = sorted(by_tag.values(), key=lambda item: (item.display_name.lower(), item.inbound_tag))
+    logger.info(
+        "group_host_options tenant_id=%s workspace_id=%s total=%s oc_dest=%s native=%s",
+        tenant_id,
+        workspace_id,
+        len(options),
+        sum(1 for o in options if o.is_oc_destination),
+        sum(1 for o in options if not o.is_oc_destination),
+    )
+    return options
 
 
 async def allowed_group_inbound_tags(

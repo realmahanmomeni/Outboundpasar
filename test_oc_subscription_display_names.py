@@ -31,11 +31,8 @@ def _presentation_user() -> str:
 
 
 async def test_host_display_name_overrides_default_template():
-    upstream = [
-        _presentation_status(),
-        _presentation_user(),
-        _customer_link("cust-uuid", "🇸🇪|CDN"),
-    ]
+    customer = _customer_link("cust-uuid", "🇸🇪|CDN")
+    upstream = [customer]
     catalog_id = "HTTP-UP"
 
     async with GetDB() as db:
@@ -93,7 +90,7 @@ async def test_host_display_name_overrides_default_template():
         await db.commit()
         uid = user.id
 
-    body = "\n".join(upstream)
+    body = "\n".join([_presentation_status(), _presentation_user(), customer])
     with patch(
         "app.services.oc_user_subscription_hosts.fetch_upstream_subscription_body",
         new=AsyncMock(return_value=body),
@@ -134,9 +131,12 @@ async def test_three_configs_by_source_id_not_order():
         ("Shadowsocks TCP", "🇸🇪 DIRECT", "c2", "🇸🇪|DIRECT"),
         ("VLESS XHHTT", "🇸🇪 XHTTP", "c3", "🇸🇪|XHTTP"),
     ]
-    upstream = [_presentation_status(), _presentation_user()]
-    for _, _, uuid_val, remark in specs:
-        upstream.append(_customer_link(uuid_val, remark, host=f"{uuid_val}.example"))
+    customer_links = [
+        _customer_link(uuid_val, remark, host=f"{uuid_val}.example")
+        for _, _, uuid_val, remark in specs
+    ]
+    upstream_for_hosts = customer_links
+    upstream_for_fetch = [_presentation_status(), _presentation_user(), *customer_links]
 
     async with GetDB() as db:
         admin = (await db.execute(select(Admin).limit(1))).scalar_one()
@@ -159,7 +159,7 @@ async def test_three_configs_by_source_id_not_order():
                 )
             )
         await db.flush()
-        await reconcile_panel_destination_hosts(db, panel, upstream)
+        await reconcile_panel_destination_hosts(db, panel, upstream_for_hosts)
         dest_rows = (
             await db.execute(select(OCPanelDestinationHost).where(OCPanelDestinationHost.panel_id == panel.id))
         ).scalars().all()
@@ -171,7 +171,7 @@ async def test_three_configs_by_source_id_not_order():
             for cid, display, _u, _r in specs:
                 if cid == sid:
                     row.display_name = display
-            tags.append(row.virtual_inbound_tag)
+                    tags.append(row.virtual_inbound_tag)
         inbounds = []
         for t in tags:
             inbounds.append((await db.execute(select(ProxyInbound).where(ProxyInbound.tag == t))).scalar_one())
@@ -202,7 +202,7 @@ async def test_three_configs_by_source_id_not_order():
         await db.commit()
         uid = user.id
 
-    body = "\n".join(upstream)
+    body = "\n".join(upstream_for_fetch)
     with patch(
         "app.services.oc_user_subscription_hosts.fetch_upstream_subscription_body",
         new=AsyncMock(return_value=body),

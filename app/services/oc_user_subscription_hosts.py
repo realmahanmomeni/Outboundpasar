@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +13,7 @@ from app.services.oc_destination_runtime import (
     load_destination_hosts_for_tags,
     match_upstream_link_for_destination,
 )
+from app.services.oc_host_display import resolve_oc_subscription_remark_source
 from app.services.oc_share_link import (
     decode_subscription_links,
     index_subscription_links,
@@ -18,10 +21,11 @@ from app.services.oc_share_link import (
     parse_destination_tag,
     parse_share_link,
     replace_link_remark,
+    share_link_config_base,
+    share_link_structural_key,
 )
 from app.services.oc_subscription_runtime import load_runtime_oc_subscription_state
 from app.services.oc_upstream_subscription import fetch_upstream_subscription_body, validate_upstream_subscription_url
-from app.services.oc_host_display import resolve_oc_subscription_remark_source
 from app.services.oc_user_mapping_state import oc_user_mapping_runtime_active_criteria
 from app.utils.logger import get_logger
 
@@ -52,6 +56,36 @@ async def _fetch_user_links(mapping: OCUserMapping) -> list[str] | None:
         for link in raw_links
         if link.startswith(("vless://", "vmess://", "trojan://", "ss://", "hysteria2://", "wireguard://"))
     ]
+
+
+def _structural_index(panel_links: list[str]) -> dict[str, list[str]]:
+    """Endpoint identity (credential/remark independent) -> distinct user links."""
+    index: dict[str, list[str]] = {}
+    for link in panel_links:
+        key = share_link_structural_key(link)
+        if key:
+            bucket = index.setdefault(key, [])
+            # Same credential + endpoint under different remarks is one config.
+            if all(share_link_config_base(existing) != share_link_config_base(link) for existing in bucket):
+                bucket.append(link)
+    return index
+
+
+def match_user_link_by_endpoint(
+    structural: dict[str, list[str]],
+    stored_discovery_link: str,
+) -> str | None:
+    """
+    Stable match of a destination host to the customer's own link: same endpoint, any remark.
+
+    Remark-based matching (kept as fallback) cannot distinguish stylized Unicode remarks, which
+    normalize to an empty key, nor remarks that are identical across different endpoints.
+    """
+    key = share_link_structural_key(stored_discovery_link)
+    if not key:
+        return None
+    candidates = structural.get(key) or []
+    return candidates[0] if len(candidates) == 1 else None
 
 
 async def collect_oc_subscription_links_for_user(
@@ -88,6 +122,8 @@ async def collect_oc_subscription_links_for_user(
 
     out: list[str] = []
     seen: set[str] = set()
+    stages: Counter[str] = Counter()
+    stages["selected_tags"] = len(oc_tags)
 
     dest_tags = [t for t in oc_tags if parse_destination_tag(t)]
     legacy_tags = [t for t in oc_tags if t not in dest_tags]
@@ -114,24 +150,47 @@ async def collect_oc_subscription_links_for_user(
         }
         dest_rows = await load_destination_hosts_for_tags(db, dest_tags, list(allowed_panels))
         links_by_panel: dict[int, list[str]] = {}
+        structural_by_panel: dict[int, dict[str, list[str]]] = {}
+        stages["destination_rows"] = len(dest_rows)
+        stages["dest_tags_without_row"] = max(0, len(dest_tags) - len(dest_rows))
         for dest_host, _proxy in dest_rows:
             tag = desired_by_key.get((dest_host.panel_id, dest_host.destination_config_id))
             if not tag or tag not in oc_tags:
+                stages["rejected_tag_not_selected"] += 1
                 continue
             mapping = mappings.get(dest_host.panel_id)
             if mapping is None:
+                stages["rejected_no_active_mapping"] += 1
                 continue
             synced = synced_by_panel.get(dest_host.panel_id, set())
             payload = dest_host.source_payload if isinstance(dest_host.source_payload, dict) else {}
             oc_sid = str(payload.get("oc_source_config_id") or "").strip()
-            if oc_sid and synced and oc_sid not in synced:
+            from app.services.oc_destination_runtime import destination_config_allowed_by_sync
+
+            if synced and not destination_config_allowed_by_sync(
+                oc_source_config_id=oc_sid,
+                panel_id=dest_host.panel_id,
+                destination_config_id=dest_host.destination_config_id,
+                synced=synced,
+            ):
+                stages["rejected_not_in_synced_configs"] += 1
                 continue
             if dest_host.panel_id not in links_by_panel:
                 user_links = await _fetch_user_links(mapping)
                 links_by_panel[dest_host.panel_id] = user_links or []
+                structural_by_panel[dest_host.panel_id] = _structural_index(user_links or [])
             panel_links = links_by_panel[dest_host.panel_id]
+            if not panel_links:
+                stages["rejected_no_user_links"] += 1
             raw: str | None = None
-            if oc_sid and panel_links:
+            stored_discovery = str(payload.get("subscription_link") or "").strip()
+            if panel_links and stored_discovery:
+                raw = match_user_link_by_endpoint(structural_by_panel[dest_host.panel_id], stored_discovery)
+                if raw:
+                    stages["matched_by_endpoint"] += 1
+            if raw:
+                pass
+            elif oc_sid and panel_links:
                 source_name = catalog_names.get((dest_host.panel_id, oc_sid), oc_sid)
                 raw = match_upstream_link_for_destination(
                     panel_links,
@@ -157,6 +216,8 @@ async def collect_oc_subscription_links_for_user(
                         )
                         raw = parsed_match.raw if parsed_match else None
             if not raw:
+                if panel_links:
+                    stages["rejected_no_matching_user_link"] += 1
                 continue
             remark_source = resolve_oc_subscription_remark_source(
                 display_name=dest_host.display_name,
@@ -168,6 +229,7 @@ async def collect_oc_subscription_links_for_user(
                 remark = remark_source
             link = replace_link_remark(raw, remark)
             if link in seen:
+                stages["duplicates_removed"] += 1
                 continue
             seen.add(link)
             out.append(link)
@@ -227,11 +289,12 @@ async def collect_oc_subscription_links_for_user(
             out.append(link)
 
     logger.info(
-        "oc_user_sub_collected user=%s desired_dest=%s desired_legacy=%s rendered=%s panels=%s",
+        "oc_user_sub_collected user=%s desired_dest=%s desired_legacy=%s rendered=%s panels=%s stages=%s",
         user_id,
         len(dest_tags),
         len(legacy_tags),
         len(out),
         sorted(allowed_panels),
+        dict(sorted(stages.items())),
     )
     return out

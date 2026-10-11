@@ -472,8 +472,15 @@ async def import_panels(
             )
             db.add(new_panel)
             await db.flush()
+            from app.services.oc_panel_import_metadata import apply_panel_metadata_from_oc
+
+            await apply_panel_metadata_from_oc(db, new_panel, meta)
             existing = new_panel
             created = True
+        elif meta:
+            from app.services.oc_panel_import_metadata import apply_panel_metadata_from_oc
+
+            await apply_panel_metadata_from_oc(db, existing, meta)
 
         imported.append(
             ImportPanelResult(
@@ -543,6 +550,10 @@ async def select_panel(
         sync_status="pending",
     )
     db.add(new_panel)
+    await db.flush()
+    from app.services.oc_panel_import_metadata import apply_panel_metadata_from_oc
+
+    await apply_panel_metadata_from_oc(db, new_panel, meta)
     await db.commit()
     await db.refresh(new_panel)
 
@@ -738,15 +749,15 @@ async def sync_configs_and_hosts(
             "(subscription discovery defines selectable hosts, not the catalog list)."
         )
 
-    status = "success"
+    sync_result = "success"
     if warnings and dest_total == 0 and catalog_total > 0:
-        status = "partial"
+        sync_result = "partial"
 
     panel.sync_status = "connected"
     await db.commit()
 
     return SyncResponse(
-        status=status,
+        status=sync_result,
         configs_created=configs_created,
         hosts_created=hosts_created,
         catalog_configs_total=catalog_total,

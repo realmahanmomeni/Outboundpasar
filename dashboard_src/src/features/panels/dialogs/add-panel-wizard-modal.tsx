@@ -23,6 +23,8 @@ import {
   revokeTelegramConnection,
   importPanels,
   formatApiError,
+  getPanels,
+  type PanelItem,
 } from '../service/panels-api'
 import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -53,6 +55,7 @@ export default function AddPanelWizardModal({
   const [telegramUserId, setTelegramUserId] = useState<number | null>(null)
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [pendingLocalPanels, setPendingLocalPanels] = useState<PanelItem[]>([])
 
   const isTelegramConnected = connectionStatus === 'active'
 
@@ -79,11 +82,30 @@ export default function AddPanelWizardModal({
   }, [])
 
   useEffect(() => {
-    if (isOpen) {
-      resetWizardState()
-      refreshTelegramStatus()
-    }
+    if (!isOpen) return
+    refreshTelegramStatus()
+    resetWizardState()
+    getPanels()
+      .then((rows) => {
+        const pending = rows.filter((p) => (p.sync_status || '').toLowerCase() === 'pending')
+        setPendingLocalPanels(pending)
+      })
+      .catch(() => setPendingLocalPanels([]))
   }, [isOpen, resetWizardState, refreshTelegramStatus])
+
+  const resumePendingSetup = () => {
+    if (pendingLocalPanels.length === 0) return
+    const queue: PanelWorkItem[] = pendingLocalPanels.map((p) => ({
+      panelId: p.id,
+      name: p.name,
+    }))
+    setPanelWorkQueue(queue)
+    setPanelWorkIndex(0)
+    setLocalPanelId(queue[0]?.panelId ?? null)
+    setSelectedGroupIds([])
+    setStep(2)
+    setErrorMsg(null)
+  }
 
   const currentWorkItem = panelWorkQueue[panelWorkIndex] ?? null
   const activeLocalPanelId = localPanelId ?? currentWorkItem?.panelId ?? null
@@ -284,14 +306,14 @@ export default function AddPanelWizardModal({
           </div>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
-          {errorMsg && (
-            <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              <span>{errorMsg}</span>
-            </div>
-          )}
+        {errorMsg ? (
+          <div className="mb-3 flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>{errorMsg}</span>
+          </div>
+        ) : null}
 
+        <div className="space-y-4 py-2 min-h-[12rem]">
           {step === 0 && (
             <div className="space-y-3">
               <h3 className="font-semibold text-sm flex items-center gap-2">
@@ -300,6 +322,19 @@ export default function AddPanelWizardModal({
               </h3>
               {isTelegramConnected ? (
                 <div className="space-y-3">
+                  {pendingLocalPanels.length > 0 && (
+                    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+                      <p className="font-medium text-foreground">
+                        {pendingLocalPanels.length} panel(s) need setup (test user / sync).
+                      </p>
+                      <p className="text-muted-foreground text-xs mt-1">
+                        Import created these panels but setup was not finished. Resume without re-importing.
+                      </p>
+                      <Button type="button" size="sm" className="mt-2" variant="secondary" onClick={resumePendingSetup}>
+                        Resume pending setup
+                      </Button>
+                    </div>
+                  )}
                   <p className="text-sm text-muted-foreground">
                     Telegram account connected
                     {telegramUserId ? ` (ID ${telegramUserId})` : ''}. Continue to import your panels, or disconnect to link a different account.

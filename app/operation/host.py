@@ -8,8 +8,6 @@ from app.db.crud.host import (
     get_host_by_id,
     get_hosts,
     modify_host,
-    remove_host,
-    remove_hosts,
 )
 from app.db.models import ProxyHost
 from app.models.admin import AdminDetails
@@ -23,10 +21,10 @@ from app.models.host import (
     RemoveHostsResponse,
 )
 from app.operation import BaseOperation
-from app.services.workspace_scope import resolve_tenant_workspace_scope
-from app.services.oc_destination_host_lifecycle import teardown_oc_destination_inbound_tag
+from app.services.oc_destination_host_lifecycle import delete_hosts_and_detach_membership
 from app.services.oc_panel_destination_hosts import update_oc_destination_host_display_name
 from app.services.oc_share_link import is_oc_destination_inbound_tag
+from app.services.workspace_scope import resolve_tenant_workspace_scope
 from app.utils.logger import get_logger
 
 logger = get_logger("host-operation")
@@ -152,14 +150,9 @@ class HostOperation(BaseOperation):
     async def remove_host(self, db: AsyncSession, host_id: int, admin: AdminDetails):
         db_host = await self.get_validated_host(db, host_id, admin=admin)
         host = BaseHost.model_validate(db_host)
-        if is_oc_destination_inbound_tag(db_host.inbound_tag):
-            if await teardown_oc_destination_inbound_tag(db, db_host.inbound_tag or ""):
-                await db.commit()
-            else:
-                await remove_host(db, db_host)
-        else:
-            await remove_host(db, db_host)
-        logger.info(f'Host "{db_host.id}" deleted by admin "{admin.username}"')
+        stats = await delete_hosts_and_detach_membership(db, [db_host])
+        await db.commit()
+        logger.info(f'Host "{host.id}" deleted by admin "{admin.username}" membership={stats}')
 
         asyncio.create_task(notification.remove_host(host, admin.username))
 
@@ -228,27 +221,18 @@ class HostOperation(BaseOperation):
         if missing:
             await self.raise_error(message="Host not found", code=404)
 
-        oc_hosts = [h for h in db_hosts if is_oc_destination_inbound_tag(h.inbound_tag)]
-        native_hosts = [h for h in db_hosts if not is_oc_destination_inbound_tag(h.inbound_tag)]
-
-        for db_host in oc_hosts:
-            await teardown_oc_destination_inbound_tag(db, db_host.inbound_tag or "")
-        if oc_hosts:
-            await db.commit()
-
-        host_ids = [h.id for h in native_hosts]
-        if host_ids:
-            await remove_hosts(db, host_ids)
-        db_hosts = oc_hosts + native_hosts
+        snapshots = [(h.id, BaseHost.model_validate(h)) for h in db_hosts]
+        stats = await delete_hosts_and_detach_membership(db, list(db_hosts))
+        await db.commit()
 
         # Update host manager and notify
-        for db_host in db_hosts:
-            logger.info(f'Host "{db_host.id}" deleted by admin "{admin.username}"')
-            host = BaseHost.model_validate(db_host)
+        for host_id, host in snapshots:
+            logger.info(f'Host "{host_id}" deleted by admin "{admin.username}"')
             asyncio.create_task(notification.remove_host(host, admin.username))
-            await host_manager.remove_host(host.id)
+            await host_manager.remove_host(host_id)
+        logger.info(f'Bulk host delete by admin "{admin.username}" membership={stats}')
 
-        return RemoveHostsResponse(hosts=[str(h.id) for h in db_hosts], count=len(db_hosts))
+        return RemoveHostsResponse(hosts=[str(host_id) for host_id, _ in snapshots], count=len(snapshots))
 
     @staticmethod
     def _build_bulk_action_response(hosts: list[ProxyHost]) -> BulkHostsActionResponse:

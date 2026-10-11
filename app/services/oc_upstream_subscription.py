@@ -136,26 +136,40 @@ async def fetch_upstream_subscription_body(
     if user_agent:
         headers["User-Agent"] = user_agent
 
-    current_url = fetch_url
+    fetch_candidates: list[str] = [fetch_url]
+    if config_format in ("links", "links_base64") and fetch_url != validated_base:
+        fetch_candidates.append(validated_base)
+
     async with create_outbound_http_session(timeout_seconds=FETCH_TIMEOUT_SECONDS) as session:
-        for _ in range(MAX_REDIRECTS + 1):
-            async with session.get(current_url, headers=headers, allow_redirects=False) as resp:
-                if resp.status in (301, 302, 303, 307, 308):
-                    location = resp.headers.get("Location")
-                    if not location:
-                        raise ValueError("redirect without location")
-                    next_url = urljoin(current_url, location)
-                    if not _same_origin(validated_base, next_url):
-                        raise ValueError("redirect to foreign host")
-                    validate_upstream_subscription_url(next_url)
-                    current_url = next_url
-                    continue
-                if resp.status >= 400:
-                    raise ValueError(f"upstream http {resp.status}")
-                body = await _read_limited_body(resp)
-                if config_format == "wireguard":
-                    return body
-                return body.decode("utf-8", errors="replace")
+        last_status: int | None = None
+        for candidate_index, current_url in enumerate(fetch_candidates):
+            for _ in range(MAX_REDIRECTS + 1):
+                async with session.get(current_url, headers=headers, allow_redirects=False) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("Location")
+                        if not location:
+                            raise ValueError("redirect without location")
+                        next_url = urljoin(current_url, location)
+                        if not _same_origin(validated_base, next_url):
+                            raise ValueError("redirect to foreign host")
+                        validate_upstream_subscription_url(next_url)
+                        current_url = next_url
+                        continue
+                    if resp.status == 404 and candidate_index + 1 < len(fetch_candidates):
+                        last_status = resp.status
+                        break
+                    if resp.status >= 400:
+                        raise ValueError(f"upstream http {resp.status}")
+                    body = await _read_limited_body(resp)
+                    if config_format == "wireguard":
+                        return body
+                    return body.decode("utf-8", errors="replace")
+            else:
+                continue
+            continue
+        if last_status is not None:
+            raise ValueError(f"upstream http {last_status}")
+        raise ValueError("upstream fetch failed")
 
 
 def _split_share_links(text: str) -> list[str]:
@@ -167,11 +181,32 @@ def _split_share_links(text: str) -> list[str]:
     return lines
 
 
+_PLAINTEXT_LINK_PREFIXES = (
+    "vmess://",
+    "vless://",
+    "trojan://",
+    "ss://",
+    "hysteria2://",
+    "hy2://",
+    "wireguard://",
+)
+
+
+def _body_has_leading_plaintext_share_links(text: str) -> bool:
+    """True when the payload is newline-separated share links (not a single base64 blob)."""
+    for line in text.replace("\r\n", "\n").split("\n"):
+        stripped = line.strip().lower()
+        if not stripped:
+            continue
+        return any(stripped.startswith(prefix) for prefix in _PLAINTEXT_LINK_PREFIXES)
+    return False
+
+
 def _decode_links_payload(text: str) -> list[str]:
     stripped = text.strip()
     if not stripped:
         return []
-    if stripped.startswith("vmess://") or stripped.startswith("vless://") or stripped.startswith("trojan://"):
+    if _body_has_leading_plaintext_share_links(stripped):
         return _split_share_links(stripped)
     try:
         decoded = base64.b64decode(stripped, validate=False).decode("utf-8", errors="replace")

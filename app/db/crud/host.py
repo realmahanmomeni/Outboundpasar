@@ -74,18 +74,26 @@ async def get_or_create_inbound(db: AsyncSession, inbound_tag: str) -> ProxyInbo
     return result[inbound_tag]
 
 
-async def get_inbounds_not_in_tags(db: AsyncSession, excluded_tags: list[str]) -> list[ProxyInbound]:
+async def get_inbounds_not_in_tags(
+    db: AsyncSession,
+    excluded_tags: list[str],
+    *,
+    protected_tags: set[str] | frozenset[str] | None = None,
+) -> list[ProxyInbound]:
     """
     Get all inbounds where the tag is not in the provided list of tags.
 
     Args:
         db: Database session
         excluded_tags: List of tags to exclude
+        protected_tags: Additional tags that must never be returned (e.g. OC virtual inbounds
+            that are owned by panel rows rather than the core config)
 
     Returns:
         List of ProxyInbound objects not matching any tag in the list
     """
-    stmt = select(ProxyInbound).where(ProxyInbound.tag.not_in(excluded_tags))
+    keep = set(excluded_tags) | set(protected_tags or ())
+    stmt = select(ProxyInbound).where(ProxyInbound.tag.not_in(keep))
     result = await db.execute(stmt)
     return result.scalars().all()
 

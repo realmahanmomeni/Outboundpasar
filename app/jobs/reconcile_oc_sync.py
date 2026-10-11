@@ -59,7 +59,7 @@ async def reconcile_all_oc_users():
                 continue
             seen.add(user_id)
             try:
-                await enqueue_oc_user_sync(db, user)
+                await enqueue_oc_user_sync(db, user, periodic_reconcile=True)
             except Exception as e:
                 logger.error(
                     "OC_RECONCILE_ERROR user_id=%s username=%s error=%s",
@@ -72,7 +72,7 @@ async def reconcile_all_oc_users():
             if user.id in seen:
                 continue
             try:
-                await enqueue_oc_user_sync(db, user)
+                await enqueue_oc_user_sync(db, user, periodic_reconcile=True)
             except Exception as e:
                 logger.error(
                     "OC_RECONCILE_ERROR user_id=%s username=%s error=%s",

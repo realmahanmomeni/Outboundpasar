@@ -43,7 +43,7 @@ def test_maps_oc_html_bad_gateway_to_actionable_panel_message():
     )
     exc = http_exception_from_oc_error(err)
     assert exc.status_code == 503
-    assert "remote panel API" in exc.detail
+    assert "could not reach the remote panel" in exc.detail
 
 
 if __name__ == "__main__":

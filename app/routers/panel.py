@@ -297,6 +297,14 @@ async def get_panel(
             if oc_state == "disconnected" or panel.oc_account_id != oc_account_id:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panel not found")
 
+    try:
+        from app.services.oc_panel_catalog_repair import ensure_panel_catalog_from_oc
+
+        await ensure_panel_catalog_from_oc(db, panel)
+        await db.refresh(panel)
+    except Exception:
+        pass
+
     available = await panel_available_config_count(db, panel)
     return _panel_response(panel, available_configs=available)
 

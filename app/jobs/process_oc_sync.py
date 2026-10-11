@@ -302,6 +302,8 @@ async def process_oc_sync():
 
                         if result.rowcount == 0:
                             logger.warning(f"Job {job.id} modified during execution. Discarding stale result.")
+                            db.expire(job)
+                            await db.commit()
                             continue
 
                         # Phase 10: update success state
@@ -372,6 +374,8 @@ async def process_oc_sync():
 
                         if result.rowcount == 0:
                             logger.warning(f"Job {job.id} modified during execution. Discarding stale result.")
+                            db.expire(job)
+                            await db.commit()
                             continue
 
                         # Phase 10: update success state for delete
