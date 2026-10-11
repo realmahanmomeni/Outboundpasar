@@ -9,6 +9,7 @@ from app.services.oc_host_display import DEFAULT_OC_HOST_DISPLAY_TEMPLATE
 
 def test_template_markers():
     assert remark_looks_like_user_template(DEFAULT_OC_HOST_DISPLAY_TEMPLATE)
+    assert remark_looks_like_user_template("({DATA_LEFT})")
     assert not remark_looks_like_user_template("VLESS TCP")
     assert not remark_looks_like_user_template("Shadowsocks TCP")
 

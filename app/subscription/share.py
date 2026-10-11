@@ -305,6 +305,51 @@ async def filter_hosts(hosts: list[SubscriptionInboundData], user_status: UserSt
     return [host for host in hosts if not host.status or user_status in host.status]
 
 
+def native_host_skips_connectable_subscription(host: SubscriptionInboundData) -> bool:
+    """
+    User-account template hosts (``{USERNAME}``, ``{DATA_LEFT}``, etc.) are informational.
+
+    They belong on a dedicated inbound or OC destination templates; they must not be turned into
+    native Shadowsocks/VLESS share links. See ``remark_looks_like_user_template``.
+    """
+    from app.services.oc_host_display import remark_looks_like_user_template
+
+    return remark_looks_like_user_template(host.remark)
+
+
+async def native_subscription_host_ids(
+    db,
+    native_inbound_tags: list[str],
+    *,
+    tenant_id: int | None,
+    workspace_id: int | None,
+) -> set[int]:
+    """
+    ProxyHost ids eligible for native subscription output for this user.
+
+    Tenant and workspace must both be resolved; otherwise returns an empty set (fail closed).
+    When resolved, only hosts in that tenant and workspace may be serialized for the user's
+    native inbound tags.
+    """
+    if not native_inbound_tags:
+        return set()
+
+    if tenant_id is None or workspace_id is None:
+        return set()
+
+    from sqlalchemy import or_, select
+
+    from app.db.models import ProxyHost
+
+    stmt = select(ProxyHost.id).where(
+        ProxyHost.inbound_tag.in_(native_inbound_tags),
+        ProxyHost.tenant_id == tenant_id,
+        ProxyHost.workspace_id == workspace_id,
+        or_(ProxyHost.is_disabled.is_(False), ProxyHost.is_disabled.is_(None)),
+    )
+    return set((await db.scalars(stmt)).all())
+
+
 async def resolve_oc_virtual_hosts(
     oc_tags: list[str],
     user_status: UserStatus,
@@ -502,35 +547,54 @@ async def process_inbounds_and_tags(
 ) -> str | bytes:
     proxy_settings = user.proxy_settings.dict()
     proxy_settings["_user_id"] = user.id
-    hosts = await filter_hosts(list((await host_manager.get_hosts()).values()), user.status)
     user_inbounds = list(user.inbounds or [])
     native_inbound_tags = [t for t in user_inbounds if not (t or "").startswith("oc_")]
     desired_oc_tags = [t for t in user_inbounds if (t or "").startswith("oc_")]
     oc_tags = desired_oc_tags
     oc_raw_links: list[str] = []
-    if desired_oc_tags:
+    native_allowed_host_ids: set[int] = set()
+    user_tenant_id: int | None = None
+
+    if native_inbound_tags or desired_oc_tags:
         from app.db import GetDB
         from app.services.oc_subscription_runtime import (
             filter_oc_inbound_tags_for_runtime_subscription,
             resolve_user_tenant_id,
         )
         from app.services.oc_user_subscription_hosts import collect_oc_subscription_links_for_user
+        from app.services.subscription_scope import resolve_subscription_native_workspace_id
 
         async with GetDB() as db:
             user_tenant_id = await resolve_user_tenant_id(db, user.id, getattr(user, "admin_id", None))
-            oc_tags = await filter_oc_inbound_tags_for_runtime_subscription(
-                db, user.id, desired_oc_tags, user_tenant_id
-            )
-            if oc_tags:
-                oc_raw_links = await collect_oc_subscription_links_for_user(
+            user_workspace_id = await resolve_subscription_native_workspace_id(db, user)
+            if native_inbound_tags:
+                native_allowed_host_ids = await native_subscription_host_ids(
                     db,
-                    user.id,
-                    oc_tags,
-                    format_variables,
-                    user_tenant_id=user_tenant_id,
+                    native_inbound_tags,
+                    tenant_id=user_tenant_id,
+                    workspace_id=user_workspace_id,
                 )
-    if randomize_order and len(hosts) > 1:
-        random.shuffle(hosts)
+            if desired_oc_tags:
+                oc_tags = await filter_oc_inbound_tags_for_runtime_subscription(
+                    db, user.id, desired_oc_tags, user_tenant_id
+                )
+                if oc_tags:
+                    oc_raw_links = await collect_oc_subscription_links_for_user(
+                        db,
+                        user.id,
+                        oc_tags,
+                        format_variables,
+                        user_tenant_id=user_tenant_id,
+                    )
+
+    cached_hosts = await host_manager.get_hosts()
+    host_entries = [
+        (host_id, host_data)
+        for host_id, host_data in cached_hosts.items()
+        if not host_data.status or user.status in host_data.status
+    ]
+    if randomize_order and len(host_entries) > 1:
+        random.shuffle(host_entries)
 
     def _resolve_host_xray_template_content(inbound: SubscriptionInboundData) -> str | None:
         if xray_template_overrides is None:
@@ -542,8 +606,12 @@ async def process_inbounds_and_tags(
             return None
         return xray_template_overrides.get(template_id)
 
-    for host_data in hosts:
+    for host_id, host_data in host_entries:
         if (host_data.inbound_tag or "").startswith("oc_"):
+            continue
+        if native_inbound_tags and host_id not in native_allowed_host_ids:
+            continue
+        if native_host_skips_connectable_subscription(host_data):
             continue
         result = await process_host(host_data, format_variables, native_inbound_tags, proxy_settings, custom_variables)
         if not result:

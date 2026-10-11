@@ -10,7 +10,20 @@ DEFAULT_OC_HOST_DISPLAY_TEMPLATE = (
     "👤v1.7|{USERNAME}"
 )
 
-_TEMPLATE_MARKERS = ("{USERNAME}", "{STATUS_EMOJI}", "{DAYS_LEFT}", "{DATA_USAGE}", "{DATA_LIMIT}")
+# Markers supported in host remarks / subscription ``format_map`` (see ``setup_format_variables``).
+_TEMPLATE_MARKERS = (
+    "{USERNAME}",
+    "{STATUS_EMOJI}",
+    "{DAYS_LEFT}",
+    "{DATA_USAGE}",
+    "{DATA_LIMIT}",
+    "{DATA_LEFT}",
+    "{TIME_LEFT}",
+    "{EXPIRE_DATE}",
+    "{JALALI_EXPIRE_DATE}",
+    "{USAGE_PERCENTAGE}",
+    "{ADMIN_USERNAME}",
+)
 
 
 def remark_looks_like_user_template(remark: str | None) -> bool:
