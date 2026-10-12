@@ -622,13 +622,25 @@ interface PaginationControlsProps {
   totalPages: number
   itemsPerPage: number
   totalUsers: number
+  pageRowCount: number
   isLoading: boolean
   onPageChange: (page: number) => void
   onItemsPerPageChange: (value: number) => void
 }
 
-export const PaginationControls = ({ currentPage, totalPages, itemsPerPage, isLoading, onPageChange, onItemsPerPageChange }: PaginationControlsProps) => {
+export const PaginationControls = ({
+  currentPage,
+  totalPages,
+  itemsPerPage,
+  totalUsers,
+  pageRowCount,
+  isLoading,
+  onPageChange,
+  onItemsPerPageChange,
+}: PaginationControlsProps) => {
   const { t } = useTranslation()
+  const rangeStart = totalUsers === 0 ? 0 : currentPage * itemsPerPage + 1
+  const rangeEnd = totalUsers === 0 ? 0 : Math.min((currentPage + 1) * itemsPerPage, totalUsers)
 
   const getPaginationRange = (currentPage: number, totalPages: number) => {
     const delta = 2 // Number of pages to show on each side of current page
@@ -700,6 +712,36 @@ export const PaginationControls = ({ currentPage, totalPages, itemsPerPage, isLo
           </SelectContent>
         </Select>
         <span className="text-muted-foreground text-sm whitespace-nowrap">{t('itemsPerPage')}</span>
+      </div>
+
+      <div className="text-muted-foreground text-center text-sm md:text-left">
+        {totalUsers > 0 ? (
+          <>
+            <span>
+              {t('users.paginationRange', {
+                defaultValue: '{{start}}–{{end}} of {{total}}',
+                start: rangeStart,
+                end: rangeEnd,
+                total: totalUsers,
+              })}
+            </span>
+            {pageRowCount > 0 && pageRowCount < itemsPerPage && !isLoading ? (
+              <span className="mt-0.5 block text-xs">
+                {t('users.paginationPartialPage', {
+                  defaultValue: '{{count}} rows loaded on this page',
+                  count: pageRowCount,
+                })}
+              </span>
+            ) : null}
+            {pageRowCount > 0 && itemsPerPage > 10 ? (
+              <span className="mt-0.5 block text-xs">
+                {t('users.paginationScrollHint', {
+                  defaultValue: 'Scroll the table to see all rows on this page.',
+                })}
+              </span>
+            ) : null}
+          </>
+        ) : null}
       </div>
 
       <Pagination dir="ltr" className={`md:justify-end ${dir === 'rtl' ? 'flex-row-reverse' : ''}`}>

@@ -102,11 +102,19 @@ const toOptionalBytesFilter = (gigabytes: number | undefined) => {
 const parseBooleanFlag = (value: string | null) => value === 'true'
 
 // Helper function to parse URL params into filters
+const ALLOWED_ITEMS_PER_PAGE = [10, 20, 30, 40, 50] as const
+
+const normalizeItemsPerPage = (value: number, fallback: number) => {
+  if (!Number.isFinite(value) || value <= 0) return fallback
+  if ((ALLOWED_ITEMS_PER_PAGE as readonly number[]).includes(value)) return value
+  return fallback
+}
+
 const parseURLParams = (searchParams: URLSearchParams, defaultItemsPerPage: number) => {
   const pageParam = searchParams.get('page')
   // URL stores page as 1-indexed (what user sees), convert to 0-indexed for internal use
   const page = pageParam ? Math.max(0, parseInt(pageParam, 10) - 1) : 0
-  const limit = parseInt(searchParams.get('limit') || defaultItemsPerPage.toString(), 10)
+  const limit = normalizeItemsPerPage(parseInt(searchParams.get('limit') || defaultItemsPerPage.toString(), 10), defaultItemsPerPage)
   const sort = searchParams.get('sort') || '-created_at'
   const search = searchParams.get('search') || undefined
   const isId = searchParams.get('is_id') === 'true'
@@ -1249,6 +1257,7 @@ const UsersTable = memo(() => {
         totalPages={totalPages}
         itemsPerPage={itemsPerPage}
         totalUsers={totalUsers}
+        pageRowCount={usersList.length}
         isLoading={isPageLoading}
         onPageChange={handlePageChange}
         onItemsPerPageChange={handleItemsPerPageChange}

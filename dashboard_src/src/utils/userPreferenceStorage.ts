@@ -8,6 +8,13 @@ export const DEFAULT_CORE_EDITOR_VIEW_MODE: CoreEditorViewMode = 'list'
 const NUM_USERS_PER_PAGE_LOCAL_STORAGE_KEY = 'pasarguard-num-users-per-page'
 const NUM_ADMINS_PER_PAGE_LOCAL_STORAGE_KEY = 'pasarguard-num-admins-per-page'
 const NUM_ITEMS_PER_PAGE_DEFAULT = 10
+const ALLOWED_ITEMS_PER_PAGE = [10, 20, 30, 40, 50] as const
+
+const normalizeStoredItemsPerPage = (raw: number) => {
+  if (!Number.isFinite(raw) || raw <= 0) return NUM_ITEMS_PER_PAGE_DEFAULT
+  if ((ALLOWED_ITEMS_PER_PAGE as readonly number[]).includes(raw)) return raw
+  return NUM_ITEMS_PER_PAGE_DEFAULT
+}
 
 const USERS_AUTO_REFRESH_INTERVAL_KEY = 'pasarguard-users-auto-refresh-interval'
 const DEFAULT_USERS_AUTO_REFRESH_INTERVAL_SECONDS = 15
@@ -32,7 +39,7 @@ const DEFAULT_CHART_VIEW_TYPE: ChartViewType = 'bar'
 export const getItemsPerPageLimitSize = (tableType: 'users' | 'admins' = 'users') => {
   const storageKey = tableType === 'users' ? NUM_USERS_PER_PAGE_LOCAL_STORAGE_KEY : NUM_ADMINS_PER_PAGE_LOCAL_STORAGE_KEY
   const numItemsPerPage = (typeof localStorage !== 'undefined' && localStorage.getItem(storageKey)) || NUM_ITEMS_PER_PAGE_DEFAULT.toString() // this catches `null` values
-  return parseInt(numItemsPerPage) || NUM_ITEMS_PER_PAGE_DEFAULT // this catches NaN values
+  return normalizeStoredItemsPerPage(parseInt(numItemsPerPage, 10) || NUM_ITEMS_PER_PAGE_DEFAULT)
 }
 
 export const setItemsPerPageLimitSize = (value: string, tableType: 'users' | 'admins' = 'users') => {
