@@ -34,10 +34,10 @@ export const hasScopeAll = (admin: AdminDetails | null | undefined, resource: st
   return value === true || isScopeAllValue(value)
 }
 
-/** Dashboard/statistics admin filter: aggregate across admins (not nodes.stats). */
+/** Statistics admin filter: tenant admins list self + workspace operators via admins APIs. */
 export const canFilterByAdminStatistics = (admin: AdminDetails | null | undefined) => {
   if (isOwner(admin)) return true
-  return hasScopeAll(admin, 'users', 'read')
+  return hasPermission(admin, 'admins', 'read') || hasPermission(admin, 'admins', 'read_simple')
 }
 
 /** Reconnect-all restarts every platform node; reserved for the platform owner. */

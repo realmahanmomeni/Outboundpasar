@@ -11,7 +11,7 @@ from app.db import GetDB
 from app.db.crud.admin import build_admin_details, load_admin_attrs
 from app.db.crud.workspace import assign_workspace_for_new_admin, create_workspace_for_administrator
 from app.db.models import Admin, AdminRole, Tenant, TenantStatus
-from app.models.admin import AdminCreate, AdminDetails, AdminListQuery, AdminRoleData, AdminUsageQuery
+from app.models.admin import AdminCreate, AdminDetails, AdminListQuery, AdminRoleData, AdminSimpleListQuery, AdminUsageQuery
 from app.operation import OperatorType
 from app.operation.admin import AdminOperation
 from app.operation.permissions import PermissionDenied, enforce_permission
@@ -166,4 +166,35 @@ async def test_assert_tenant_admin_may_assign_role_blocks_administrator_role():
         with pytest.raises(HTTPException) as exc:
             await assert_tenant_admin_may_assign_role(db, actor, BUILTIN_ADMINISTRATOR_ROLE_ID)
         assert exc.value.status_code == 403
+        await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_tenant_admin_admin_filter_api_lists_self_and_own_operators_only():
+    """Statistics admin-filter dropdown uses admins/simple; scope is workspace-bound."""
+    admin_op = AdminOperation(OperatorType.API)
+    async with GetDB() as db:
+        tenant_id = await _tenant(db)
+        admin_a = await _administrator(db, tenant_id)
+        admin_b = await _administrator(db, tenant_id)
+        op_a = await _operator(db, tenant_id, admin_a)
+        op_b = await _operator(db, tenant_id, admin_b)
+        details_a = build_admin_details(admin_a, include_loaded_metrics=False)
+
+        simple = await admin_op.get_admins_simple(db, AdminSimpleListQuery(), details_a)
+        names = {row.username for row in simple.admins}
+
+        assert admin_a.username in names
+        assert op_a.username in names
+        assert admin_b.username not in names
+        assert op_b.username not in names
+        assert simple.total == len(simple.admins)
+
+        listed = await admin_op.get_admins(db, AdminListQuery(), details_a)
+        list_names = {a.username for a in listed.admins}
+        assert admin_b.username not in list_names
+        assert op_b.username not in list_names
+        assert admin_a.username in list_names
+        assert op_a.username in list_names
+
         await db.rollback()
