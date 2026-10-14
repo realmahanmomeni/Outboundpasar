@@ -1,10 +1,10 @@
 """Aggregated panel/workspace statistics (Phase 3-F).
 
 Query assumptions:
-- Per-panel user counts use enabled ``user_panel_bindings`` joined to ``users``.
-- ``traffic_used`` sums ``users.used_traffic`` per binding; users on multiple panels
-  contribute their full traffic to each panel row (documented approximation).
-- ``last_activity_at`` is the max of user ``online_at`` and mapping ``last_synced_at``.
+- Per-panel user counts and traffic use ``oc_user_mappings`` (synced OC usage).
+- ``traffic_used`` sums ``oc_user_mappings.last_cumulative_traffic`` per panel.
+- User status breakdown joins ``users`` via mapping ``user_id``.
+- ``last_activity_at`` is the max of user ``online_at``, mapping ``last_synced_at``, and panel ``last_sync_at``.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import User, UserStatus
-from app.db.models_oc import OCUserMapping, OCPanel, UserPanelBinding
+from app.db.models_oc import OCUserMapping, OCPanel
 
 
 async def count_panels_in_scope(
@@ -32,18 +32,13 @@ async def count_panels_in_scope(
     return int((await db.execute(stmt)).scalar_one() or 0)
 
 
-async def aggregate_panel_statistics(
-    db: AsyncSession,
+def _panel_scope_filters(
+    panel: OCPanel,
     *,
     workspace_id: int | None,
     tenant_id: int | None,
     oc_account_id: int | None,
-) -> list[dict]:
-    binding = UserPanelBinding
-    user = User
-    panel = OCPanel
-    mapping = OCUserMapping
-
+) -> list:
     panel_filter = []
     if workspace_id is not None:
         panel_filter.append(panel.workspace_id == workspace_id)
@@ -51,6 +46,50 @@ async def aggregate_panel_statistics(
         panel_filter.append(panel.tenant_id == tenant_id)
     if oc_account_id is not None:
         panel_filter.append(panel.oc_account_id == oc_account_id)
+    return panel_filter
+
+
+async def sum_mapping_traffic_in_scope(
+    db: AsyncSession,
+    *,
+    workspace_id: int | None,
+    tenant_id: int | None,
+    oc_account_id: int | None,
+) -> int:
+    panel = OCPanel
+    mapping = OCUserMapping
+    panel_filter = _panel_scope_filters(
+        panel,
+        workspace_id=workspace_id,
+        tenant_id=tenant_id,
+        oc_account_id=oc_account_id,
+    )
+    stmt = (
+        select(func.coalesce(func.sum(mapping.last_cumulative_traffic), 0))
+        .select_from(panel)
+        .join(mapping, mapping.panel_id == panel.id)
+        .where(*panel_filter)
+    )
+    return int((await db.execute(stmt)).scalar_one() or 0)
+
+
+async def aggregate_panel_statistics(
+    db: AsyncSession,
+    *,
+    workspace_id: int | None,
+    tenant_id: int | None,
+    oc_account_id: int | None,
+) -> list[dict]:
+    user = User
+    panel = OCPanel
+    mapping = OCUserMapping
+
+    panel_filter = _panel_scope_filters(
+        panel,
+        workspace_id=workspace_id,
+        tenant_id=tenant_id,
+        oc_account_id=oc_account_id,
+    )
 
     stmt = (
         select(
@@ -58,9 +97,11 @@ async def aggregate_panel_statistics(
             panel.name.label("panel_name"),
             panel.sync_status,
             panel.last_sync_at,
-            func.count(func.distinct(user.id)).label("total_users"),
-            func.count(func.distinct(case((user.status == UserStatus.active, user.id), else_=None))).label("active_users"),
-            func.coalesce(func.sum(user.used_traffic), 0).label("traffic_used"),
+            func.count(func.distinct(mapping.user_id)).label("total_users"),
+            func.count(
+                func.distinct(case((user.status == UserStatus.active, mapping.user_id), else_=None))
+            ).label("active_users"),
+            func.coalesce(func.sum(mapping.last_cumulative_traffic), 0).label("traffic_used"),
             func.max(user.online_at).label("max_user_online"),
             func.max(mapping.last_synced_at).label("max_mapping_sync"),
             func.sum(case((user.status == UserStatus.active, 1), else_=0)).label("status_active"),
@@ -70,9 +111,8 @@ async def aggregate_panel_statistics(
             func.sum(case((user.status == UserStatus.on_hold, 1), else_=0)).label("status_on_hold"),
         )
         .select_from(panel)
-        .outerjoin(binding, (binding.oc_panel_id == panel.id) & binding.enabled.is_(True))
-        .outerjoin(user, user.id == binding.user_id)
-        .outerjoin(mapping, (mapping.panel_id == panel.id) & (mapping.user_id == user.id))
+        .outerjoin(mapping, mapping.panel_id == panel.id)
+        .outerjoin(user, user.id == mapping.user_id)
         .where(*panel_filter)
         .group_by(panel.id, panel.name, panel.sync_status, panel.last_sync_at)
         .order_by(panel.id.asc())

@@ -10,7 +10,7 @@ from app.db import GetDB
 from app.db.crud.admin import build_admin_details
 from app.db.crud.workspace import create_workspace_for_administrator
 from app.db.models import Admin, AdminRole, Tenant, TenantStatus, User, UserStatus
-from app.db.models_oc import OCPanel, OCIntegration, UserPanelBinding
+from app.db.models_oc import OCIntegration, OCUserMapping, OCPanel
 from app.operation import OperatorType
 from app.operation.panel_statistics import PanelStatisticsOperation
 from config import panel_statistics_settings
@@ -92,12 +92,11 @@ async def test_workspace_isolation_for_panel_stats(monkeypatch):
         db.add(user_a)
         await db.flush()
         db.add(
-            UserPanelBinding(
-                tenant_id=tenant_id,
+            OCUserMapping(
                 user_id=user_a.id,
-                oc_panel_id=panel_a.id,
-                enabled=True,
-                source="explicit",
+                panel_id=panel_a.id,
+                external_user_id="ext-ws-a",
+                last_cumulative_traffic=1,
             )
         )
         await db.commit()
