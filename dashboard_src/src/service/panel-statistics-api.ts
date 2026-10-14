@@ -1,4 +1,9 @@
+import { FetchError } from 'ofetch'
 import { orvalFetcher } from './http'
+
+function isPanelStatisticsDisabledError(error: unknown): boolean {
+  return error instanceof FetchError && error.response?.status === 503
+}
 
 export interface PanelStatisticsOverview {
   total_users: number
@@ -37,10 +42,25 @@ export interface PanelStatisticsListResponse {
 const overviewUrl = '/api/statistics/overview'
 const panelsUrl = '/api/statistics/panels'
 
-export function getPanelStatisticsOverview() {
-  return orvalFetcher<PanelStatisticsOverview>(overviewUrl)
+/** Returns null when the panel statistics feature flag is off (HTTP 503). */
+export async function getPanelStatisticsOverview(): Promise<PanelStatisticsOverview | null> {
+  try {
+    return await orvalFetcher<PanelStatisticsOverview>(overviewUrl)
+  } catch (error) {
+    if (isPanelStatisticsDisabledError(error)) {
+      return null
+    }
+    throw error
+  }
 }
 
-export function getPanelStatisticsPanels() {
-  return orvalFetcher<PanelStatisticsListResponse>(panelsUrl)
+export async function getPanelStatisticsPanels(): Promise<PanelStatisticsListResponse | null> {
+  try {
+    return await orvalFetcher<PanelStatisticsListResponse>(panelsUrl)
+  } catch (error) {
+    if (isPanelStatisticsDisabledError(error)) {
+      return null
+    }
+    throw error
+  }
 }

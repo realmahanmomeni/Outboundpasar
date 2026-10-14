@@ -1,5 +1,4 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
 import { formatBytes } from '@/utils/formatByte'
 import { getPanelStatisticsOverview, getPanelStatisticsPanels, type PanelStatisticsItem } from '@/service/panel-statistics-api'
 import { useQuery } from '@tanstack/react-query'
@@ -48,27 +47,15 @@ export default function PanelStatisticsSection() {
   const panelsQuery = useQuery({
     queryKey: ['panel-statistics-panels'],
     queryFn: getPanelStatisticsPanels,
-    enabled: overviewQuery.isSuccess,
+    enabled: overviewQuery.data != null,
     retry: false,
     staleTime: 30_000,
   })
 
-  if (overviewQuery.isError) {
+  const overview = overviewQuery.data
+  if (overviewQuery.isError || overviewQuery.isLoading || overview == null) {
     return null
   }
-
-  if (overviewQuery.isLoading) {
-    return (
-      <div className="grid gap-3 px-4 md:grid-cols-3">
-        {[1, 2, 3].map((i) => (
-          <Skeleton key={i} className="h-20 w-full" />
-        ))}
-      </div>
-    )
-  }
-
-  const overview = overviewQuery.data
-  if (!overview) return null
 
   return (
     <div className="flex w-full flex-col gap-4 px-4 pb-6">
@@ -97,11 +84,7 @@ export default function PanelStatisticsSection() {
           <CardDescription>{t('statistics.panelStats.breakdownHint', 'Users and traffic per imported panel in your workspace.')}</CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto p-0">
-          {panelsQuery.isLoading ? (
-            <div className="p-4">
-              <Skeleton className="h-24 w-full" />
-            </div>
-          ) : (
+          {panelsQuery.isLoading ? null : (
             <table className="w-full min-w-[640px] text-sm">
               <thead>
                 <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
