@@ -59,7 +59,7 @@ type CountPieDataPoint = {
 
 type UserCountsChartProps = {
   nodeId?: number
-  isSudo: boolean
+  showAdminFilter: boolean
   nodesData?: NodeSimple[]
 }
 
@@ -179,7 +179,7 @@ function CountPieTooltip({ active, payload }: TooltipProps<number, string>) {
   )
 }
 
-export function UserCountsChart({ nodeId, isSudo, nodesData = [] }: UserCountsChartProps) {
+export function UserCountsChart({ nodeId, showAdminFilter, nodesData = [] }: UserCountsChartProps) {
   const { t, i18n } = useTranslation()
   const dir = useDirDetection()
   const chartViewType = useChartViewType()
@@ -212,7 +212,7 @@ export function UserCountsChart({ nodeId, isSudo, nodesData = [] }: UserCountsCh
   const effectiveGroupByNode = canGroupByNode && groupByNode
   const isNodeScopedCounts = nodeId !== undefined || effectiveGroupByNode
   const effectiveMetric = isNodeScopedCounts ? UserCountMetric.online : selectedMetric
-  const adminParam = useMemo(() => (isSudo && selectedAdmin !== 'all' ? [selectedAdmin] : undefined), [isSudo, selectedAdmin])
+  const adminParam = useMemo(() => (showAdminFilter && selectedAdmin !== 'all' ? [selectedAdmin] : undefined), [showAdminFilter, selectedAdmin])
 
   const metricParams = useMemo<GetUsersCountMetricParams>(
     () => ({
@@ -562,7 +562,14 @@ export function UserCountsChart({ nodeId, isSudo, nodesData = [] }: UserCountsCh
                   </SelectContent>
                 </Select>
               )}
-              {isSudo && <AdminFilterCombobox value={selectedAdmin} onValueChange={username => setSelectedAdmin(username)} className="w-full sm:w-[220px] sm:shrink-0" />}
+              {showAdminFilter && (
+                <AdminFilterCombobox
+                  value={selectedAdmin}
+                  onValueChange={username => setSelectedAdmin(username)}
+                  className="w-full sm:w-[220px] sm:shrink-0"
+                  showAllAdminsOption
+                />
+              )}
               {canGroupByNode && (
                 <label className="bg-muted/20 text-muted-foreground flex h-9 w-full items-center justify-between gap-3 rounded-md border px-3 text-xs sm:w-auto sm:justify-start">
                   <span className="flex items-center gap-1.5 whitespace-nowrap">

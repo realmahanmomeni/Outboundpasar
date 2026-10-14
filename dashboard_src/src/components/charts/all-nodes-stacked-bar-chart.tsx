@@ -17,6 +17,8 @@ import { BarChart3, Calendar, Download, Info, PieChart as PieChartIcon, Upload }
 import { useTheme } from '@/app/providers/theme-provider'
 import NodeStatsModal from '@/features/nodes/dialogs/node-stats-modal'
 import AdminFilterCombobox from '@/components/common/admin-filter-combobox'
+import { useAdmin } from '@/hooks/use-admin'
+import { canFilterByAdminStatistics } from '@/utils/rbac'
 import TimeSelector, { TRAFFIC_TIME_SELECTOR_SHORTCUTS } from './time-selector'
 import PeriodSelector from './period-selector'
 import { TimeRangeSelector } from '@/components/common/time-range-selector'
@@ -209,6 +211,8 @@ function NodePieTooltip({ active, payload }: TooltipProps<number, string>) {
 }
 
 export function AllNodesStackedBarChart() {
+  const { admin } = useAdmin()
+  const canFilterByAdmin = canFilterByAdminStatistics(admin)
   const [chartView, setChartView] = useState<'bar' | 'pie'>('bar')
   const [selectedAdmin, setSelectedAdmin] = useState<string>('all')
   const [selectedAdminId, setSelectedAdminId] = useState<number | null>(null)
@@ -227,7 +231,7 @@ export function AllNodesStackedBarChart() {
   const chartViewType = useChartViewType()
   const { data: nodesResponse } = useGetNodesSimple({ all: true }, { query: { enabled: true } })
   const { resolvedTheme } = useTheme()
-  const shouldUseNodeUsage = selectedAdmin === 'all'
+  const shouldUseNodeUsage = !canFilterByAdmin || selectedAdmin === 'all'
 
   const nodeList: NodeSimple[] = useMemo(() => nodesResponse?.nodes || [], [nodesResponse])
 
@@ -556,15 +560,18 @@ export function AllNodesStackedBarChart() {
                 </div>
               </div>
               <div className="flex w-full items-center gap-2">
-                <AdminFilterCombobox
-                  value={selectedAdmin}
-                  onValueChange={username => {
-                    setSelectedAdmin(username)
-                    setSelectedAdminId(null)
-                  }}
-                  onAdminSelect={admin => setSelectedAdminId(admin?.id ?? null)}
-                  className="min-w-0 flex-1 sm:w-[220px] sm:flex-none"
-                />
+                {canFilterByAdmin && (
+                  <AdminFilterCombobox
+                    value={selectedAdmin}
+                    onValueChange={username => {
+                      setSelectedAdmin(username)
+                      setSelectedAdminId(null)
+                    }}
+                    onAdminSelect={admin => setSelectedAdminId(admin?.id ?? null)}
+                    className="min-w-0 flex-1 sm:w-[220px] sm:flex-none"
+                    showAllAdminsOption
+                  />
+                )}
                 <div className="bg-muted/30 inline-flex h-8 shrink-0 items-center gap-1 rounded-md border p-1">
                   <button
                     type="button"

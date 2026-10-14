@@ -34,6 +34,12 @@ export const hasScopeAll = (admin: AdminDetails | null | undefined, resource: st
   return value === true || isScopeAllValue(value)
 }
 
+/** Dashboard/statistics admin filter: aggregate across admins (not nodes.stats). */
+export const canFilterByAdminStatistics = (admin: AdminDetails | null | undefined) => {
+  if (isOwner(admin)) return true
+  return hasScopeAll(admin, 'users', 'read')
+}
+
 /**
  * Full dashboard pages are exposed by the resource `read` permission only.
  * Simple read permissions are reserved for selector/dropdown endpoints and do

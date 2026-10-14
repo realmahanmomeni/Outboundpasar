@@ -7,6 +7,8 @@ import { useTranslation } from 'react-i18next'
 import { useTheme } from 'next-themes'
 
 import AdminFilterCombobox from '@/components/common/admin-filter-combobox'
+import { useAdmin } from '@/hooks/use-admin'
+import { canFilterByAdminStatistics } from '@/utils/rbac'
 import { TimeRangeSelector } from '@/components/common/time-range-selector'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
@@ -224,6 +226,8 @@ function SeriesTooltip({
 
 function UserSubUpdatePieChart({ username, adminId }: UserSubUpdatePieChartProps) {
   const { t, i18n } = useTranslation()
+  const { admin } = useAdmin()
+  const canFilterByAdmin = canFilterByAdminStatistics(admin)
   const dir = useDirDetection()
   const { resolvedTheme } = useTheme()
   const chartViewType = useChartViewType()
@@ -553,17 +557,20 @@ function UserSubUpdatePieChart({ username, adminId }: UserSubUpdatePieChartProps
               </div>
             </div>
             <div className="flex w-full items-center gap-2">
-              <AdminFilterCombobox
-                value={selectedAdmin}
-                onValueChange={adminUsername => {
-                  setSelectedAdmin(adminUsername)
-                  if (adminUsername === 'all') {
-                    setSelectedAdminId(null)
-                  }
-                }}
-                onAdminSelect={admin => setSelectedAdminId(admin?.id ?? null)}
-                className="min-w-0 flex-1 sm:w-[220px] sm:flex-none"
-              />
+              {canFilterByAdmin && (
+                <AdminFilterCombobox
+                  value={selectedAdmin}
+                  onValueChange={adminUsername => {
+                    setSelectedAdmin(adminUsername)
+                    if (adminUsername === 'all') {
+                      setSelectedAdminId(null)
+                    }
+                  }}
+                  onAdminSelect={admin => setSelectedAdminId(admin?.id ?? null)}
+                  className="min-w-0 flex-1 sm:w-[220px] sm:flex-none"
+                  showAllAdminsOption
+                />
+              )}
               <div className="bg-muted/30 inline-flex h-8 shrink-0 items-center gap-1 rounded-md border p-1">
                 <button
                   type="button"

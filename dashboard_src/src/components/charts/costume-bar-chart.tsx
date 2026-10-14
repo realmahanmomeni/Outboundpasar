@@ -12,6 +12,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from './empty-state'
 import { BarChart3, Calendar, Download, Upload } from 'lucide-react'
 import AdminFilterCombobox from '@/components/common/admin-filter-combobox'
+import { useAdmin } from '@/hooks/use-admin'
+import { canFilterByAdminStatistics } from '@/utils/rbac'
 import TimeSelector, { TRAFFIC_TIME_SELECTOR_SHORTCUTS } from './time-selector'
 import DenseChartAreaHint from './dense-chart-area-hint'
 import PeriodSelector from './period-selector'
@@ -114,6 +116,8 @@ function CustomBarTooltip({ active, payload, period }: TooltipProps<number, stri
 }
 
 export function CostumeBarChart({ nodeId }: CostumeBarChartProps) {
+  const { admin } = useAdmin()
+  const canFilterByAdmin = canFilterByAdminStatistics(admin)
   const [selectedAdmin, setSelectedAdmin] = useState<string>('all')
   const [selectedAdminId, setSelectedAdminId] = useState<number | null>(null)
   const [selectedTime, setSelectedTime] = useState<TrafficShortcutKey>('1w')
@@ -125,7 +129,7 @@ export function CostumeBarChart({ nodeId }: CostumeBarChartProps) {
   const { t, i18n } = useTranslation()
   const dir = useDirDetection()
   const chartViewType = useChartViewType()
-  const shouldUseNodeUsage = selectedAdmin === 'all'
+  const shouldUseNodeUsage = !canFilterByAdmin || selectedAdmin === 'all'
 
   const activeQueryRange = useMemo(() => {
     const periodOptions = { minuteForOneHour: true, periodOverride: resolvePeriodOverride(periodOverride) }
@@ -302,15 +306,18 @@ export function CostumeBarChart({ nodeId }: CostumeBarChartProps) {
                 </button>
               </div>
             </div>
-            <AdminFilterCombobox
-              value={selectedAdmin}
-              onValueChange={username => {
-                setSelectedAdmin(username)
-                setSelectedAdminId(null)
-              }}
-              onAdminSelect={admin => setSelectedAdminId(admin?.id ?? null)}
-              className="w-full sm:w-[220px] sm:shrink-0"
-            />
+            {canFilterByAdmin && (
+              <AdminFilterCombobox
+                value={selectedAdmin}
+                onValueChange={username => {
+                  setSelectedAdmin(username)
+                  setSelectedAdminId(null)
+                }}
+                onAdminSelect={admin => setSelectedAdminId(admin?.id ?? null)}
+                className="w-full sm:w-[220px] sm:shrink-0"
+                showAllAdminsOption
+              />
+            )}
           </div>
           {showCustomRange && (
             <div className="flex w-full">

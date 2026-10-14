@@ -73,6 +73,11 @@ class AdminOperation(BaseOperation):
 
     async def create_admin(self, db: AsyncSession, new_admin: AdminCreate, admin: AdminDetails) -> AdminDetails:
         """Create a new admin."""
+        try:
+            enforce_permission(admin, "admins", "create")
+        except PermissionDenied:
+            await self.raise_error(message="You're not allowed", code=403)
+
         if new_admin.role_id == 1:
             await self.raise_error(
                 message="Owner role cannot be assigned via this endpoint. Use the setup flow.", code=403
@@ -240,6 +245,11 @@ class AdminOperation(BaseOperation):
 
     async def get_admins(self, db: AsyncSession, query: AdminListQuery, admin: AdminDetails) -> AdminsResponse:
         """Retrieve a list of admins with optional filters and pagination."""
+        try:
+            enforce_permission(admin, "admins", "read")
+        except PermissionDenied:
+            await self.raise_error(message="You're not allowed", code=403)
+
         caller_tenant_id = await self._caller_tenant_id(db, admin)
         if not admin.is_owner and caller_tenant_id is None:
             await self.raise_error(message="Tenant scope required", code=403)
@@ -263,6 +273,11 @@ class AdminOperation(BaseOperation):
         self, db: AsyncSession, query: AdminSimpleListQuery, admin: AdminDetails
     ) -> AdminsSimpleResponse:
         """Get lightweight admin list with only id and username."""
+        try:
+            enforce_permission(admin, "admins", "read_simple")
+        except PermissionDenied:
+            await self.raise_error(message="You're not allowed", code=403)
+
         caller_tenant_id = await self._caller_tenant_id(db, admin)
         if not admin.is_owner and caller_tenant_id is None:
             await self.raise_error(message="Tenant scope required", code=403)

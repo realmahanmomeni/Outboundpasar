@@ -10,6 +10,8 @@ import { AllNodesStackedBarChart } from '@/components/charts/all-nodes-stacked-b
 import { AreaCostumeChart } from '@/components/charts/area-costume-chart'
 import { BarChart3 } from 'lucide-react'
 import { UserCountsChart } from '@/components/charts/user-counts-chart'
+import { useAdmin } from '@/hooks/use-admin'
+import { canFilterByAdminStatistics } from '@/utils/rbac'
 
 interface StatisticsChartsProps {
   data?: SystemResourceStats
@@ -25,6 +27,8 @@ interface StatisticsChartsProps {
 
 export default function StatisticsCharts({ data, usersData, isLoading, error, selectedServer, canViewNodeStats, canViewSystemStats, nodesData = [], isLoadingNodes = false }: StatisticsChartsProps) {
   const { t } = useTranslation()
+  const { admin } = useAdmin()
+  const canFilterByAdmin = canFilterByAdminStatistics(admin)
 
   // Add state for chart refresh
   const [chartRefreshKey, setChartRefreshKey] = useState(0)
@@ -141,7 +145,7 @@ export default function StatisticsCharts({ data, usersData, isLoading, error, se
           </div>
         )}
         <div className="transform-gpu">
-          <UserCountsChart nodeId={selectedNodeId} isSudo={canViewNodeStats} nodesData={nodesData} />
+          <UserCountsChart nodeId={selectedNodeId} showAdminFilter={canFilterByAdmin} nodesData={nodesData} />
         </div>
         {actualSelectedServer === 'master' && (
           <div className="transform-gpu">

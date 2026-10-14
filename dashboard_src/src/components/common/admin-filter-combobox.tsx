@@ -15,11 +15,13 @@ interface AdminFilterComboboxProps {
   onValueChange: (username: string) => void
   onAdminSelect?: (admin: AdminSimple | null) => void
   className?: string
+  /** When false, hide the aggregate "All admins" option (scoped tenant staff). */
+  showAllAdminsOption?: boolean
 }
 
 const PAGE_SIZE = 20
 
-export default function AdminFilterCombobox({ value, onValueChange, onAdminSelect, className }: AdminFilterComboboxProps) {
+export default function AdminFilterCombobox({ value, onValueChange, onAdminSelect, className, showAllAdminsOption = true }: AdminFilterComboboxProps) {
   const { t } = useTranslation()
   const dir = useDirDetection()
 
@@ -123,23 +125,25 @@ export default function AdminFilterCombobox({ value, onValueChange, onAdminSelec
                 )}
               </CommandEmpty>
 
-              <CommandItem
-                value="all"
-                onSelect={() => {
-                  onValueChange('all')
-                  onAdminSelect?.(null)
-                  setOpen(false)
-                }}
-                className={cn('flex min-w-0 items-center gap-2 px-2 py-1.5 text-xs sm:text-sm', dir === 'rtl' ? 'flex-row-reverse' : 'flex-row')}
-              >
-                <Avatar className="h-4 w-4 flex-shrink-0 sm:h-5 sm:w-5">
-                  <AvatarFallback className="bg-primary/10 text-xs font-medium">
-                    <Sigma className="h-3 w-3" />
-                  </AvatarFallback>
-                </Avatar>
-                <span className="flex-1 truncate">{t('statistics.adminFilterAll')}</span>
-                {value === 'all' && <Check className="text-primary h-3 w-3" />}
-              </CommandItem>
+              {showAllAdminsOption && (
+                <CommandItem
+                  value="all"
+                  onSelect={() => {
+                    onValueChange('all')
+                    onAdminSelect?.(null)
+                    setOpen(false)
+                  }}
+                  className={cn('flex min-w-0 items-center gap-2 px-2 py-1.5 text-xs sm:text-sm', dir === 'rtl' ? 'flex-row-reverse' : 'flex-row')}
+                >
+                  <Avatar className="h-4 w-4 flex-shrink-0 sm:h-5 sm:w-5">
+                    <AvatarFallback className="bg-primary/10 text-xs font-medium">
+                      <Sigma className="h-3 w-3" />
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="flex-1 truncate">{t('statistics.adminFilterAll')}</span>
+                  {value === 'all' && <Check className="text-primary h-3 w-3" />}
+                </CommandItem>
+              )}
 
               {admins.map(admin => (
                 <CommandItem
