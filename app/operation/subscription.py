@@ -499,8 +499,14 @@ class SubscriptionOperation(BaseOperation):
             )
             workspace_id = db_user.admin.workspace_id if db_user.admin else None
             from app.services.subscription_experience import resolve_subscription_experience_context
+            from app.services.subscription_branding import resolve_subscription_page_experience
 
             experience = await resolve_subscription_experience_context(db, workspace_id=workspace_id)
+            experience = await resolve_subscription_page_experience(
+                db,
+                workspace_id=workspace_id,
+                experience_from_template=experience,
+            )
             if experience:
                 body_payload = {**body_payload, "experience": experience}
 

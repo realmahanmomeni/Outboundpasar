@@ -14,6 +14,13 @@ import {
   type SubscriptionExperienceTemplatePayload,
   updateSubscriptionExperienceTemplate,
 } from '@/service/subscription-experience-api'
+import {
+  createSubscriptionBranding,
+  deleteSubscriptionBranding,
+  getSubscriptionBranding,
+  updateSubscriptionBranding,
+  type SubscriptionBrandingPayload,
+} from '@/service/subscription-branding-api'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -37,6 +44,42 @@ export default function SubscriptionAppearanceSettings() {
   const [selectedId, setSelectedId] = useState<number | 'new' | null>(null)
   const [form, setForm] = useState<SubscriptionExperienceTemplatePayload>(emptyForm)
   const [previewHtml, setPreviewHtml] = useState<string>('')
+  const [brandingForm, setBrandingForm] = useState<SubscriptionBrandingPayload>({
+    brand_name: '',
+    logo_url: '',
+    support_url: '',
+    telegram_url: '',
+    welcome_message: '',
+    footer_text: '',
+    primary_color: '',
+    secondary_color: '',
+  })
+
+  const { data: brandingData, refetch: refetchBranding } = useQuery({
+    queryKey: ['subscription-branding'],
+    queryFn: async () => {
+      try {
+        return await getSubscriptionBranding()
+      } catch {
+        return null
+      }
+    },
+  })
+
+  useEffect(() => {
+    if (brandingData) {
+      setBrandingForm({
+        brand_name: brandingData.brand_name ?? '',
+        logo_url: brandingData.logo_url ?? '',
+        support_url: brandingData.support_url ?? '',
+        telegram_url: brandingData.telegram_url ?? '',
+        welcome_message: brandingData.welcome_message ?? '',
+        footer_text: brandingData.footer_text ?? '',
+        primary_color: brandingData.primary_color ?? '',
+        secondary_color: brandingData.secondary_color ?? '',
+      })
+    }
+  }, [brandingData])
 
   const { data, isLoading } = useQuery({
     queryKey: ['subscription-experience-templates'],
@@ -139,6 +182,81 @@ export default function SubscriptionAppearanceSettings() {
           )}
         </p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('settings.subscriptionBranding.title', 'White-label branding')}</CardTitle>
+          <CardDescription>
+            {t(
+              'settings.subscriptionBranding.hint',
+              'One branding profile per workspace. Applied when SUBSCRIPTION_BRANDING_ENABLED is on.',
+            )}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-2">
+          <div>
+            <Label>{t('settings.subscriptionBranding.brandName', 'Brand name')}</Label>
+            <Input
+              value={brandingForm.brand_name ?? ''}
+              onChange={(e) => setBrandingForm({ ...brandingForm, brand_name: e.target.value })}
+            />
+          </div>
+          <div>
+            <Label>{t('settings.subscriptionAppearance.logoUrl', 'Logo URL')}</Label>
+            <Input
+              value={brandingForm.logo_url ?? ''}
+              onChange={(e) => setBrandingForm({ ...brandingForm, logo_url: e.target.value })}
+            />
+          </div>
+          <div>
+            <Label>{t('settings.subscriptions.support_url', 'Support URL')}</Label>
+            <Input
+              value={brandingForm.support_url ?? ''}
+              onChange={(e) => setBrandingForm({ ...brandingForm, support_url: e.target.value })}
+            />
+          </div>
+          <div>
+            <Label>{t('settings.subscriptionBranding.telegram', 'Telegram URL')}</Label>
+            <Input
+              value={brandingForm.telegram_url ?? ''}
+              onChange={(e) => setBrandingForm({ ...brandingForm, telegram_url: e.target.value })}
+            />
+          </div>
+          <div className="md:col-span-2 flex flex-wrap gap-2">
+            <Button
+              type="button"
+              onClick={async () => {
+                try {
+                  if (brandingData) {
+                    await updateSubscriptionBranding(brandingForm)
+                  } else {
+                    await createSubscriptionBranding(brandingForm)
+                  }
+                  toast.success(t('common.saved', 'Saved'))
+                  await refetchBranding()
+                } catch {
+                  toast.error(t('common.error', 'Error'))
+                }
+              }}
+            >
+              {t('common.save', 'Save branding')}
+            </Button>
+            {brandingData ? (
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={async () => {
+                  await deleteSubscriptionBranding()
+                  toast.success(t('common.deleted', 'Deleted'))
+                  await refetchBranding()
+                }}
+              >
+                {t('common.delete', 'Delete branding')}
+              </Button>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

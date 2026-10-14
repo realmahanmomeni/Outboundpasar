@@ -583,6 +583,30 @@ class SubscriptionExperienceTemplate(Base, CreatedAtUTCMixin):
     custom_blocks: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON(none_as_null=True), default=None)
 
 
+class SubscriptionBrandingProfile(Base, CreatedAtUTCMixin):
+    """Per-workspace white-label branding for subscription pages (Phase 3-D)."""
+
+    __tablename__ = "subscription_branding_profiles"
+    __table_args__ = (UniqueConstraint("workspace_id", name="uq_subscription_branding_profiles_workspace_id"),)
+
+    workspace_id: Mapped[int] = fk_id_column("workspaces.id", ondelete="CASCADE")
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    created_by_admin_id: Mapped[int | None] = fk_id_column("admins.id", ondelete="SET NULL", default=None)
+    brand_name: Mapped[str | None] = mapped_column(String(256), default=None)
+    logo_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    support_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    telegram_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    welcome_message: Mapped[str | None] = mapped_column(Text(), default=None)
+    footer_text: Mapped[str | None] = mapped_column(Text(), default=None)
+    primary_color: Mapped[str | None] = mapped_column(String(64), default=None)
+    secondary_color: Mapped[str | None] = mapped_column(String(64), default=None)
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: dt.now(UTC),
+        onupdate=lambda: dt.now(UTC),
+    )
+
+
 class UserUsageResetLogs(Base, IdMixin):
     __tablename__ = "user_usage_logs"
     __table_args__ = (
