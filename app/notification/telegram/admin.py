@@ -1,6 +1,6 @@
 from app.models.admin import AdminDetails
 from app.notification.client import send_telegram_message
-from app.notification.helpers import get_telegram_channel
+from app.notification.helpers import get_telegram_channel, trusted_global_channel_scope
 from app.notification.delivery_scope import notification_settings_for_delivery
 from app.utils.helpers import escape_tg_html
 from app.utils.system import readable_size
@@ -60,7 +60,13 @@ async def admin_reset_usage(admin: AdminDetails, by: str, *, delivery_workspace_
         await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
 
 
-async def admin_usage_limit_reached(admin: AdminDetails, usage_percentage: int, threshold: int, *, delivery_workspace_id: int | None = None):
+async def admin_usage_limit_reached(
+    admin: AdminDetails,
+    usage_percentage: int,
+    threshold: int,
+    *,
+    delivery_workspace_id: int | None = None,
+):
     username = escape_tg_html((admin.username,))[0]
     data = messages.ADMIN_USAGE_LIMIT_REACHED.format(
         username=username,
@@ -71,7 +77,12 @@ async def admin_usage_limit_reached(admin: AdminDetails, usage_percentage: int, 
     )
     settings = await notification_settings_for_delivery(delivery_workspace_id)
     if settings.notify_telegram and admin.telegram_id:
-        await send_telegram_message(data, chat_id=admin.telegram_id, delivery_workspace_id=delivery_workspace_id)
+        await send_telegram_message(
+            data,
+            chat_id=admin.telegram_id,
+            delivery_workspace_id=delivery_workspace_id,
+            **trusted_global_channel_scope(delivery_workspace_id),
+        )
 
 
 async def admin_login(username: str, password: str, client_ip: str, success: bool, *, delivery_workspace_id: int | None = None):
@@ -85,4 +96,10 @@ async def admin_login(username: str, password: str, client_ip: str, success: boo
     settings = await notification_settings_for_delivery(delivery_workspace_id)
     if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
+        await send_telegram_message(
+            data,
+            chat_id,
+            topic_id,
+            delivery_workspace_id=delivery_workspace_id,
+            **trusted_global_channel_scope(delivery_workspace_id),
+        )

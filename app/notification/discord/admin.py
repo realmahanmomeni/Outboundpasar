@@ -1,6 +1,6 @@
 from app.models.admin import AdminDetails
 from app.notification.client import send_discord_webhook
-from app.notification.helpers import get_discord_webhook
+from app.notification.helpers import get_discord_webhook, trusted_global_channel_scope
 from app.notification.delivery_scope import notification_settings_for_delivery
 from app.utils.helpers import escape_ds_markdown_list
 from app.utils.system import readable_size
@@ -103,7 +103,12 @@ async def admin_usage_limit_reached(admin: AdminDetails, usage_percentage: int, 
     data["embeds"][0]["color"] = colors.YELLOW
     settings = await notification_settings_for_delivery(delivery_workspace_id)
     if settings.notify_discord and admin.discord_webhook:
-        await send_discord_webhook(data, admin.discord_webhook, delivery_workspace_id=delivery_workspace_id)
+        await send_discord_webhook(
+            data,
+            admin.discord_webhook,
+            delivery_workspace_id=delivery_workspace_id,
+            **trusted_global_channel_scope(delivery_workspace_id),
+        )
 
 
 async def admin_login(username: str, password: str, client_ip: str, success: bool, *, delivery_workspace_id: int | None = None):
@@ -122,4 +127,9 @@ async def admin_login(username: str, password: str, client_ip: str, success: boo
     settings = await notification_settings_for_delivery(delivery_workspace_id)
     if settings and settings.notify_discord:
         webhook = get_discord_webhook(settings, ENTITY)
-        await send_discord_webhook(data, webhook, delivery_workspace_id=delivery_workspace_id)
+        await send_discord_webhook(
+            data,
+            webhook,
+            delivery_workspace_id=delivery_workspace_id,
+            **trusted_global_channel_scope(delivery_workspace_id),
+        )

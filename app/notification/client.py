@@ -9,11 +9,15 @@ from app.models.settings import NotificationSettings
 from app.notification.queue_manager import (
     DiscordNotification,
     TelegramNotification,
+    WebhookScopeAuthorization,
     enqueue_discord,
     enqueue_telegram,
     get_queue,
 )
-from app.notification.delivery_scope import notification_settings_for_delivery
+from app.notification.delivery_scope import (
+    notification_settings_for_delivery,
+    resolve_channel_queue_delivery_scope,
+)
 from app.settings import notification_settings
 from app.utils.http_client import create_outbound_http_session
 from app.utils.logger import get_logger
@@ -79,11 +83,19 @@ async def send_discord_webhook(
     webhook: str | None,
     *,
     delivery_workspace_id: int | None = None,
+    user_subject_id: int | None = None,
+    scope_authorization: WebhookScopeAuthorization | None = None,
 ):
     """Enqueue Discord notification for processing"""
     if not webhook:
         return
-    await enqueue_discord(json_data, webhook, delivery_workspace_id=delivery_workspace_id)
+    await enqueue_discord(
+        json_data,
+        webhook,
+        delivery_workspace_id=delivery_workspace_id,
+        user_subject_id=user_subject_id,
+        scope_authorization=scope_authorization,
+    )
 
 
 async def _send_telegram_message_direct(
@@ -146,6 +158,8 @@ async def send_telegram_message(
     topic_id: int | None = None,
     *,
     delivery_workspace_id: int | None = None,
+    user_subject_id: int | None = None,
+    scope_authorization: WebhookScopeAuthorization | None = None,
 ):
     """
     Enqueue a Telegram message for processing.
@@ -161,11 +175,20 @@ async def send_telegram_message(
         chat_id,
         topic_id,
         delivery_workspace_id=delivery_workspace_id,
+        user_subject_id=user_subject_id,
+        scope_authorization=scope_authorization,
     )
 
 
 async def _process_discord_notification(notification: DiscordNotification):
-    settings = await notification_settings_for_delivery(notification.delivery_workspace_id)
+    delivery_scope = await resolve_channel_queue_delivery_scope(
+        notification.delivery_workspace_id,
+        user_subject_id=notification.user_subject_id,
+        scope_authorization=notification.scope_authorization,
+    )
+    if delivery_scope == "skip":
+        return
+    settings = await notification_settings_for_delivery(delivery_scope)
     if settings is None or not settings.notify_discord:
         return
 
@@ -178,7 +201,14 @@ async def _process_discord_notification(notification: DiscordNotification):
 
 
 async def _process_telegram_notification(notification: TelegramNotification):
-    settings = await notification_settings_for_delivery(notification.delivery_workspace_id)
+    delivery_scope = await resolve_channel_queue_delivery_scope(
+        notification.delivery_workspace_id,
+        user_subject_id=notification.user_subject_id,
+        scope_authorization=notification.scope_authorization,
+    )
+    if delivery_scope == "skip":
+        return
+    settings = await notification_settings_for_delivery(delivery_scope)
     if settings is None or not settings.notify_telegram or not settings.telegram_api_token:
         return
 

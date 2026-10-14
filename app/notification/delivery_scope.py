@@ -313,6 +313,84 @@ async def _resolve_user_subject_workspace_from_payload(payload: dict) -> int | N
     )
 
 
+async def _resolve_user_subject_workspace_from_id(user_id: int) -> int | None | SkipDelivery:
+    """Re-resolve ownership at dequeue time using only the persisted user id."""
+    try:
+        db_scope = await _lookup_user_owner_scope(user_id)
+    except Exception as err:
+        logger.warning(
+            "Failed to resolve channel queue ownership for user id=%s: %s",
+            user_id,
+            err,
+            exc_info=True,
+        )
+        return "skip"
+    if db_scope is None:
+        return "skip"
+    return _resolve_user_owner_scope_from_db(
+        db_scope,
+        dto_admin_tenant=None,
+        dto_admin_workspace=None,
+    )
+
+
+async def resolve_channel_queue_delivery_scope(
+    delivery_workspace_id: int | None,
+    *,
+    user_subject_id: int | None = None,
+    scope_authorization: str | None = None,
+) -> int | None | SkipDelivery:
+    """
+    Resolve Telegram/Discord delivery scope for a queued item.
+
+    User-subject messages always re-derive ownership from the database. A queue
+    ``delivery_workspace_id`` or ``scope_authorization='global'`` cannot override
+    evidence that the user belongs to a tenant workspace. Non-user messages with
+    ``delivery_workspace_id=None`` require explicit ``scope_authorization='global'``.
+    """
+    if user_subject_id is not None:
+        resolved = await _resolve_user_subject_workspace_from_id(user_subject_id)
+        if resolved == "skip":
+            return "skip"
+
+        if delivery_workspace_id is not None:
+            if resolved != delivery_workspace_id:
+                logger.warning(
+                    "Channel queue delivery_workspace_id=%s contradicts user ownership (resolved=%s, user_id=%s)",
+                    delivery_workspace_id,
+                    resolved,
+                    user_subject_id,
+                )
+                return "skip"
+            return delivery_workspace_id
+
+        if scope_authorization == "global":
+            if resolved is not None:
+                logger.warning(
+                    "Ignoring global channel scope for tenant-owned user subject; using workspace_id=%s (user_id=%s)",
+                    resolved,
+                    user_subject_id,
+                )
+                return resolved
+            return None
+
+        return resolved
+
+    if delivery_workspace_id is not None:
+        return delivery_workspace_id
+
+    if scope_authorization == "global":
+        return None
+
+    logger.warning(
+        "Skipping channel queue message without workspace scope or trusted global authorization "
+        "(delivery_workspace_id=%s, scope_authorization=%s)",
+        delivery_workspace_id,
+        scope_authorization,
+    )
+    return "skip"
+
+
 async def resolve_webhook_queue_delivery_scope(
     payload: dict,
     delivery_workspace_id: int | None,

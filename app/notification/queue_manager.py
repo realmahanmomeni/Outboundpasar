@@ -18,6 +18,8 @@ class TelegramNotification(BaseModel):
     chat_id: int | None = Field(default=None)
     topic_id: int | None = Field(default=None)
     delivery_workspace_id: int | None = Field(default=None)
+    user_subject_id: int | None = Field(default=None)
+    scope_authorization: WebhookScopeAuthorization | None = Field(default=None)
     tries: int = Field(default=0)
 
 
@@ -28,6 +30,8 @@ class DiscordNotification(BaseModel):
     json_data: dict
     webhook: str
     delivery_workspace_id: int | None = Field(default=None)
+    user_subject_id: int | None = Field(default=None)
+    scope_authorization: WebhookScopeAuthorization | None = Field(default=None)
     tries: int = Field(default=0)
 
 
@@ -128,13 +132,23 @@ async def enqueue_telegram(
     topic_id: int | None = None,
     *,
     delivery_workspace_id: int | None = None,
+    user_subject_id: int | None = None,
+    scope_authorization: WebhookScopeAuthorization | None = None,
 ) -> None:
     """Add a Telegram notification to the queue"""
+    if delivery_workspace_id is not None:
+        scope_authorization = None
+    elif scope_authorization != "global":
+        scope_authorization = None
+    if user_subject_id is not None and scope_authorization == "global":
+        scope_authorization = None
     notification = TelegramNotification(
         message=message,
         chat_id=chat_id,
         topic_id=topic_id,
         delivery_workspace_id=delivery_workspace_id,
+        user_subject_id=user_subject_id,
+        scope_authorization=scope_authorization,
     )
     await get_queue().enqueue(notification.model_dump())
 
@@ -144,12 +158,22 @@ async def enqueue_discord(
     webhook: str,
     *,
     delivery_workspace_id: int | None = None,
+    user_subject_id: int | None = None,
+    scope_authorization: WebhookScopeAuthorization | None = None,
 ) -> None:
     """Add a Discord notification to the queue"""
+    if delivery_workspace_id is not None:
+        scope_authorization = None
+    elif scope_authorization != "global":
+        scope_authorization = None
+    if user_subject_id is not None and scope_authorization == "global":
+        scope_authorization = None
     notification = DiscordNotification(
         json_data=json_data,
         webhook=webhook,
         delivery_workspace_id=delivery_workspace_id,
+        user_subject_id=user_subject_id,
+        scope_authorization=scope_authorization,
     )
     await get_queue().enqueue(notification.model_dump())
 

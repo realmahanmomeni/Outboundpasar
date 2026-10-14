@@ -23,6 +23,7 @@ from app.notification.delivery_scope import (
     _resolve_user_owner_scope_from_db,
     resolve_admin_subject_workspace_id,
     resolve_actor_username_workspace_id,
+    resolve_channel_queue_delivery_scope,
     resolve_user_event_workspace_id,
     scope_for_admin_subject,
     scope_for_user_event,
@@ -214,6 +215,7 @@ async def test_create_user_enqueues_with_workspace_id():
                 assert mock_tg.await_count >= 1
                 for call in mock_tg.await_args_list:
                     assert call.kwargs.get("delivery_workspace_id") == admin.workspace_id
+                    assert call.kwargs.get("user_subject_id") == user.id
 
 
 async def test_process_notification_uses_workspace_snapshot_not_global_accessor():
@@ -585,3 +587,187 @@ async def test_admin_login_still_uses_global_enable_path():
 
                     await admin_login("u", "p", "1.2.3.4", True)
                     mock_login.assert_awaited_once()
+
+
+async def test_worker_never_uses_global_credentials_for_tenant_user_with_null_workspace():
+    async with GetDB() as db:
+        tenant_id = await _tenant(db)
+        admin = await _administrator(db, tenant_id)
+        await ensure_workspace_settings(db, tenant_id=tenant_id, workspace_id=admin.workspace_id)
+        row = await get_settings_by_workspace(db, admin.workspace_id)
+        row.notification_settings = {
+            **row.notification_settings,
+            "notify_telegram": True,
+            "telegram_api_token": "12345678:GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG",
+            "telegram_chat_id": 777,
+            "max_retries": 3,
+        }
+        global_row = await get_settings_by_workspace(db, None)
+        global_row.notification_settings = {
+            **global_row.notification_settings,
+            "notify_telegram": True,
+            "telegram_api_token": "99999999:GLOBALGLOBALGLOBALGLOBALGLOBALGLOBALG",
+            "telegram_chat_id": 888,
+            "max_retries": 3,
+        }
+        user = await _persist_user(db, admin)
+        await db.commit()
+
+        item = TelegramNotification(
+            message="forged",
+            chat_id=888,
+            delivery_workspace_id=None,
+            user_subject_id=user.id,
+        ).model_dump()
+
+        with patch(
+            "app.notification.client._send_telegram_message_direct",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as send_direct:
+            await process_notification(item)
+            send_direct.assert_awaited_once()
+            token = send_direct.await_args.kwargs["telegram_api_token"]
+            assert token == "12345678:GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"
+            assert token != "99999999:GLOBALGLOBALGLOBALGLOBALGLOBALGLOBALG"
+
+
+async def test_worker_blocks_workspace_id_contradicting_user_ownership():
+    async with GetDB() as db:
+        tenant_id = await _tenant(db)
+        admin_a = await _administrator(db, tenant_id)
+        admin_b = await _administrator(db, tenant_id)
+        await ensure_workspace_settings(db, tenant_id=tenant_id, workspace_id=admin_a.workspace_id)
+        await ensure_workspace_settings(db, tenant_id=tenant_id, workspace_id=admin_b.workspace_id)
+        user = await _persist_user(db, admin_a)
+        await db.commit()
+
+        item = TelegramNotification(
+            message="cross-tenant",
+            chat_id=111,
+            delivery_workspace_id=admin_b.workspace_id,
+            user_subject_id=user.id,
+        ).model_dump()
+
+        with patch(
+            "app.notification.client._send_telegram_message_direct",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as send_direct:
+            await process_notification(item)
+            send_direct.assert_not_awaited()
+
+
+async def test_worker_skips_stale_user_workspace_after_ownership_change():
+    async with GetDB() as db:
+        tenant_id = await _tenant(db)
+        admin_a = await _administrator(db, tenant_id)
+        admin_b = await _administrator(db, tenant_id)
+        await ensure_workspace_settings(db, tenant_id=tenant_id, workspace_id=admin_a.workspace_id)
+        await ensure_workspace_settings(db, tenant_id=tenant_id, workspace_id=admin_b.workspace_id)
+        user = await _persist_user(db, admin_a)
+        await db.commit()
+        queued_workspace = admin_a.workspace_id
+
+        await db.execute(
+            update(DbUser).where(DbUser.id == user.id).values(admin_id=admin_b.id, workspace_id=admin_b.workspace_id)
+        )
+        await db.commit()
+
+        item = TelegramNotification(
+            message="stale",
+            chat_id=222,
+            delivery_workspace_id=queued_workspace,
+            user_subject_id=user.id,
+        ).model_dump()
+
+        with patch(
+            "app.notification.client._send_telegram_message_direct",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as send_direct:
+            await process_notification(item)
+            send_direct.assert_not_awaited()
+
+
+async def test_legacy_channel_queue_without_scope_fails_closed():
+    item = TelegramNotification(
+        message="legacy-global",
+        chat_id=123,
+        delivery_workspace_id=None,
+    ).model_dump()
+    with patch(
+        "app.notification.client._send_telegram_message_direct",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as send_direct:
+        await process_notification(item)
+        send_direct.assert_not_awaited()
+
+
+async def test_trusted_global_channel_queue_delivers_with_scope_authorization():
+    async with GetDB() as db:
+        global_row = await get_settings_by_workspace(db, None)
+        global_row.notification_settings = {
+            **global_row.notification_settings,
+            "notify_telegram": True,
+            "telegram_api_token": "88888888:HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH",
+            "telegram_chat_id": 321,
+            "max_retries": 3,
+        }
+        await db.commit()
+
+    item = TelegramNotification(
+        message="admin-login",
+        chat_id=321,
+        delivery_workspace_id=None,
+        scope_authorization="global",
+    ).model_dump()
+
+    with patch(
+        "app.notification.client._send_telegram_message_direct",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as send_direct:
+        await process_notification(item)
+        send_direct.assert_awaited_once()
+        assert send_direct.await_args.kwargs["telegram_api_token"] == "88888888:HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH"
+
+
+async def test_telegram_admin_login_enqueues_trusted_global_scope():
+    from app.notification.telegram import admin as tg_admin
+
+    with patch("app.notification.telegram.admin.send_telegram_message", new_callable=AsyncMock) as mock_send:
+        with patch(
+            "app.notification.telegram.admin.notification_settings_for_delivery",
+            new_callable=AsyncMock,
+            return_value=type("S", (), {"notify_telegram": True})(),
+        ):
+            with patch(
+                "app.notification.telegram.admin.get_telegram_channel",
+                return_value=(1, None),
+            ):
+                await tg_admin.admin_login("u", "p", "127.0.0.1", True)
+    mock_send.assert_awaited_once()
+    assert mock_send.await_args.kwargs.get("scope_authorization") == "global"
+
+
+async def test_resolve_channel_queue_delivery_scope_matches_user_ownership():
+    async with GetDB() as db:
+        tenant_id = await _tenant(db)
+        admin = await _administrator(db, tenant_id)
+        user = await _persist_user(db, admin)
+        await db.commit()
+        resolved = await resolve_channel_queue_delivery_scope(
+            admin.workspace_id,
+            user_subject_id=user.id,
+        )
+        assert resolved == admin.workspace_id
+        assert await resolve_channel_queue_delivery_scope(None, user_subject_id=user.id) == admin.workspace_id
+        assert (
+            await resolve_channel_queue_delivery_scope(
+                admin.workspace_id + 99_999,
+                user_subject_id=user.id,
+            )
+            == "skip"
+        )

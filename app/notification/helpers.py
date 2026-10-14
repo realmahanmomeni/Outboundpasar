@@ -1,5 +1,24 @@
+from __future__ import annotations
+
+from typing import Any
+
 from app.models.admin import AdminContactInfo
 from app.models.settings import NotificationSettings
+from app.models.user import UserNotificationResponse
+from app.notification.queue_manager import WebhookScopeAuthorization
+
+
+def user_event_queue_scope(user: UserNotificationResponse) -> dict[str, Any]:
+    """Queue metadata so workers can re-validate user ownership at dequeue time."""
+    if user.id is None:
+        return {}
+    return {"user_subject_id": user.id}
+
+
+def trusted_global_channel_scope(delivery_workspace_id: int | None) -> dict[str, WebhookScopeAuthorization]:
+    if delivery_workspace_id is None:
+        return {"scope_authorization": "global"}
+    return {}
 
 
 def get_telegram_channel(settings: NotificationSettings, entity: str) -> tuple[int | None, int | None]:
