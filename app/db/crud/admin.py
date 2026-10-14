@@ -291,9 +291,10 @@ async def get_admin_by_telegram_id(
     admins = (await db.execute(stmt)).scalars().all()
     if len(admins) > 1:
         logger.error(
-            "Duplicate telegram_id found for admins; using earliest record",
+            "Duplicate telegram_id found for admins; denying Telegram binding",
             extra={"telegram_id": telegram_id, "admin_ids": [admin.id for admin in admins]},
         )
+        return None
     admin = admins[0] if admins else None
     if admin:
         await _load_admin_non_role_attrs(admin, load_users=load_users, load_usage_logs=load_usage_logs)
