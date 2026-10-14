@@ -16,7 +16,6 @@ from app.db.crud.group import (
 from app.db.crud.user import get_users
 from app.db.crud.wireguard import sync_users_allocations
 from app.db.models import Admin
-from app.models.admin import AdminDetails
 from app.models.group import (
     BulkGroup,
     BulkGroupsActionResponse,
@@ -34,6 +33,7 @@ from app.models.group import (
 )
 from app.models.user import BulkOperationDryRunResponse, UserListQuery
 from app.node.sync import sync_users
+from app.models.admin import AdminDetails
 from app.operation import BaseOperation, OperatorType
 from app.operation.permissions import apply_group_access
 from app.operation.user import _actor_workspace_id
@@ -160,12 +160,11 @@ class GroupOperation(BaseOperation):
 
         group = _group_response(db_group)
 
-        tenant_id, workspace_id = await self._resource_scope(db, admin)
         asyncio.create_task(
             self._sync_users_after_group_change(
                 db_group.id,
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
+                tenant_id=admin.tenant_id,
+                workspace_id=admin.workspace_id,
             )
         )
         asyncio.create_task(notification.modify_group(group, admin.username))
@@ -175,13 +174,12 @@ class GroupOperation(BaseOperation):
 
     async def remove_group(self, db: AsyncSession, group_id: int, admin: Admin) -> None:
         db_group = await self._get_group_with_access(db, group_id, admin)
-        tenant_id, workspace_id = await self._resource_scope(db, admin)
 
         users = await get_users(
             db,
             query=UserListQuery(group_ids=[db_group.id]),
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
+            tenant_id=admin.tenant_id,
+            workspace_id=admin.workspace_id,
         )
         username_list = [user.username for user in users]
 
@@ -191,8 +189,8 @@ class GroupOperation(BaseOperation):
             db,
             query=UserListQuery(username=username_list),
             load_admin_role=True,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
+            tenant_id=admin.tenant_id,
+            workspace_id=admin.workspace_id,
         )
         await self._sync_users_allocations(db, users)
         await self._enqueue_oc_sync_for_users(db, users)
@@ -262,11 +260,11 @@ class GroupOperation(BaseOperation):
         all_affected_usernames = set()
         for db_group in db_groups:
             users = await get_users(
-                db,
-                query=UserListQuery(group_ids=[db_group.id]),
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
-            )
+            db,
+            query=UserListQuery(group_ids=[db_group.id]),
+            tenant_id=admin.tenant_id,
+            workspace_id=admin.workspace_id,
+        )
             all_affected_usernames.update(user.username for user in users)
 
         group_ids = [g.id for g in db_groups]
@@ -279,8 +277,8 @@ class GroupOperation(BaseOperation):
                 db,
                 query=UserListQuery(username=list(all_affected_usernames)),
                 load_admin_role=True,
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
+                tenant_id=admin.tenant_id,
+                workspace_id=admin.workspace_id,
             )
             await self._sync_users_allocations(db, users)
             await self._enqueue_oc_sync_for_users(db, users)
@@ -338,8 +336,8 @@ class GroupOperation(BaseOperation):
                 db,
                 query=UserListQuery(group_ids=[group.id for group in groups_to_update]),
                 load_admin_role=True,
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
+                tenant_id=admin.tenant_id,
+                workspace_id=admin.workspace_id,
             )
             await self._sync_users_allocations(db, users)
             await self._enqueue_oc_sync_for_users(db, users)

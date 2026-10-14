@@ -12,7 +12,6 @@ import {
   useGetAdmins,
   useDisableAllActiveUsersById,
   useRemoveAllUsersById,
-  type AdminsResponse,
 } from '@/service/api'
 import { DataTable } from './data-table'
 import { setupColumns } from './columns'
@@ -60,28 +59,6 @@ interface BulkActionDialogConfig {
 
 const compactAdminIds = (admins: AdminDetails[]): number[] => admins.map(admin => admin.id).filter((id): id is number => typeof id === 'number')
 const getAdminStatus = (admin: AdminDetails) => admin.status || (admin.is_disabled ? 'disabled' : 'active')
-
-function resolveAdminsListPayload(response: unknown): AdminsResponse | null {
-  if (!response || typeof response !== 'object') return null
-  const direct = response as AdminsResponse
-  if (Array.isArray(direct.admins)) return direct
-  const wrapped = response as { status?: number; data?: AdminsResponse }
-  if (wrapped.data && Array.isArray(wrapped.data.admins)) return wrapped.data
-  return null
-}
-
-const countAdminsFromRows = (admins: AdminDetails[]) => {
-  let active = 0
-  let disabled = 0
-  let limited = 0
-  for (const admin of admins) {
-    const status = getAdminStatus(admin)
-    if (status === 'disabled') disabled += 1
-    else if (status === 'limited') limited += 1
-    else active += 1
-  }
-  return { total: admins.length, active, disabled, limited }
-}
 
 const DeleteAlertDialog = ({ admin, isOpen, onClose, onConfirm }: { admin: AdminDetails; isOpen: boolean; onClose: () => void; onConfirm: () => void }) => {
   const { t } = useTranslation()
@@ -274,8 +251,7 @@ export default function AdminsTable({ onEdit, onDelete, onToggleStatus, onResetU
     },
   })
 
-  const adminsPayload = resolveAdminsListPayload(adminsResponse)
-  const adminsData = adminsPayload?.admins || []
+  const adminsData = adminsResponse?.admins || []
   const selectedAdmins = adminsData.filter(admin => selectedAdminUsernames.includes(admin.username))
   const selectedEnableEligibleAdmins = selectedAdmins.filter(admin => getAdminStatus(admin) === 'disabled')
   const selectedDisableEligibleAdmins = selectedAdmins.filter(admin => getAdminStatus(admin) !== 'disabled')
@@ -285,46 +261,18 @@ export default function AdminsTable({ onEdit, onDelete, onToggleStatus, onResetU
 
   // Expose counts to parent component for statistics
   useEffect(() => {
-    if (!onTotalAdminsChange) return
-    const payload = resolveAdminsListPayload(adminsResponse)
-    if (!payload) {
-      onTotalAdminsChange(null)
-      return
-    }
-
-    const rows = payload.admins ?? []
-    const apiTotal = payload.total ?? 0
-    const apiActive = payload.active ?? 0
-    const apiDisabled = payload.disabled ?? 0
-    const apiLimited = payload.limited ?? 0
-    const apiStatusSum = apiActive + apiDisabled + apiLimited
-
-    if (rows.length > 0) {
-      const fromRows = countAdminsFromRows(rows)
-      const rowStatusSum = fromRows.active + fromRows.disabled + fromRows.limited
-      const aggregatesUntrusted =
-        apiTotal === 0 ||
-        rowStatusSum !== apiStatusSum ||
-        (apiStatusSum === 0 && rowStatusSum > 0) ||
-        (apiTotal > 0 && apiStatusSum === 0 && rowStatusSum > 0)
-
-      if (aggregatesUntrusted) {
+    if (onTotalAdminsChange) {
+      if (adminsResponse) {
         onTotalAdminsChange({
-          total: Math.max(apiTotal, fromRows.total),
-          active: fromRows.active,
-          disabled: fromRows.disabled,
-          limited: fromRows.limited,
+          total: adminsResponse.total,
+          active: adminsResponse.active,
+          disabled: adminsResponse.disabled,
+          limited: adminsResponse.limited,
         })
-        return
+      } else {
+        onTotalAdminsChange(null)
       }
     }
-
-    onTotalAdminsChange({
-      total: apiTotal,
-      active: apiActive,
-      disabled: apiDisabled,
-      limited: apiLimited,
-    })
   }, [adminsResponse, onTotalAdminsChange])
   const disableAllActiveUsersMutation = useDisableAllActiveUsersById()
   const activateAllDisabledUsersMutation = useActivateAllDisabledUsersById()
@@ -943,9 +891,9 @@ export default function AdminsTable({ onEdit, onDelete, onToggleStatus, onResetU
       />
       <PaginationControls
         currentPage={currentPage}
-        totalPages={Math.ceil((adminsPayload?.total || 0) / itemsPerPage)}
+        totalPages={Math.ceil((adminsResponse?.total || 0) / itemsPerPage)}
         itemsPerPage={itemsPerPage}
-        totalItems={adminsPayload?.total || 0}
+        totalItems={adminsResponse?.total || 0}
         isLoading={isPageLoading}
         onPageChange={handlePageChange}
         onItemsPerPageChange={handleItemsPerPageChange}
