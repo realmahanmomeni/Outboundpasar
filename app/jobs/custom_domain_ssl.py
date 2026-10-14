@@ -13,8 +13,11 @@ from app.services.custom_domain.ssl_lifecycle import (
     CertificateProvisionerError,
     CertificateRateLimited,
     CertificateProviderUnavailable,
+    certificate_is_operational,
     domain_eligible_for_certificate_job,
+    domain_is_routable_for_subscriptions,
     get_certificate_provisioner,
+    ingress_ready_for_hostname,
     sanitize_certificate_error,
 )
 from app.utils.logger import get_logger
@@ -28,6 +31,8 @@ def _retry_delay_seconds() -> int:
 
 
 async def _process_issuance_row(domain: SubscriptionCustomDomain, provisioner) -> None:
+    if domain.state == SubscriptionCustomDomainState.disabled:
+        return
     if not domain_eligible_for_certificate_job(domain):
         domain.state = SubscriptionCustomDomainState.failed
         domain.certificate_last_error = "domain is not eligible for certificate issuance"
@@ -71,15 +76,34 @@ async def _process_issuance_row(domain: SubscriptionCustomDomain, provisioner) -
 
     domain.certificate_ref = ref
     domain.certificate_not_after = not_after
-    domain.certificate_last_error = None
     domain.certificate_issue_attempts = 0
     domain.certificate_issue_locked_until = None
     not_after_utc = not_after if not_after.tzinfo else not_after.replace(tzinfo=UTC)
-    if not_after_utc > dt.now(UTC):
-        domain.state = SubscriptionCustomDomainState.active
-    else:
+    if not_after_utc <= dt.now(UTC):
         domain.state = SubscriptionCustomDomainState.failed
         domain.certificate_last_error = "certificate is not operational"
+        return
+
+    cert_ready = await provisioner.certificate_ready(domain)
+    routable = await ingress_ready_for_hostname(
+        domain,
+        provisioner=provisioner,
+        public_https_ready=custom_domain_settings.ingress_public_https_ready,
+    )
+    if cert_ready and routable:
+        domain.certificate_last_error = None
+        domain.state = SubscriptionCustomDomainState.active
+        return
+
+    domain.state = SubscriptionCustomDomainState.pending_certificate
+    if not cert_ready:
+        domain.certificate_last_error = "certificate is not yet ready at the ingress provider"
+    elif not custom_domain_settings.ingress_public_https_ready:
+        domain.certificate_last_error = (
+            "public HTTPS ingress is not marked ready (CUSTOM_DOMAIN_INGRESS_PUBLIC_HTTPS_READY)"
+        )
+    else:
+        domain.certificate_last_error = "ingress routing is not ready for this hostname"
 
 
 async def process_custom_domain_certificates() -> None:
@@ -119,6 +143,18 @@ async def process_custom_domain_certificates() -> None:
                 not_after = not_after.replace(tzinfo=UTC)
             if not_after <= renew_cutoff:
                 domain.state = SubscriptionCustomDomainState.renewal_pending
+                continue
+            if not certificate_is_operational(domain):
+                domain.state = SubscriptionCustomDomainState.renewal_pending
+                continue
+            routable = await domain_is_routable_for_subscriptions(
+                domain,
+                provisioner=provisioner,
+                public_https_ready=custom_domain_settings.ingress_public_https_ready,
+            )
+            if not routable:
+                domain.state = SubscriptionCustomDomainState.pending_certificate
+                domain.certificate_last_error = "ingress or certificate no longer operational"
 
         await db.commit()
 

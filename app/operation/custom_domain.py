@@ -19,6 +19,7 @@ from app.models.admin import AdminDetails
 from app.models.custom_domain import (
     CustomDomainCreate,
     CustomDomainCreateResponse,
+    CustomDomainIngressStatusResponse,
     CustomDomainResponse,
     CustomDomainVerificationInstructions,
 )
@@ -30,7 +31,12 @@ from app.services.custom_domain.normalization import (
     verification_txt_record_name,
     verification_txt_record_value,
 )
-from app.services.custom_domain.ssl_lifecycle import can_request_certificate, get_certificate_provisioner
+from app.services.custom_domain.ingress_provider import describe_ingress_architecture_options
+from app.services.custom_domain.ssl_lifecycle import (
+    can_request_certificate,
+    get_certificate_provisioner,
+    get_ingress_provider_status,
+)
 from app.services.tenant_admin_scope import require_admin_tenant_id
 from app.services.workspace_scope import require_admin_workspace_id
 
@@ -43,6 +49,19 @@ class CustomDomainOperation(BaseOperation):
         tenant_id = await require_admin_tenant_id(db, admin, admin.is_owner)
         workspace_id = await require_admin_workspace_id(db, admin, admin.is_owner)
         return tenant_id, workspace_id
+
+    async def ingress_status(self) -> CustomDomainIngressStatusResponse:
+        status = await get_ingress_provider_status()
+        return CustomDomainIngressStatusResponse(
+            provider=str(status.provider),
+            configured=status.configured,
+            reachable=status.reachable,
+            routing_capable=status.routing_capable,
+            public_https_ready=status.public_https_ready,
+            can_activate_custom_domains=status.can_activate_custom_domains,
+            message=status.message,
+            architecture_options=describe_ingress_architecture_options(),
+        )
 
     async def list_domains(self, db: AsyncSession, admin: AdminDetails) -> list[CustomDomainResponse]:
         _, workspace_id = await self._workspace_scope(db, admin)
@@ -168,6 +187,12 @@ class CustomDomainOperation(BaseOperation):
             await self.raise_error("Custom domain not found", 404)
         if not can_request_certificate(row.state):
             await self.raise_error("Certificate cannot be requested in the current state", 409)
+        provider_status = await get_ingress_provider_status()
+        if not provider_status.configured:
+            await self.raise_error(
+                "Custom domain ingress is not configured on this deployment",
+                503,
+            )
         row.certificate_issue_attempts = 0
         row.certificate_issue_locked_until = None
         await set_domain_state(db, row, SubscriptionCustomDomainState.pending_certificate)

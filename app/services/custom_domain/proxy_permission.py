@@ -36,13 +36,15 @@ async def hostname_may_receive_tls_certificate(db: AsyncSession, raw_hostname: s
 async def active_subscription_domain_for_request(
     db: AsyncSession, hostname: str
 ) -> SubscriptionCustomDomain | None:
-    from app.services.custom_domain.ssl_lifecycle import certificate_is_operational
+    from app.services.custom_domain.ssl_lifecycle import domain_is_routable_for_subscriptions
+    from config import custom_domain_settings
 
     domain = await get_domain_by_hostname(db, hostname)
     if domain is None:
         return None
-    if domain.state != SubscriptionCustomDomainState.active:
-        return None
-    if not certificate_is_operational(domain):
+    if not await domain_is_routable_for_subscriptions(
+        domain,
+        public_https_ready=custom_domain_settings.ingress_public_https_ready,
+    ):
         return None
     return domain

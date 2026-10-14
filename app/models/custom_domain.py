@@ -46,3 +46,14 @@ class CustomDomainResponse(BaseModel):
 
 class CustomDomainCreateResponse(CustomDomainResponse):
     verification: CustomDomainVerificationInstructions | None = None
+
+
+class CustomDomainIngressStatusResponse(BaseModel):
+    provider: str
+    configured: bool
+    reachable: bool
+    routing_capable: bool
+    public_https_ready: bool
+    can_activate_custom_domains: bool
+    message: str
+    architecture_options: list[dict[str, str]]

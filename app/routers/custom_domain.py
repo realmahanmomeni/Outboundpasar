@@ -5,6 +5,7 @@ from app.models.admin import AdminDetails
 from app.models.custom_domain import (
     CustomDomainCreate,
     CustomDomainCreateResponse,
+    CustomDomainIngressStatusResponse,
     CustomDomainResponse,
     CustomDomainVerificationInstructions,
 )
@@ -20,6 +21,13 @@ router = APIRouter(
     responses={401: responses._401, 403: responses._403},
 )
 operator = CustomDomainOperation(operator_type=OperatorType.API)
+
+
+@router.get("/ingress-status", response_model=CustomDomainIngressStatusResponse)
+async def custom_domain_ingress_status(
+    admin: AdminDetails = Depends(require_permission("settings", "read")),
+):
+    return await operator.ingress_status()
 
 
 @router.get("", response_model=list[CustomDomainResponse])

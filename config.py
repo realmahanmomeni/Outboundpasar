@@ -202,6 +202,10 @@ class CustomDomainSettings(EnvSettings):
     dns_enabled: bool = Field(default=False, validation_alias="CUSTOM_DOMAIN_DNS_ENABLED")
     dns_nameservers: str = Field(default="", validation_alias="CUSTOM_DOMAIN_DNS_NAMESERVERS")
     dns_timeout_seconds: float = Field(default=5.0, validation_alias="CUSTOM_DOMAIN_DNS_TIMEOUT_SECONDS")
+    ingress_provider: str = Field(default="none", validation_alias="CUSTOM_DOMAIN_INGRESS_PROVIDER")
+    ingress_public_https_ready: bool = Field(
+        default=False, validation_alias="CUSTOM_DOMAIN_INGRESS_PUBLIC_HTTPS_READY"
+    )
     caddy_admin_url: str = Field(default="", validation_alias="CUSTOM_DOMAIN_CADDY_ADMIN_URL")
     caddy_upstream_dial: str = Field(default="127.0.0.1:8000", validation_alias="CUSTOM_DOMAIN_CADDY_UPSTREAM_DIAL")
     caddy_ask_secret: str = Field(default="", validation_alias="CUSTOM_DOMAIN_CADDY_ASK_SECRET")

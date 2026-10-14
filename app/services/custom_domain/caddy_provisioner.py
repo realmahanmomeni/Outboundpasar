@@ -9,6 +9,7 @@ from urllib.parse import quote
 import httpx
 
 from app.db.models import SubscriptionCustomDomain
+from app.services.custom_domain.ingress_provider import IngressProviderKind, IngressProviderStatus
 from app.services.custom_domain.ssl_lifecycle import (
     CertificateProvisioner,
     CertificateProvisionerError,
@@ -18,6 +19,10 @@ from app.services.custom_domain.ssl_lifecycle import (
 
 _CADDY_SERVER_ID = "pasarguard_custom_domains"
 _ROUTE_ID_PREFIX = "custom-domain-"
+
+
+def _safe_admin_message(message: str) -> str:
+    return message[:256] if message else "Caddy admin API error"
 
 
 class CaddyCertificateProvisioner(CertificateProvisioner):
@@ -40,6 +45,36 @@ class CaddyCertificateProvisioner(CertificateProvisioner):
         self._upstream_dial = upstream_dial
         self._client = http_client
         self._locks: dict[int, asyncio.Lock] = {}
+
+    @property
+    def provider_kind(self) -> IngressProviderKind:
+        return IngressProviderKind.caddy
+
+    async def provider_status(self, *, public_https_ready: bool) -> IngressProviderStatus:
+        try:
+            resp = await self._request("GET", "/config/")
+        except CertificateProviderUnavailable as exc:
+            return IngressProviderStatus(
+                provider=IngressProviderKind.caddy,
+                configured=True,
+                reachable=False,
+                routing_capable=False,
+                public_https_ready=public_https_ready,
+                message=_safe_admin_message(str(exc)),
+            )
+        reachable = resp.status_code == 200
+        routing_capable = reachable and public_https_ready
+        message = "Caddy admin API reachable" if reachable else f"Caddy admin API unhealthy ({resp.status_code})"
+        if reachable and not public_https_ready:
+            message += "; public HTTPS ingress not marked ready (CUSTOM_DOMAIN_INGRESS_PUBLIC_HTTPS_READY)"
+        return IngressProviderStatus(
+            provider=IngressProviderKind.caddy,
+            configured=True,
+            reachable=reachable,
+            routing_capable=routing_capable,
+            public_https_ready=public_https_ready,
+            message=message,
+        )
 
     def _lock_for(self, domain_id: int) -> asyncio.Lock:
         return self._locks.setdefault(domain_id, asyncio.Lock())
@@ -152,12 +187,21 @@ class CaddyCertificateProvisioner(CertificateProvisioner):
         if resp.status_code not in {200, 204, 404}:
             raise CertificateProviderUnavailable(f"failed to remove Caddy route ({resp.status_code})")
 
-    async def _certificate_not_after(self, hostname: str) -> dt:
+    async def hostname_routing_ready(self, domain: SubscriptionCustomDomain) -> bool:
+        return await self._find_route_index(domain.hostname_normalized) is not None
+
+    async def certificate_ready(self, domain: SubscriptionCustomDomain) -> bool:
+        try:
+            not_after = await self._certificate_not_after(domain.hostname_normalized, allow_pending=False)
+        except CertificateProvisionerError:
+            return False
+        return not_after > dt.now(UTC)
+
+    async def _certificate_not_after(self, hostname: str, *, allow_pending: bool = False) -> dt:
         encoded = quote(hostname, safe="")
         resp = await self._request("GET", f"/pki/certificates/local/{encoded}")
         if resp.status_code == 404:
-            # Certificate may still be provisioning; use a short horizon and let renewal job refresh.
-            return dt.now(UTC) + td(hours=1)
+            raise CertificateProvisionerError("certificate is not yet issued")
         if resp.status_code != 200:
             raise CertificateProviderUnavailable(f"failed to read Caddy certificate ({resp.status_code})")
         payload = resp.json()
@@ -176,7 +220,10 @@ class CaddyCertificateProvisioner(CertificateProvisioner):
     async def issue(self, domain: SubscriptionCustomDomain) -> tuple[str, dt]:
         async with self._lock_for(domain.id):
             await self.upsert_route(domain)
-            not_after = await self._certificate_not_after(domain.hostname_normalized)
+            try:
+                not_after = await self._certificate_not_after(domain.hostname_normalized, allow_pending=True)
+            except CertificateProvisionerError:
+                raise CertificateProviderUnavailable("certificate is not yet issued by Caddy")
             if not_after <= dt.now(UTC):
                 raise CertificateProvisionerError("certificate is not yet valid")
             ref = f"caddy:{domain.hostname_normalized}"
