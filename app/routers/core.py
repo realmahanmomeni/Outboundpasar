@@ -59,9 +59,6 @@ async def modify_core_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Update an existing core configuration."""
-    if restart_nodes:
-        await node_operator.require_owner_for_global_node_restart(admin)
-
     response = await core_operator.modify_core(db, core_id, modified_core, admin)
 
     if restart_nodes:
@@ -78,9 +75,6 @@ async def delete_core_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a core configuration."""
-    if restart_nodes:
-        await node_operator.require_owner_for_global_node_restart(admin)
-
     await core_operator.delete_core(db, core_id, admin)
 
     if restart_nodes:

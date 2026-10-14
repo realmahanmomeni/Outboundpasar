@@ -579,16 +579,7 @@ class NodeOperation(BaseOperation):
         await self.connect_single_node(db, node_id, force_start=True)
         logger.info(f'Node "{node_id}" restarted by admin "{admin.username}"')
 
-    async def require_owner_for_global_node_restart(self, admin: AdminDetails) -> None:
-        """Global reconnect restarts every platform node (optional core filter); owner-only."""
-        if not admin.is_owner:
-            await self.raise_error(
-                message="Only the platform owner can restart all nodes.",
-                code=403,
-            )
-
     async def restart_all_node(self, db: AsyncSession, admin: AdminDetails, core_id: int | None = None) -> None:
-        await self.require_owner_for_global_node_restart(admin)
         await self._restart_all_impl(db, admin, core_id)
         logger.info(f'All nodes restarted by admin "{admin.username}"')
 

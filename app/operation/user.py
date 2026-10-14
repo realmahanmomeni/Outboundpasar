@@ -1363,17 +1363,6 @@ class UserOperation(BaseOperation):
             clean_chart_data=usage_settings.reset_user_usage_clean_chart_data,
         )
 
-    async def reset_all_users_data_usage_and_reconnect_nodes(
-        self,
-        db: AsyncSession,
-        admin: AdminDetails,
-        node_operator,
-    ) -> None:
-        """Authorize global node restart before any usage reset side effects."""
-        await node_operator.require_owner_for_global_node_restart(admin)
-        await self.reset_users_data_usage(db, admin)
-        await node_operator.restart_all_node(db, admin)
-
     async def _active_next_plan(self, db: AsyncSession, db_user: User, admin: AdminDetails) -> UserResponse:
         if db_user is None or db_user.next_plan is None:
             await self.raise_error(message="User doesn't have next plan", code=404)

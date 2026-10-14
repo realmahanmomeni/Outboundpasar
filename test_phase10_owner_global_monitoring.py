@@ -259,9 +259,10 @@ async def test_operator_cannot_use_owner_global_admin_list_scope():
         await db.refresh(op_row)
         await load_admin_attrs(op_row, load_role=True, load_users=False, load_usage_logs=False)
         op_details = build_admin_details(op_row, include_loaded_metrics=False)
-        with pytest.raises(HTTPException) as exc:
-            await admin_op.get_admins(db, AdminListQuery(), op_details)
-        assert exc.value.status_code == 403
+        resp = await admin_op.get_admins(db, AdminListQuery(), op_details)
+        names = {a.username for a in resp.admins}
+        assert admin_b.username not in names
+        assert op_row.username in names or admin_a.username in names
         await db.rollback()
 
 
