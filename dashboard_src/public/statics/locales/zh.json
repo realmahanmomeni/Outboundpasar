@@ -3,7 +3,7 @@
   "platform": "平台",
   "dashboard": "仪表板",
   "master": "总体",
-  "dashboardDescription": "PasarGuard 管理仪表板",
+  "dashboardDescription": "OutboundCenter 管理仪表板",
   "default": "默认",
   "unlimited": "无限制",
   "allStatuses": "所有状态",
@@ -2041,7 +2041,7 @@
     "noHostsDescription": "开始创建您的第一个主机配置。",
     "noSearchResults": "没有主机匹配您的搜索条件。请尝试调整搜索词。"
   },
-  "pasarguard": "PasarGuard",
+  "pasarguard": "OutboundCenter",
   "group": {
     "createSuccess": "群组「{{name}}」已成功创建",
     "createFailed": "创建群组「{{name}}」失败",

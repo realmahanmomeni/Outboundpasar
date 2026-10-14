@@ -504,7 +504,7 @@ export default function AddPanelWizardModal({
                 Select Groups
               </h3>
               <p className="text-sm text-muted-foreground">
-                Select the external groups whose configs you want to synchronize into PasarGuard.
+                Select the external groups whose configs you want to synchronize into OutboundCenter.
               </p>
 
               <div className="flex gap-2 mb-2">
@@ -548,7 +548,7 @@ export default function AddPanelWizardModal({
                 Sync Configs & Create Hosts
               </h3>
               <p className="text-sm text-muted-foreground">
-                We will now retrieve configs for the selected groups and map them to independent PasarGuard Hosts.
+                We will now retrieve configs for the selected groups and map them to independent OutboundCenter hosts.
               </p>
               <div className="flex items-center gap-3 p-3 border rounded-md bg-muted/30">
                 <Wrench className="h-5 w-5 text-muted-foreground" />

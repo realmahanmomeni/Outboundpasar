@@ -317,13 +317,13 @@ export default function DonationPopup() {
 
             {/* Title */}
             <h3 className="from-primary via-primary to-primary/80 mb-3 bg-gradient-to-r bg-clip-text text-center text-2xl font-bold text-transparent">
-              {t('donation.title', { defaultValue: 'Support PasarGuard' })}
+              {t('donation.title', { defaultValue: 'Support OutboundCenter' })}
             </h3>
 
             {/* Message */}
             <p className="text-muted-foreground mb-6 px-2 text-center text-sm leading-relaxed">
               {t('donation.message', {
-                defaultValue: 'Your support helps us improve PasarGuard and build better features for everyone!',
+                defaultValue: 'Your support helps us improve OutboundCenter and build better features for everyone!',
               })}
             </p>
 

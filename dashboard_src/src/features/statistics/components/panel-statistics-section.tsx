@@ -64,7 +64,7 @@ export default function PanelStatisticsSection() {
         <p className="text-muted-foreground text-sm">
           {t(
             'statistics.panelStats.subtitle',
-            'Workspace-scoped metrics for your panels and users (requires PANEL_STATISTICS_DASHBOARD_ENABLED).',
+            'Workspace-scoped metrics for your imported panels and their users.',
           )}
         </p>
       </div>

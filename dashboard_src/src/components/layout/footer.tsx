@@ -6,7 +6,7 @@ const FooterContent = () => {
     <p className="text-muted-foreground inline-block flex-grow text-center text-xs">
       Made with ❤️ by &nbsp;
       <a className="text-primary hover:underline" href={REPO_URL}>
-        PasarGuard
+        OutboundCenter
       </a>{' '}
       Team
     </p>

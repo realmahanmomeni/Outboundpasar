@@ -1,8 +1,8 @@
 {
-  "pasarguard": "PasarGuard",
+  "pasarguard": "OutboundCenter",
   "dashboard": "Панель управления",
   "master": "Общее",
-  "dashboardDescription": "Панель управления PasarGuard",
+  "dashboardDescription": "Панель управления OutboundCenter",
   "default": "По умолчанию",
   "unlimited": "Без ограничений",
   "active": "активный",

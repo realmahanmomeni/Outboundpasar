@@ -29,7 +29,7 @@ export default function PanelsList() {
     mutationFn: (panelId: number) => deletePanel(panelId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/panels'] })
-      toast.success(t('panels.disconnectSuccess', { defaultValue: 'Panel disconnected from PasarGuard' }))
+      toast.success(t('panels.disconnectSuccess', { defaultValue: 'Panel disconnected from OutboundCenter' }))
       setSelectedPanelForDisconnect(null)
     },
     onError: (err: any) => {

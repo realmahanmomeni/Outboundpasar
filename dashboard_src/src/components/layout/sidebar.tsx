@@ -417,7 +417,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           <Link to="/" className="flex items-center gap-2">
             <img
               src={resolvedTheme === 'dark' ? window.location.pathname + 'statics/favicon/logo.png' : window.location.pathname + 'statics/favicon/logo-dark.png'}
-              alt="PasarGuard Logo"
+              alt="OutboundCenter Logo"
               className="h-8 w-8 object-contain"
             />
             <span dir={isRTL ? 'rtl' : 'ltr'} className="text-sm font-bold">
@@ -452,7 +452,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                     <a href={REPO_URL} target="_blank">
                       <img
                         src={resolvedTheme === 'dark' ? window.location.pathname + 'statics/favicon/logo.png' : window.location.pathname + 'statics/favicon/logo-dark.png'}
-                        alt="PasarGuard Logo"
+                        alt="OutboundCenter Logo"
                         className="h-6 w-6 flex-shrink-0 object-contain"
                       />
                       {canReadSystem && hasUpdate && (
@@ -491,7 +491,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                     <a href={REPO_URL} target="_blank" className="flex min-w-0 flex-1 items-center gap-2">
                       <img
                         src={resolvedTheme === 'dark' ? window.location.pathname + 'statics/favicon/logo.png' : window.location.pathname + 'statics/favicon/logo-dark.png'}
-                        alt="PasarGuard Logo"
+                        alt="OutboundCenter Logo"
                         className="h-8 w-8 flex-shrink-0 object-contain"
                       />
                       <div className="flex min-w-0 flex-1 flex-col items-start overflow-hidden">
@@ -540,7 +540,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                   <a href={REPO_URL} target="_blank">
                     <img
                       src={resolvedTheme === 'dark' ? window.location.pathname + 'statics/favicon/logo.png' : window.location.pathname + 'statics/favicon/logo-dark.png'}
-                      alt="PasarGuard Logo"
+                      alt="OutboundCenter Logo"
                       className="h-8 w-8 flex-shrink-0 object-contain"
                     />
                     <div className="flex min-w-0 flex-col overflow-hidden">

@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Card, CardContent } from '@/components/ui/card'
 import { useAdmin } from '@/hooks/use-admin'
+import { usePanelStatisticsAvailable } from '@/hooks/use-panel-statistics-available'
 import { hasPermission } from '@/utils/rbac'
 
 const Statistics = () => {
@@ -19,13 +20,18 @@ const Statistics = () => {
   const canViewNodeStats = hasPermission(admin, 'nodes', 'stats')
   const canViewSystemStats = hasPermission(admin, 'system', 'read')
   const canViewPanelBusinessStats = hasPermission(admin, 'users', 'read')
+  const { available: panelStatsMode, overviewQuery } = usePanelStatisticsAvailable()
+
+  const panelProbePending =
+    canViewPanelBusinessStats && overviewQuery.isLoading && overviewQuery.fetchStatus === 'fetching' && overviewQuery.data === undefined
+  const showNodeStatistics = !panelStatsMode && !panelProbePending
 
   // Fetch nodes for the selector
   const { data: nodesResponse, isLoading: isLoadingNodes } = useGetNodesSimple(
     { all: true },
     {
       query: {
-        enabled: canViewNodeStats,
+        enabled: showNodeStatistics && canViewNodeStats,
       },
     },
   )
@@ -34,13 +40,13 @@ const Statistics = () => {
   const nodesData = nodesResponse?.nodes || []
 
   useEffect(() => {
-    if (canViewSystemStats || selectedServer !== 'master') return
+    if (!showNodeStatistics || canViewSystemStats || selectedServer !== 'master') return
 
     const firstNode = nodesData[0]
     if (firstNode) {
       setSelectedServer(String(firstNode.id))
     }
-  }, [canViewSystemStats, nodesData, selectedServer])
+  }, [showNodeStatistics, canViewSystemStats, nodesData, selectedServer])
 
   const getNodeStatusDotColor = (status: NodeStatus) => {
     switch (status) {
@@ -63,8 +69,8 @@ const Statistics = () => {
     isLoading,
   } = useGetSystemResourceStats({
     query: {
-      enabled: canViewSystemStats && selectedServer === 'master',
-      refetchInterval: canViewSystemStats && selectedServer === 'master' ? 2000 : false,
+      enabled: showNodeStatistics && canViewSystemStats && selectedServer === 'master',
+      refetchInterval: showNodeStatistics && canViewSystemStats && selectedServer === 'master' ? 2000 : false,
       staleTime: 1000,
       refetchOnWindowFocus: true,
     },
@@ -72,8 +78,8 @@ const Statistics = () => {
 
   const { data: usersData } = useGetSystemUsersStats(undefined, {
     query: {
-      enabled: canViewSystemStats && selectedServer === 'master',
-      refetchInterval: canViewSystemStats && selectedServer === 'master' ? 2000 : false,
+      enabled: showNodeStatistics && canViewSystemStats && selectedServer === 'master',
+      refetchInterval: showNodeStatistics && canViewSystemStats && selectedServer === 'master' ? 2000 : false,
       staleTime: 1000,
       refetchOnWindowFocus: true,
     },
@@ -82,11 +88,22 @@ const Statistics = () => {
   return (
     <div className="flex w-full flex-col items-start gap-2">
       <div className="w-full transform-gpu">
-        <PageHeader title="statistics" description="monitorServers" />
+        <PageHeader
+          title="statistics"
+          description={panelStatsMode ? 'statistics.monitorPanels' : 'monitorServers'}
+        />
         <Separator />
       </div>
 
-      {canViewNodeStats && (canViewSystemStats || nodesData.length > 0) && (
+      {panelProbePending && (
+        <div className="w-full px-3 pt-2 sm:px-4">
+          <Skeleton className="h-32 w-full" />
+        </div>
+      )}
+
+      {panelStatsMode && canViewPanelBusinessStats && <PanelStatisticsSection />}
+
+      {showNodeStatistics && canViewNodeStats && (canViewSystemStats || nodesData.length > 0) && (
         <div className="w-full px-3 pt-2 sm:px-4 sm:pt-4">
           <div className="transform-gpu">
             <Card>
@@ -129,29 +146,29 @@ const Statistics = () => {
         </div>
       )}
 
-      {canViewPanelBusinessStats && <PanelStatisticsSection />}
-
-      <div className="w-full">
-        <div className="w-full px-3 pt-2 sm:px-4">
-          <div className="transform-gpu">
-            <Card>
-              <CardContent className="p-4 sm:p-6">
-                <MainContent
-                  error={error}
-                  isLoading={isLoading}
-                  data={resourceData}
-                  usersData={usersData}
-                  selectedServer={selectedServer}
-                  canViewNodeStats={canViewNodeStats}
-                  canViewSystemStats={canViewSystemStats}
-                  nodesData={nodesData}
-                  isLoadingNodes={isLoadingNodes}
-                />
-              </CardContent>
-            </Card>
+      {showNodeStatistics && (
+        <div className="w-full">
+          <div className="w-full px-3 pt-2 sm:px-4">
+            <div className="transform-gpu">
+              <Card>
+                <CardContent className="p-4 sm:p-6">
+                  <MainContent
+                    error={error}
+                    isLoading={isLoading}
+                    data={resourceData}
+                    usersData={usersData}
+                    selectedServer={selectedServer}
+                    canViewNodeStats={canViewNodeStats}
+                    canViewSystemStats={canViewSystemStats}
+                    nodesData={nodesData}
+                    isLoadingNodes={isLoadingNodes}
+                  />
+                </CardContent>
+              </Card>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

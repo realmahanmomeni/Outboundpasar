@@ -3,9 +3,11 @@ import { UserCog, Users } from 'lucide-react'
 import { Suspense, lazy, useEffect, useState, type ComponentProps } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Skeleton } from '@/components/ui/skeleton'
+import { usePanelStatisticsAvailable } from '@/hooks/use-panel-statistics-available'
 import UserStatisticsCard from './users-statistics-card'
 
 const DataUsageChart = lazy(() => import('./data-usage-chart'))
+const PanelTrafficUsageCard = lazy(() => import('./panel-traffic-usage-card'))
 
 type DashboardAdmin = Pick<AdminDetails, 'id' | 'username'>
 
@@ -51,6 +53,7 @@ const AdminStatisticsCard = ({
   skipStatsFetch?: boolean
 }) => {
   const { t } = useTranslation()
+  const { available: panelStatsAvailable } = usePanelStatisticsAvailable()
   if (!admin) return null
 
   // Send admin_username for specific admin stats, except for 'Total' which shows global stats
@@ -82,7 +85,13 @@ const AdminStatisticsCard = ({
         </div>
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
           <UserStatisticsCard data={statsToUse} />
-          <DeferredDataUsageChart adminUsername={shouldScopeAdminData ? admin.username : undefined} />
+          {panelStatsAvailable ? (
+            <Suspense fallback={<DataUsageChartSkeleton />}>
+              <PanelTrafficUsageCard />
+            </Suspense>
+          ) : (
+            <DeferredDataUsageChart adminUsername={shouldScopeAdminData ? admin.username : undefined} />
+          )}
         </div>
       </div>
     )
@@ -90,7 +99,13 @@ const AdminStatisticsCard = ({
   return (
     <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
       <UserStatisticsCard data={statsToUse} />
-      <DeferredDataUsageChart adminUsername={shouldScopeAdminData ? admin.username : undefined} />
+      {panelStatsAvailable ? (
+        <Suspense fallback={<DataUsageChartSkeleton />}>
+          <PanelTrafficUsageCard />
+        </Suspense>
+      ) : (
+        <DeferredDataUsageChart adminUsername={shouldScopeAdminData ? admin.username : undefined} />
+      )}
     </div>
   )
 }

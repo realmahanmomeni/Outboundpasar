@@ -234,7 +234,7 @@ export default function PanelManage() {
                 </CardTitle>
                 <CardDescription className="text-xs">
                   {t('panels.capabilitiesSubtitle', {
-                    defaultValue: 'What you can manage for this imported Outbound Center panel in PasarGuard.',
+                    defaultValue: 'What you can manage for this imported panel in OutboundCenter.',
                   })}
                 </CardDescription>
               </CardHeader>
@@ -264,7 +264,7 @@ export default function PanelManage() {
                   <li className="flex items-start gap-2">
                     <Users className="h-3.5 w-3.5 mt-0.5 text-primary shrink-0" />
                     <span>
-                      <strong className="text-foreground">User access</strong> — PasarGuard users reach this panel through
+                      <strong className="text-foreground">User access</strong> — OutboundCenter users reach this panel through
                       groups and virtual inbounds; OC user mappings sync in the background when access changes.
                     </span>
                   </li>
@@ -277,7 +277,7 @@ export default function PanelManage() {
                   </li>
                 </ul>
                 <p className="text-[11px] text-muted-foreground/80 pt-1 border-t">
-                  Disconnect removes the PasarGuard import only; it does not delete your remote Outbound Center server.
+                  Disconnect removes the OutboundCenter import only; it does not delete your remote Outbound Center server.
                 </p>
               </CardContent>
             </Card>

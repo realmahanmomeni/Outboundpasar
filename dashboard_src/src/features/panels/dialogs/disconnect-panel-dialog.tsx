@@ -42,7 +42,7 @@ export default function DisconnectPanelDialog({
             <span className="block">
               {t('panels.disconnectIntro', {
                 defaultValue:
-                  'This removes the panel import from PasarGuard for your tenant. Your Outbound Center server and subscription are not deleted.',
+                  'This removes the panel import from OutboundCenter for your tenant. Your Outbound Center server and subscription are not deleted.',
               })}
             </span>
             <span className="block font-medium text-foreground">
