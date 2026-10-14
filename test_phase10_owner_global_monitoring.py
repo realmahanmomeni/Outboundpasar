@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -168,7 +169,12 @@ async def test_owner_lists_panels_across_workspaces():
         db.add_all([panel_a, panel_b])
         await db.flush()
         owner = _owner_details()
-        listed = await list_panels(db, (owner.username, True, owner))
+        with patch(
+            "app.routers.panel.available_config_counts_by_panel",
+            new_callable=AsyncMock,
+            return_value={},
+        ):
+            listed = await list_panels(db, (owner.username, True, owner))
         ids = {p.id for p in listed}
         assert panel_a.id in ids and panel_b.id in ids
         await db.rollback()

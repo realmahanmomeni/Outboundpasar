@@ -175,13 +175,29 @@ async def provision_external_user(
                 proxy_settings=proxy_settings,
             )
         except ClientExistsError:
-            info = await _DRIVER.update_vpn_user(
-                auth.panel_url,
-                auth.username,
-                auth.password,
-                vpn_username=vpn_username,
-                group_ids=effective,
-            )
+            try:
+                info = await _DRIVER.update_vpn_user(
+                    auth.panel_url,
+                    auth.username,
+                    auth.password,
+                    vpn_username=vpn_username,
+                    group_ids=effective,
+                )
+            except ClientNotFoundError:
+                await _DRIVER.delete_vpn_user(
+                    auth.panel_url,
+                    auth.username,
+                    auth.password,
+                    vpn_username=vpn_username,
+                )
+                info = await _DRIVER.create_vpn_user(
+                    auth.panel_url,
+                    auth.username,
+                    auth.password,
+                    vpn_username=vpn_username,
+                    group_ids=effective,
+                    proxy_settings=proxy_settings,
+                )
     except Exception as exc:
         raise _translate_error(exc) from exc
     return _user_payload(external_user_id, info, all_groups)

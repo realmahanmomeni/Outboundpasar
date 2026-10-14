@@ -8,6 +8,7 @@ import { createContext, useCallback, useContext, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Outlet, useLocation, useNavigate } from 'react-router'
 import { toast } from 'sonner'
+import { filterOcSettingsTabs } from '@/constants/oc-product-ui'
 import { hasPermission } from '@/utils/rbac'
 
 interface Tab {
@@ -55,7 +56,7 @@ export default function Settings() {
   const canUpdateSettings = hasPermission(admin, 'settings', 'update')
   const canReadSettings = hasPermission(admin, 'settings', 'read') && canUpdateSettings
   const canReadGeneral = hasPermission(admin, 'settings', 'read_general') && canUpdateSettings
-  const tabs = allTabs.filter(tab => {
+  const tabs = filterOcSettingsTabs(allTabs).filter(tab => {
     if (tab.id === 'theme') return true
     if (tab.id === 'general') return canReadGeneral
     return canReadSettings

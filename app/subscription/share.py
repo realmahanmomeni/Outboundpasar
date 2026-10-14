@@ -317,6 +317,41 @@ def native_host_skips_connectable_subscription(host: SubscriptionInboundData) ->
     return remark_looks_like_user_template(host.remark)
 
 
+def format_native_informational_remark(
+    host: SubscriptionInboundData,
+    format_variables: dict,
+) -> str | None:
+    """Format a scoped native Info Host remark for plaintext subscription metadata lines."""
+    remark = (host.remark or "").strip()
+    if not remark:
+        return None
+    return remark.format_map(format_variables)
+
+
+def add_scoped_native_informational_host(
+    conf: StandardLinks
+    | XrayConfiguration
+    | SingBoxConfiguration
+    | ClashConfiguration
+    | ClashMetaConfiguration
+    | OutlineConfiguration
+    | WireGuardConfiguration,
+    host: SubscriptionInboundData,
+    format_variables: dict,
+) -> None:
+    """
+    Emit allowlisted informational native hosts without connectable proxy serialization.
+
+    ``links`` / ``links_base64`` use reserved non-importable display URIs (see
+    ``native_info_display``) so each informational Host is a distinct subscription line with a
+    formatted remark fragment, without entering connectable proxy serialization.
+    """
+    formatted = format_native_informational_remark(host, format_variables)
+    if not formatted:
+        return
+    conf.add_informational_remark(formatted)
+
+
 async def native_subscription_host_ids(
     db,
     native_inbound_tags: list[str],
@@ -348,6 +383,49 @@ async def native_subscription_host_ids(
         or_(ProxyHost.is_disabled.is_(False), ProxyHost.is_disabled.is_(None)),
     )
     return set((await db.scalars(stmt)).all())
+
+
+async def supplement_native_allowlisted_host_entries(
+    host_entries: list[tuple[int, SubscriptionInboundData]],
+    native_allowed_host_ids: set[int],
+    user_status: UserStatus,
+    proxy_settings: dict,
+) -> list[tuple[int, SubscriptionInboundData]]:
+    """
+    Include authorized native Host rows missing from ``host_manager`` (e.g. panel-only cores).
+
+    Only IDs already returned by ``native_subscription_host_ids`` are loaded; scope is not expanded.
+    """
+    if not native_allowed_host_ids:
+        return host_entries
+
+    present = {host_id for host_id, _ in host_entries}
+    missing = native_allowed_host_ids - present
+    if not missing:
+        return host_entries
+
+    from app.core.hosts import _prepare_subscription_inbound_data
+    from app.db import GetDB
+    from app.db.crud.host import get_host_by_id
+    from app.models.host import BaseHost
+
+    supplemented = list(host_entries)
+    async with GetDB() as db:
+        for host_id in sorted(missing):
+            row = await get_host_by_id(db, host_id)
+            if row is None or row.is_disabled:
+                continue
+            if row.status and user_status not in row.status:
+                continue
+            base = BaseHost.model_validate(row)
+            try:
+                data = await _prepare_subscription_inbound_data(base, proxies=proxy_settings)
+            except Exception:
+                continue
+            if data.status and user_status not in data.status:
+                continue
+            supplemented.append((host_id, data))
+    return supplemented
 
 
 async def resolve_oc_virtual_hosts(
@@ -593,6 +671,13 @@ async def process_inbounds_and_tags(
         for host_id, host_data in cached_hosts.items()
         if not host_data.status or user.status in host_data.status
     ]
+    if native_allowed_host_ids:
+        host_entries = await supplement_native_allowlisted_host_entries(
+            host_entries,
+            native_allowed_host_ids,
+            user.status,
+            proxy_settings,
+        )
     if randomize_order and len(host_entries) > 1:
         random.shuffle(host_entries)
 
@@ -612,6 +697,8 @@ async def process_inbounds_and_tags(
         if native_inbound_tags and host_id not in native_allowed_host_ids:
             continue
         if native_host_skips_connectable_subscription(host_data):
+            if native_inbound_tags and host_id in native_allowed_host_ids:
+                add_scoped_native_informational_host(conf, host_data, format_variables)
             continue
         result = await process_host(host_data, format_variables, native_inbound_tags, proxy_settings, custom_variables)
         if not result:

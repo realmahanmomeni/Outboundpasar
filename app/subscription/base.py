@@ -93,6 +93,14 @@ class BaseSubscription:
                 return new
             c += 1
 
+    def add_informational_remark(self, remark: str) -> None:
+        """
+        Optional subscription metadata (status text) for clients that show non-URI lines.
+
+        Structured formats (Clash, sing-box, xray JSON, etc.) ignore informational natives by default
+        rather than synthesizing a connectable proxy entry.
+        """
+
     @staticmethod
     def _normalize_and_remove_none_values(data: dict) -> dict:
         return normalize_and_remove_none_values(data)

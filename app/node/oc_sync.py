@@ -28,6 +28,7 @@ from app.services.oc_user_mapping_state import (
     mapping_needs_subscription_url_repair,
     resolve_oc_sync_operation,
 )
+from app.services.oc_sync_identity import merge_identity_rotation_payload
 from app.utils.logger import get_logger
 
 logger = get_logger("oc-sync")
@@ -578,6 +579,26 @@ async def enqueue_oc_user_sync(
             mapping, is_new_mapping=is_new_mapping, last_configs=last_configs
         )
         payload = await build_oc_user_put_payload(db_session, panel_id, configs)
+
+        prior_rotation_payload: dict[str, Any] | None = None
+        if pending_job:
+            prior_rotation_payload = pending_job.payload
+        else:
+            last_failed = (
+                await db_session.execute(
+                    select(OCSyncState)
+                    .where(
+                        OCSyncState.entity_type == "user_mapping",
+                        OCSyncState.entity_id == entity_id,
+                        OCSyncState.status == "failed",
+                    )
+                    .order_by(OCSyncState.id.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
+            if last_failed and last_failed.payload:
+                prior_rotation_payload = last_failed.payload
+        payload = merge_identity_rotation_payload(payload, prior_payload=prior_rotation_payload)
 
         if pending_job:
             if pending_job.operation == "delete":

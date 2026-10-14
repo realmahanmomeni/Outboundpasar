@@ -1,8 +1,7 @@
-from app.models.settings import NotificationSettings
 from app.models.user import UserNotificationResponse
 from app.notification.client import send_telegram_message
+from app.notification.delivery_scope import notification_settings_for_delivery
 from app.notification.helpers import get_telegram_channel, should_send_admin_notification
-from app.settings import notification_settings
 from app.utils.system import readable_size
 
 from . import messages
@@ -19,7 +18,7 @@ _status = {
 }
 
 
-async def user_status_change(user: UserNotificationResponse, by: str):
+async def user_status_change(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_html_user(user, by)
     data = messages.USER_STATUS_CHANGE.format(
         status=_status[user.status.value],
@@ -27,15 +26,17 @@ async def user_status_change(user: UserNotificationResponse, by: str):
         admin_username=admin_username,
         by=by,
     )
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
     if user.admin and user.admin.telegram_id and should_send_admin_notification(user.admin, "status_change"):
-        await send_telegram_message(data, chat_id=user.admin.telegram_id)
+        await send_telegram_message(
+            data, chat_id=user.admin.telegram_id, delivery_workspace_id=delivery_workspace_id
+        )
 
 
-async def create_user(user: UserNotificationResponse, by: str):
+async def create_user(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_html_user(user, by)
     data = messages.CREATE_USER.format(
         username=username,
@@ -47,15 +48,17 @@ async def create_user(user: UserNotificationResponse, by: str):
         admin_username=admin_username,
         by=by,
     )
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
     if user.admin and user.admin.telegram_id and should_send_admin_notification(user.admin, "create"):
-        await send_telegram_message(data, chat_id=user.admin.telegram_id)
+        await send_telegram_message(
+            data, chat_id=user.admin.telegram_id, delivery_workspace_id=delivery_workspace_id
+        )
 
 
-async def modify_user(user: UserNotificationResponse, by: str):
+async def modify_user(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_html_user(user, by)
     data = messages.MODIFY_USER.format(
         username=username,
@@ -67,30 +70,34 @@ async def modify_user(user: UserNotificationResponse, by: str):
         admin_username=admin_username,
         by=by,
     )
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
     if user.admin and user.admin.telegram_id and should_send_admin_notification(user.admin, "modify"):
-        await send_telegram_message(data, chat_id=user.admin.telegram_id)
+        await send_telegram_message(
+            data, chat_id=user.admin.telegram_id, delivery_workspace_id=delivery_workspace_id
+        )
 
 
-async def remove_user(user: UserNotificationResponse, by: str):
+async def remove_user(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_html_user(user, by)
     data = messages.REMOVE_USER.format(
         username=username,
         admin_username=admin_username,
         by=by,
     )
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
     if user.admin and user.admin.telegram_id and should_send_admin_notification(user.admin, "delete"):
-        await send_telegram_message(data, chat_id=user.admin.telegram_id)
+        await send_telegram_message(
+            data, chat_id=user.admin.telegram_id, delivery_workspace_id=delivery_workspace_id
+        )
 
 
-async def reset_user_data_usage(user: UserNotificationResponse, by: str):
+async def reset_user_data_usage(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_html_user(user, by)
     data = messages.RESET_USER_DATA_USAGE.format(
         username=username,
@@ -98,15 +105,17 @@ async def reset_user_data_usage(user: UserNotificationResponse, by: str):
         admin_username=admin_username,
         by=by,
     )
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
     if user.admin and user.admin.telegram_id and should_send_admin_notification(user.admin, "reset_data_usage"):
-        await send_telegram_message(data, chat_id=user.admin.telegram_id)
+        await send_telegram_message(
+            data, chat_id=user.admin.telegram_id, delivery_workspace_id=delivery_workspace_id
+        )
 
 
-async def user_data_reset_by_next(user: UserNotificationResponse, by: str):
+async def user_data_reset_by_next(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_html_user(user, by)
     data = messages.USER_DATA_RESET_BY_NEXT.format(
         username=username,
@@ -115,24 +124,28 @@ async def user_data_reset_by_next(user: UserNotificationResponse, by: str):
         admin_username=admin_username,
         by=by,
     )
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
     if user.admin and user.admin.telegram_id and should_send_admin_notification(user.admin, "data_reset_by_next"):
-        await send_telegram_message(data, chat_id=user.admin.telegram_id)
+        await send_telegram_message(
+            data, chat_id=user.admin.telegram_id, delivery_workspace_id=delivery_workspace_id
+        )
 
 
-async def user_subscription_revoked(user: UserNotificationResponse, by: str):
+async def user_subscription_revoked(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_html_user(user, by)
     data = messages.USER_SUBSCRIPTION_REVOKED.format(
         username=username,
         admin_username=admin_username,
         by=by,
     )
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
     if user.admin and user.admin.telegram_id and should_send_admin_notification(user.admin, "subscription_revoked"):
-        await send_telegram_message(data, chat_id=user.admin.telegram_id)
+        await send_telegram_message(
+            data, chat_id=user.admin.telegram_id, delivery_workspace_id=delivery_workspace_id
+        )

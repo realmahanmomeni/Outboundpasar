@@ -7,7 +7,12 @@ import { LoadingSpinner } from '@/components/common/loading-spinner'
 import { RouteErrorPage } from '@/components/layout/error-page'
 import { TabbedRouteSuspenseFallback } from '@/components/layout/tabbed-route-suspense-fallback'
 import { lazyWithChunkRecovery } from '@/utils/chunk-recovery'
-import { showLegacyNativeInfraInNav, ocPanelFallbackRoute } from '@/constants/oc-product-ui'
+import {
+  hideAlertingSettingsInNav,
+  ocAlertingSettingsFallbackRoute,
+  ocPanelFallbackRoute,
+  showLegacyNativeInfraInNav,
+} from '@/constants/oc-product-ui'
 import { isAuthenticationError } from '@/utils/error-utils'
 // Replace direct imports with lazy imports for route-level components
 const CoresLayout = lazyWithChunkRecovery(() => import('@/pages/_dashboard.nodes.cores'))
@@ -82,6 +87,29 @@ const fetchAdminLoader = async (): Promise<any> => {
 
 function OcPanelNavigate() {
   return <Navigate to={ocPanelFallbackRoute()} replace />
+}
+
+function OcAlertingSettingsNavigate() {
+  const { admin } = useAdmin()
+  const canUpdateSettings = hasPermission(admin, 'settings', 'update')
+  const canReadSettings = hasPermission(admin, 'settings', 'read') && canUpdateSettings
+  const canReadGeneral = hasPermission(admin, 'settings', 'read_general') && canUpdateSettings
+  return (
+    <Navigate
+      to={ocAlertingSettingsFallbackRoute({
+        canReadSettings,
+        canReadGeneral,
+      })}
+      replace
+    />
+  )
+}
+
+function AlertingSettingsRoute({ children }: { children: React.ReactNode }) {
+  if (hideAlertingSettingsInNav()) {
+    return <OcAlertingSettingsNavigate />
+  }
+  return <>{children}</>
 }
 
 function NodeDetailRoute() {
@@ -340,9 +368,11 @@ export const router = createHashRouter([
           {
             path: '/settings/notifications',
             element: (
-              <Suspense fallback={<LoadingSpinner />}>
-                <NotificationSettings />
-              </Suspense>
+              <AlertingSettingsRoute>
+                <Suspense fallback={<LoadingSpinner />}>
+                  <NotificationSettings />
+                </Suspense>
+              </AlertingSettingsRoute>
             ),
           },
           {
@@ -364,17 +394,21 @@ export const router = createHashRouter([
           {
             path: '/settings/telegram',
             element: (
-              <Suspense fallback={<LoadingSpinner />}>
-                <TelegramSettings />
-              </Suspense>
+              <AlertingSettingsRoute>
+                <Suspense fallback={<LoadingSpinner />}>
+                  <TelegramSettings />
+                </Suspense>
+              </AlertingSettingsRoute>
             ),
           },
           {
             path: '/settings/webhook',
             element: (
-              <Suspense fallback={<LoadingSpinner />}>
-                <WebhookSettings />
-              </Suspense>
+              <AlertingSettingsRoute>
+                <Suspense fallback={<LoadingSpinner />}>
+                  <WebhookSettings />
+                </Suspense>
+              </AlertingSettingsRoute>
             ),
           },
           {

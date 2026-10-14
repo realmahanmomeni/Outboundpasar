@@ -126,6 +126,7 @@ class HostOperation(BaseOperation):
             preserved = CreateHost.model_validate(db_host)
             preserved.remark = modified_host.remark
             preserved.is_disabled = modified_host.is_disabled
+            preserved.priority = modified_host.priority
             modified_host = preserved
             await update_oc_destination_host_display_name(db, db_host, modified_host.remark)
 
@@ -189,6 +190,7 @@ class HostOperation(BaseOperation):
                     preserved = CreateHost.model_validate(old_host)
                     preserved.remark = host.remark
                     preserved.is_disabled = host.is_disabled
+                    preserved.priority = host.priority
                     host = preserved
                     await update_oc_destination_host_display_name(db, old_host, host.remark)
                 await modify_host(db, old_host, host)

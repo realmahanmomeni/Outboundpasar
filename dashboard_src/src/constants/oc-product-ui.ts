@@ -21,3 +21,35 @@ export function isLegacyNativeInfraRoute(pathname: string): boolean {
 export function ocPanelFallbackRoute(): '/panels' {
   return '/panels'
 }
+
+/** Outbound Center: hide PasarGuard notification / admin-bot Telegram / webhook settings UI. */
+export const OC_HIDE_ALERTING_SETTINGS_UI = true
+
+const OC_HIDDEN_ALERTING_SETTINGS_TAB_IDS = new Set(['notifications', 'telegram', 'webhook'])
+
+const OC_HIDDEN_ALERTING_SETTINGS_PATHS = ['/settings/notifications', '/settings/telegram', '/settings/webhook'] as const
+
+export function hideAlertingSettingsInNav(): boolean {
+  return OC_HIDE_ALERTING_SETTINGS_UI
+}
+
+export function isHiddenAlertingSettingsRoute(pathname: string): boolean {
+  if (!OC_HIDE_ALERTING_SETTINGS_UI) return false
+  return OC_HIDDEN_ALERTING_SETTINGS_PATHS.some(path => pathname === path || pathname.startsWith(`${path}/`))
+}
+
+export function filterOcSettingsTabs<T extends { id: string }>(tabs: readonly T[]): T[] {
+  if (!OC_HIDE_ALERTING_SETTINGS_UI) return [...tabs]
+  return tabs.filter(tab => !OC_HIDDEN_ALERTING_SETTINGS_TAB_IDS.has(tab.id))
+}
+
+export function filterOcSettingsNavItems<T extends { url: string }>(items: readonly T[]): T[] {
+  if (!OC_HIDE_ALERTING_SETTINGS_UI) return [...items]
+  return items.filter(item => !isHiddenAlertingSettingsRoute(item.url))
+}
+
+export function ocAlertingSettingsFallbackRoute(options: { canReadSettings: boolean; canReadGeneral: boolean }): string {
+  if (options.canReadSettings) return '/settings/subscriptions'
+  if (options.canReadGeneral) return '/settings/general'
+  return '/settings/theme'
+}

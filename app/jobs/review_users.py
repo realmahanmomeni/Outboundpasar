@@ -6,24 +6,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import notification, scheduler
 from app.db import GetDB
 from app.db.crud.user import (
-    bulk_create_notification_reminders,
     get_active_to_expire_users,
     get_active_to_limited_users,
-    get_days_left_reached_users,
     get_on_hold_to_active_users,
-    get_usage_percentage_reached_users,
     reset_user_by_next,
     start_users_expire,
     update_users_status,
 )
-from app.db.models import ReminderType, User, UserStatus
+from app.db.models import User, UserStatus
 from app.jobs.dependencies import SYSTEM_ADMIN
-from app.models.settings import Webhook
-from app.models.user import UserNotificationResponse
 from app.node.sync import sync_users
+from app.notification.webhook_reminders import process_days_left_reminders, process_usage_percent_reminders
 from app.operation import OperatorType
 from app.operation.user import UserOperation
-from app.settings import webhook_settings
 from app.utils.logger import get_logger
 from config import job_settings, runtime_settings, usage_settings
 
@@ -104,82 +99,13 @@ async def on_hold_to_active_users_job():
 
 
 async def usage_percent_notification_job():
-    settings: Webhook = await webhook_settings()
-    if not settings.enable:
-        return
     async with GetDB() as db:
-        for percent in settings.usage_percent:
-            users = await get_usage_percentage_reached_users(db, percent)
-
-            # Prepare webhook notifications first
-            webhook_data = []
-            reminder_data = []
-
-            for user in users:
-                usage_percentage = user.usage_percentage
-                user_model = UserNotificationResponse.model_validate(user)
-
-                # Queue webhook notification
-                webhook_data.append(
-                    notification.wh.ReachedUsagePercent(
-                        username=user_model.username, user=user_model, used_percent=usage_percentage
-                    )
-                )
-
-                # Prepare reminder data for bulk insert
-                reminder_data.append(
-                    {
-                        "user_id": user.id,
-                        "type": ReminderType.data_usage,
-                        "threshold": percent,
-                        "expires_at": user.expire if user.expire else None,
-                    }
-                )
-
-            # Bulk create notification reminders
-            if reminder_data:
-                await bulk_create_notification_reminders(db, reminder_data)
-
-            if webhook_data:
-                await notification.wh.bulk_notify(webhook_data)
+        await process_usage_percent_reminders(db)
 
 
 async def days_left_notification_job():
-    settings: Webhook = await webhook_settings()
-    if not settings.enable:
-        return
     async with GetDB() as db:
-        for days in settings.days_left:
-            users = await get_days_left_reached_users(db, days)
-
-            # Prepare webhook notifications first
-            webhook_data = []
-            reminder_data = []
-
-            for user in users:
-                days_left = user.days_left
-                user_model = UserNotificationResponse.model_validate(user)
-
-                # Queue webhook notification
-                webhook_data.append(
-                    notification.wh.ReachedDaysLeft(username=user_model.username, user=user_model, days_left=days_left)
-                )
-
-                # Prepare reminder data for bulk insert
-                reminder_data.append(
-                    {
-                        "user_id": user.id,
-                        "type": ReminderType.expiration_date,
-                        "threshold": days,
-                        "expires_at": user.expire,
-                    }
-                )
-            # Bulk create notification reminders
-            if reminder_data:
-                await bulk_create_notification_reminders(db, reminder_data)
-
-            if webhook_data:
-                await notification.wh.bulk_notify(webhook_data)
+        await process_days_left_reminders(db)
 
 
 if runtime_settings.role.runs_scheduler:

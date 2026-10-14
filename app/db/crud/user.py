@@ -766,7 +766,12 @@ async def get_users_to_reset_data_usage(db: AsyncSession) -> list[User]:
     return list((await db.execute(stmt)).unique().scalars().all())
 
 
-async def get_usage_percentage_reached_users(db: AsyncSession, percentage: int) -> list[User]:
+async def get_usage_percentage_reached_users(
+    db: AsyncSession,
+    percentage: int,
+    *,
+    workspace_id: int | None = None,
+) -> list[User]:
     """
     Get active users who have reached or exceeded the specified usage percentage threshold
     and don't have an existing notification reminder for this threshold.
@@ -789,11 +794,20 @@ async def get_usage_percentage_reached_users(db: AsyncSession, percentage: int) 
         .where(User.usage_percentage >= percentage)
         .where(not_(existing_reminder_subq))  # Only users without existing reminders
     )
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
+    else:
+        stmt = stmt.where(User.workspace_id.is_(None))
 
     return list((await db.execute(stmt)).unique().scalars().all())
 
 
-async def get_days_left_reached_users(db: AsyncSession, days: int) -> list[User]:
+async def get_days_left_reached_users(
+    db: AsyncSession,
+    days: int,
+    *,
+    workspace_id: int | None = None,
+) -> list[User]:
     """
     Get active users who have reached or exceeded the specified days left threshold
     and don't have an existing notification reminder for this threshold.
@@ -817,6 +831,10 @@ async def get_days_left_reached_users(db: AsyncSession, days: int) -> list[User]
         .where(User.days_left == days)
         .where(not_(existing_reminder_subq))  # Only users without existing reminders
     )
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
+    else:
+        stmt = stmt.where(User.workspace_id.is_(None))
 
     return list((await db.execute(stmt)).unique().scalars().all())
 

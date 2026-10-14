@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 from datetime import UTC, datetime as dt, timedelta as td
 
 import aiohttp
@@ -8,13 +9,13 @@ from app import on_shutdown, scheduler
 from app.db import GetDB
 from app.db.models import NotificationReminder
 from app.models.settings import Webhook
+from app.notification.delivery_scope import resolve_webhook_queue_delivery_scope, webhook_settings_for_delivery
 from app.notification.queue_manager import (
     WebhookNotification,
     enqueue_webhook,
     get_webhook_queue,
     shutdown_webhook_queue,
 )
-from app.settings import webhook_settings
 from app.utils.http_client import create_outbound_http_session
 from app.utils.logger import get_logger
 from config import job_settings, runtime_settings
@@ -51,54 +52,81 @@ async def send_to_all_webhooks(client: aiohttp.ClientSession, notifications, web
 
 async def send_notifications():
     """Drain queued webhooks through a client-scoped trusted TLS context."""
-    settings: Webhook = await webhook_settings()
-    if not settings.enable:
-        return
-
     logger.debug("Processing notifications batch")
 
     processed = 0
     failed_to_requeue = []
-    ready_notifications = []
+    ready_notifications: list[WebhookNotification] = []
     current_time = dt.now(UTC).timestamp()
-    should_requeue = settings.enable
 
     try:
-        async with create_outbound_http_session(proxy=settings.proxy_url if settings.proxy_url else None) as client:
-            webhook_queue = get_webhook_queue()
-            while True:
-                try:
-                    item = await webhook_queue.dequeue(timeout=1)
-                except Exception:
-                    # Handle any dequeue errors gracefully
-                    break
+        webhook_queue = get_webhook_queue()
+        while True:
+            try:
+                item = await webhook_queue.dequeue(timeout=1)
+            except Exception:
+                break
 
-                if not item:
-                    break
+            if not item:
+                break
 
-                try:
-                    notification = WebhookNotification(**item)
+            try:
+                notification = WebhookNotification(**item)
+            except Exception:
+                continue
 
-                    if notification.tries >= settings.recurrent:
-                        continue
+            delivery_scope = await resolve_webhook_queue_delivery_scope(
+                notification.payload,
+                notification.delivery_workspace_id,
+                notification.scope_authorization,
+            )
+            if delivery_scope == "skip":
+                continue
 
-                    if notification.send_at > current_time:
-                        failed_to_requeue.append(notification)
-                        continue
+            if delivery_scope is None:
+                scope_updates = {
+                    "delivery_workspace_id": None,
+                    "scope_authorization": "global",
+                }
+            else:
+                scope_updates = {
+                    "delivery_workspace_id": delivery_scope,
+                    "scope_authorization": None,
+                }
+            notification = notification.model_copy(update=scope_updates)
 
-                    ready_notifications.append(notification)
-                except Exception:
-                    failed_to_requeue.append(notification)
+            settings = await webhook_settings_for_delivery(notification.delivery_workspace_id)
+            if settings is None or not settings.enable:
+                continue
 
-            if ready_notifications:
+            if notification.tries >= settings.recurrent:
+                continue
+
+            if notification.send_at > current_time:
+                failed_to_requeue.append(notification)
+                continue
+
+            ready_notifications.append(notification)
+
+        grouped: dict[int | None, list[WebhookNotification]] = defaultdict(list)
+        for notification in ready_notifications:
+            grouped[notification.delivery_workspace_id].append(notification)
+
+        for workspace_id, group in grouped.items():
+            settings = await webhook_settings_for_delivery(workspace_id)
+            if settings is None or not settings.enable:
+                continue
+
+            async with create_outbound_http_session(
+                proxy=settings.proxy_url if settings.proxy_url else None
+            ) as client:
                 batch_size = 50
-                for start in range(0, len(ready_notifications), batch_size):
-                    batch = ready_notifications[start : start + batch_size]
+                for start in range(0, len(group), batch_size):
+                    batch = group[start : start + batch_size]
                     logger.info(
                         f"Sending batch of {len(batch)} notifications to {len(settings.webhooks)} webhooks "
-                        f"(chunk {start // batch_size + 1})"
+                        f"(workspace_id={workspace_id}, chunk {start // batch_size + 1})"
                     )
-                    # Extract payloads from WebhookNotification objects
                     payloads = [notif.payload for notif in batch]
                     success = await send_to_all_webhooks(client, payloads, settings.webhooks)
 
@@ -113,10 +141,14 @@ async def send_notifications():
                     processed += len(batch)
 
     finally:
-        if should_requeue:
-            # Requeue failed items at the end
-            for notif in failed_to_requeue:
-                await enqueue_webhook(notif.payload, send_at=notif.send_at, tries=notif.tries)
+        for notif in failed_to_requeue:
+            await enqueue_webhook(
+                notif.payload,
+                send_at=notif.send_at,
+                tries=notif.tries,
+                delivery_workspace_id=notif.delivery_workspace_id,
+                scope_authorization=notif.scope_authorization,
+            )
 
         if processed or failed_to_requeue:
             logger.info(f"Processed {processed} notifications, requeued {len(failed_to_requeue)}")

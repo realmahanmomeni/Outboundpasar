@@ -6,9 +6,11 @@ from urllib.parse import quote
 from app.services.oc_share_link import (
     decode_subscription_links,
     is_importable_configuration_link,
+    is_native_informational_display_link,
     parse_share_link,
     subscription_config_links,
 )
+from app.subscription.native_info_display import build_native_informational_display_link
 
 
 def _vless(remark: str) -> str:
@@ -46,6 +48,16 @@ def test_plaintext_bundle_mixed_metadata_and_unicode_remarks():
     assert len(decoded) == 2
     dest = subscription_config_links(decoded)
     assert len(dest) == 2
+
+
+def test_native_info_display_link_is_not_importable_but_parsed():
+    link = build_native_informational_display_link("Status|{USERNAME}|left")
+    assert link is not None
+    assert is_native_informational_display_link(link)
+    assert not is_importable_configuration_link(link)
+    parsed = parse_share_link(link)
+    assert parsed is not None
+    assert "USERNAME" in parsed.remark
 
 
 def test_ss_leading_plaintext_subscription_still_decodes():

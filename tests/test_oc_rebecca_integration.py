@@ -10,10 +10,12 @@ from app.services.oc_rebecca_integration import (
     DISCOVERY_EXTERNAL_USER_ID,
     get_panel_configs,
     get_panel_groups,
+    panel_username_for,
     provision_external_user,
     provision_test_user,
 )
 from app.services.oc_panel_buyer_auth import BuyerPanelAuth
+from app.services.panel_drivers.exceptions import ClientExistsError, ClientNotFoundError
 from app.services.panel_drivers.types import VpnGroupInfo, VpnInboundInfo, VpnUserInfo
 
 
@@ -79,3 +81,38 @@ async def test_rebecca_provision_test_user(auth):
         )
         assert state["subscription_url"] == "https://rebecca.example/sub/abc"
         assert "vless-tcp" in state["configs"]
+
+
+@pytest.mark.asyncio
+async def test_rebecca_provision_phantom_exists_recreates(auth):
+    vpn_username = panel_username_for(804, 14, "ext-1")
+    user_info = VpnUserInfo(
+        username=vpn_username,
+        status="active",
+        group_ids=("10",),
+        subscription_url="https://rebecca.example/sub/abc",
+    )
+    create = AsyncMock(side_effect=[ClientExistsError("exists", username=vpn_username), user_info])
+    update = AsyncMock(side_effect=ClientNotFoundError("missing"))
+    delete = AsyncMock(return_value=False)
+    with (
+        patch("app.services.oc_rebecca_integration._DRIVER.create_vpn_user", new=create),
+        patch("app.services.oc_rebecca_integration._DRIVER.update_vpn_user", new=update),
+        patch("app.services.oc_rebecca_integration._DRIVER.delete_vpn_user", new=delete),
+        patch(
+            "app.services.oc_rebecca_integration._DRIVER.list_vpn_groups",
+            new=AsyncMock(return_value=[VpnGroupInfo("10", "Premium", ("vless-tcp",))]),
+        ),
+    ):
+        state = await provision_external_user(
+            auth,
+            account_id=804,
+            subscription_id=14,
+            external_user_id="ext-1",
+            groups=["10"],
+            configs=["vless-tcp"],
+        )
+    assert state["subscription_url"] == "https://rebecca.example/sub/abc"
+    update.assert_awaited_once()
+    delete.assert_awaited_once()
+    assert create.await_count == 2

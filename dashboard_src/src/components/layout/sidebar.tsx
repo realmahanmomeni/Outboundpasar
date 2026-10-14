@@ -18,7 +18,7 @@ import useDirDetection from '@/hooks/use-dir-detection'
 import { useSystemVersion } from '@/hooks/use-system-version'
 import { useVersionCheck } from '@/hooks/use-version-check'
 import { cn } from '@/lib/utils'
-import { showLegacyNativeInfraInNav } from '@/constants/oc-product-ui'
+import { filterOcSettingsNavItems, showLegacyNativeInfraInNav } from '@/constants/oc-product-ui'
 import { canReadResourcePage, hasPermission, hasScopeAll, isOwner } from '@/utils/rbac'
 import {
   ArrowUpDown,
@@ -354,7 +354,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               ]
             : []),
           ...(hasPermission(admin, 'settings', 'read') && hasPermission(admin, 'settings', 'update')
-            ? [
+            ? filterOcSettingsNavItems([
                 {
                   title: 'settings.notifications.title',
                   url: '/settings/notifications',
@@ -385,7 +385,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                   url: '/settings/cleanup',
                   icon: Database,
                 },
-              ]
+              ])
             : []),
           {
             title: 'theme.title',

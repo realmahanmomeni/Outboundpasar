@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from unittest.mock import AsyncMock, patch
+
 from test_workspace_isolation_util import unique_username, unique_tag
 
 from fastapi import HTTPException
@@ -229,7 +231,12 @@ async def test_owner_lists_all_panels():
             tenant_id=tenant_id,
             role=AdminRoleData(is_owner=True, name="owner"),
         )
-        listed = await list_panels(db, (owner.username, True, owner))
+        with patch(
+            "app.routers.panel.available_config_counts_by_panel",
+            new_callable=AsyncMock,
+            return_value={},
+        ):
+            listed = await list_panels(db, (owner.username, True, owner))
         listed_ids = {p.id for p in listed}
         assert panel_a.id in listed_ids and panel_b.id in listed_ids
         await db.rollback()

@@ -19,9 +19,14 @@ from . import BaseOperation
 class SettingsOperation(BaseOperation):
     @staticmethod
     async def reset_services(old_settings: SettingsSchema, new_settings: SettingsSchema):
+        """Restart deployment-wide services only for platform-global settings changes."""
         if new_settings.telegram != old_settings.telegram:
             await startup_telegram_bot()
-        if old_settings.notification_settings.proxy_url != new_settings.notification_settings.proxy_url:
+        if (
+            old_settings.notification_settings
+            and new_settings.notification_settings
+            and old_settings.notification_settings.proxy_url != new_settings.notification_settings.proxy_url
+        ):
             await define_client()
 
     async def _resolve_settings_row(self, db: AsyncSession, admin: AdminDetails, *, ensure: bool) -> Settings:
@@ -53,9 +58,18 @@ class SettingsOperation(BaseOperation):
         if new_settings.general and new_settings.subscription:
             new_settings.general.custom_variables = new_settings.subscription.custom_variables
 
-        await refresh_caches()
-        await router.publish(MessageTopic.SETTING, {"action": "refresh"})
-        asyncio.create_task(self.reset_services(old_settings, new_settings))
+        is_global_scope = admin.is_owner
+        if is_global_scope:
+            await refresh_caches(workspace_id=None)
+            await router.publish(MessageTopic.SETTING, {"action": "refresh"})
+            asyncio.create_task(self.reset_services(old_settings, new_settings))
+        else:
+            _, workspace_id = await resolve_tenant_workspace_scope(db, admin)
+            await refresh_caches(workspace_id=workspace_id)
+            await router.publish(
+                MessageTopic.SETTING,
+                {"action": "refresh", "workspace_id": workspace_id},
+            )
 
         return new_settings
 

@@ -13,6 +13,7 @@ from app.notification.queue_manager import (
     enqueue_telegram,
     get_queue,
 )
+from app.notification.delivery_scope import notification_settings_for_delivery
 from app.settings import notification_settings
 from app.utils.http_client import create_outbound_http_session
 from app.utils.logger import get_logger
@@ -73,11 +74,16 @@ async def _send_discord_webhook_direct(json_data, webhook, max_retries: int) -> 
     return False
 
 
-async def send_discord_webhook(json_data, webhook: str | None):
+async def send_discord_webhook(
+    json_data,
+    webhook: str | None,
+    *,
+    delivery_workspace_id: int | None = None,
+):
     """Enqueue Discord notification for processing"""
     if not webhook:
         return
-    await enqueue_discord(json_data, webhook)
+    await enqueue_discord(json_data, webhook, delivery_workspace_id=delivery_workspace_id)
 
 
 async def _send_telegram_message_direct(
@@ -134,7 +140,13 @@ async def _send_telegram_message_direct(
     return False
 
 
-async def send_telegram_message(message, chat_id: int | None = None, topic_id: int | None = None):
+async def send_telegram_message(
+    message,
+    chat_id: int | None = None,
+    topic_id: int | None = None,
+    *,
+    delivery_workspace_id: int | None = None,
+):
     """
     Enqueue a Telegram message for processing.
     Args:
@@ -144,12 +156,17 @@ async def send_telegram_message(message, chat_id: int | None = None, topic_id: i
     """
     if not chat_id:
         return
-    await enqueue_telegram(message, chat_id, topic_id)
+    await enqueue_telegram(
+        message,
+        chat_id,
+        topic_id,
+        delivery_workspace_id=delivery_workspace_id,
+    )
 
 
 async def _process_discord_notification(notification: DiscordNotification):
-    settings: NotificationSettings = await notification_settings()
-    if not settings.notify_discord:
+    settings = await notification_settings_for_delivery(notification.delivery_workspace_id)
+    if settings is None or not settings.notify_discord:
         return
 
     success = await _send_discord_webhook_direct(
@@ -161,8 +178,8 @@ async def _process_discord_notification(notification: DiscordNotification):
 
 
 async def _process_telegram_notification(notification: TelegramNotification):
-    settings: NotificationSettings = await notification_settings()
-    if not settings.notify_telegram or not settings.telegram_api_token:
+    settings = await notification_settings_for_delivery(notification.delivery_workspace_id)
+    if settings is None or not settings.notify_telegram or not settings.telegram_api_token:
         return
 
     success = await _send_telegram_message_direct(

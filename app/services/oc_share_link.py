@@ -78,8 +78,12 @@ def is_importable_configuration_link(link: str) -> bool:
 
     Remark content is not used to reject imports.
     """
+    from app.subscription.native_info_display import is_native_informational_display_link
+
     raw = (link or "").strip()
     if not raw or len(raw) > 8192:
+        return False
+    if is_native_informational_display_link(raw):
         return False
     lower = raw.lower()
     if lower.startswith("<") or "<html" in lower or "<!doctype" in lower:
@@ -89,6 +93,13 @@ def is_importable_configuration_link(link: str) -> bool:
     if parse_share_link(raw) is not None:
         return True
     return lower.startswith(("hysteria2://", "hy2://", "wireguard://"))
+
+
+def is_native_informational_display_link(link: str) -> bool:
+    """Re-export for subscription import tests and OC pipelines."""
+    from app.subscription.native_info_display import is_native_informational_display_link as _is_native_info
+
+    return _is_native_info(link)
 
 
 def decode_subscription_links(body: str) -> list[str]:

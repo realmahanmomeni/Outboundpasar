@@ -53,6 +53,10 @@ _OC_CODE_MAP: dict[str, tuple[int, str]] = {
     "PANEL_AUTH_FAILED": (502, "Outbound Center could not authenticate to the panel."),
     "PANEL_FORBIDDEN": (502, "The panel denied the operation for the sub-admin."),
     "USER_NOT_FOUND": (404, "User not found on the Outbound Center panel."),
+    "USER_IDENTITY_BLOCKED": (
+        409,
+        "Outbound Center cannot reclaim the reserved panel username; rotate the mapping identity.",
+    ),
     "GROUP_NOT_ALLOWED": (400, "One or more groups are not available on this panel."),
     "CONFIG_NOT_ALLOWED": (400, "One or more configs are not available on this panel."),
     "CONFIG_NOT_IN_GROUPS": (400, "A selected config is not part of the selected groups."),

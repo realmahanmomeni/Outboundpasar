@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 import aiohttp
 from datetime import UTC, datetime as dt
 
@@ -18,6 +19,10 @@ from app.services.oc_integration_client import (
     _read_oc_error_detail,
 )
 from app.services.oc_connection_credentials import panel_has_active_connection
+from app.services.oc_sync_identity import (
+    IDENTITY_ROTATED_PAYLOAD_KEY,
+    should_rotate_for_identity_blocked,
+)
 from app.services.oc_user_mapping_state import OC_MAPPING_STATUS_DELETED
 from app.db.models import User
 from app.utils.crypto import decrypt_secret
@@ -261,8 +266,6 @@ async def process_oc_sync():
                             raise ValueError(f"UserMapping not found for {job.entity_id}")
 
                         external_user_id = mapping.external_user_id
-                        url = f"{panel.integration.base_url.rstrip('/')}/v1/integration/panels/{panel.source_panel_id}/users/{external_user_id}"
-
                         groups = list(original_payload.get("groups") or [])
                         configs = list(original_payload.get("configs") or [])
                         put_bodies: list[dict] = []
@@ -271,26 +274,63 @@ async def process_oc_sync():
                         put_bodies.append({"groups": groups, "configs": configs})
 
                         subscription_url = None
-                        last_put_err: OcIntegrationApiError | None = None
-                        for idx, body in enumerate(put_bodies):
-                            async with client.put(url, headers=headers, json=body) as resp:
-                                try:
-                                    await _raise_for_oc(resp)
-                                except OcIntegrationApiError as exc:
-                                    last_put_err = exc
-                                    retryable = exc.code in ("CONFIG_NOT_ALLOWED", "CONFIG_NOT_IN_GROUPS")
-                                    if retryable and idx < len(put_bodies) - 1:
-                                        continue
-                                    raise
-                                try:
-                                    subscription_url = _subscription_url_from(await resp.json())
-                                except Exception:
-                                    subscription_url = None
-                                break
-                        else:
-                            if last_put_err:
-                                raise last_put_err
-                            raise ValueError("OC user PUT produced no successful body")
+                        identity_rotated = False
+                        rotation_payload: dict | None = None
+                        while True:
+                            url = (
+                                f"{panel.integration.base_url.rstrip('/')}"
+                                f"/v1/integration/panels/{panel.source_panel_id}/users/{external_user_id}"
+                            )
+                            last_put_err: OcIntegrationApiError | None = None
+                            for idx, body in enumerate(put_bodies):
+                                async with client.put(url, headers=headers, json=body) as resp:
+                                    try:
+                                        await _raise_for_oc(resp)
+                                    except OcIntegrationApiError as exc:
+                                        last_put_err = exc
+                                        retryable = exc.code in (
+                                            "CONFIG_NOT_ALLOWED",
+                                            "CONFIG_NOT_IN_GROUPS",
+                                        )
+                                        if retryable and idx < len(put_bodies) - 1:
+                                            continue
+                                        if should_rotate_for_identity_blocked(
+                                            operation=job.operation,
+                                            oc_code=exc.code,
+                                            identity_rotated_this_run=identity_rotated,
+                                            payload=original_payload,
+                                            mapping=mapping,
+                                        ):
+                                            external_user_id = str(uuid.uuid4())
+                                            identity_rotated = True
+                                            rotation_payload = {
+                                                **original_payload,
+                                                IDENTITY_ROTATED_PAYLOAD_KEY: True,
+                                            }
+                                            original_payload = rotation_payload
+                                            logger.warning(
+                                                "OC identity rotation user_id=%s panel_id=%s mapping_id=%s "
+                                                "job=%s reason=USER_IDENTITY_BLOCKED",
+                                                user_id,
+                                                panel_id,
+                                                mapping.id,
+                                                job.id,
+                                            )
+                                            break
+                                        raise
+                                    try:
+                                        subscription_url = _subscription_url_from(await resp.json())
+                                    except Exception:
+                                        subscription_url = None
+                                    last_put_err = None
+                                    break
+                            else:
+                                if last_put_err:
+                                    raise last_put_err
+                                raise ValueError("OC user PUT produced no successful body")
+                            if identity_rotated and last_put_err is not None:
+                                continue
+                            break
 
                         # CAS Update to protect against stale execution
                         stmt = (
@@ -307,6 +347,10 @@ async def process_oc_sync():
                             continue
 
                         # Phase 10: update success state
+                        if identity_rotated:
+                            mapping.external_user_id = external_user_id
+                            if rotation_payload is not None:
+                                job.payload = rotation_payload
                         mapping.last_synced_configs = original_payload.get("configs", [])
                         mapping.status = "active"
                         mapping.last_synced_at = dt.now(UTC)

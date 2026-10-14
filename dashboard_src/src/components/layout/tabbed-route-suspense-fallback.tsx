@@ -1,4 +1,4 @@
-import { showLegacyNativeInfraInNav } from '@/constants/oc-product-ui'
+import { filterOcSettingsTabs, showLegacyNativeInfraInNav } from '@/constants/oc-product-ui'
 import { Spinner } from '@/components/common/spinner'
 import { LoadingSpinner } from '@/components/common/loading-spinner'
 import PageHeader from '@/components/layout/page-header'
@@ -43,7 +43,7 @@ const NODES_TABS: TabDef[] = [
   { id: 'nodes.logs.title', labelKey: 'nodes.logs.title', icon: Logs, url: '/nodes/logs' },
 ]
 
-const SETTINGS_SUDO_TABS: TabDef[] = [
+const SETTINGS_SUDO_TABS: TabDef[] = filterOcSettingsTabs([
   { id: 'general', labelKey: 'settings.general.title', icon: SettingsIcon, url: '/settings/general' },
   { id: 'notifications', labelKey: 'settings.notifications.title', icon: Bell, url: '/settings/notifications' },
   { id: 'subscriptions', labelKey: 'settings.subscriptions.title', icon: ListTodo, url: '/settings/subscriptions' },
@@ -51,7 +51,7 @@ const SETTINGS_SUDO_TABS: TabDef[] = [
   { id: 'webhook', labelKey: 'settings.webhook.title', icon: Webhook, url: '/settings/webhook' },
   { id: 'cleanup', labelKey: 'settings.cleanup.title', icon: Database, url: '/settings/cleanup' },
   { id: 'theme', labelKey: 'theme.title', icon: Palette, url: '/settings/theme' },
-]
+])
 
 const SETTINGS_NON_SUDO_TABS: TabDef[] = [{ id: 'theme', labelKey: 'theme.title', icon: Palette, url: '/settings/theme' }]
 
