@@ -12,6 +12,7 @@ import {
   Calendar,
   Cpu,
   Database,
+  Fingerprint,
   FileCode2,
   FileUser,
   Group,
@@ -43,15 +44,16 @@ const NODES_TABS: TabDef[] = [
   { id: 'nodes.logs.title', labelKey: 'nodes.logs.title', icon: Logs, url: '/nodes/logs' },
 ]
 
-const SETTINGS_SUDO_TABS: TabDef[] = filterOcSettingsTabs([
+const SETTINGS_SUDO_TAB_DEFS: TabDef[] = [
   { id: 'general', labelKey: 'settings.general.title', icon: SettingsIcon, url: '/settings/general' },
   { id: 'notifications', labelKey: 'settings.notifications.title', icon: Bell, url: '/settings/notifications' },
   { id: 'subscriptions', labelKey: 'settings.subscriptions.title', icon: ListTodo, url: '/settings/subscriptions' },
+  { id: 'hwid', labelKey: 'settings.hwid.title', icon: Fingerprint, url: '/settings/hwid' },
   { id: 'telegram', labelKey: 'settings.telegram.title', icon: Send, url: '/settings/telegram' },
   { id: 'webhook', labelKey: 'settings.webhook.title', icon: Webhook, url: '/settings/webhook' },
   { id: 'cleanup', labelKey: 'settings.cleanup.title', icon: Database, url: '/settings/cleanup' },
   { id: 'theme', labelKey: 'theme.title', icon: Palette, url: '/settings/theme' },
-])
+]
 
 const SETTINGS_NON_SUDO_TABS: TabDef[] = [{ id: 'theme', labelKey: 'theme.title', icon: Palette, url: '/settings/theme' }]
 
@@ -173,7 +175,8 @@ function NodesTabbedFallback({ pathname }: { pathname: string }) {
 
 function SettingsTabbedFallback({ pathname, isSudo }: { pathname: string; isSudo: boolean }) {
   const { t } = useTranslation()
-  const tabs = isSudo ? SETTINGS_SUDO_TABS : SETTINGS_NON_SUDO_TABS
+  const { admin } = useAdmin()
+  const tabs = isSudo ? filterOcSettingsTabs(SETTINGS_SUDO_TAB_DEFS, admin) : SETTINGS_NON_SUDO_TABS
   const activeId = settingsActiveTabId(pathname, tabs)
   return (
     <div className="flex w-full flex-col items-start gap-0">

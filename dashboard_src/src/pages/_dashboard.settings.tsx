@@ -61,16 +61,14 @@ export default function Settings() {
   const { admin } = useAdmin()
   const canUpdateSettings = hasPermission(admin, 'settings', 'update')
   const canReadSettings = hasPermission(admin, 'settings', 'read')
-  const canReadGeneral = hasPermission(admin, 'settings', 'read_general')
-  const tabs = filterOcSettingsTabs(allTabs).filter(tab => {
+  const tabs = filterOcSettingsTabs(allTabs, admin).filter(tab => {
     if (tab.id === 'theme') return true
-    if (tab.id === 'general') return canReadGeneral || canReadSettings
     return canReadSettings
   })
 
   // Derive activeTab from current location instead of state
   const currentTab = tabs.find(tab => location.pathname === tab.url)
-  const activeTab = currentTab?.id || (canReadGeneral ? 'general' : 'theme')
+  const activeTab = currentTab?.id || (canReadSettings ? 'subscriptions' : 'theme')
 
   const queryClient = useQueryClient()
 
@@ -151,7 +149,7 @@ export default function Settings() {
   // Wrapper function to filter data based on active tab (only for sudo admins)
   const handleUpdateSettings = useCallback(
     async (data: any) => {
-      if (!canReadSettings && !canReadGeneral) return
+      if (!canReadSettings) return
 
       let filteredData: any = {}
 
@@ -208,7 +206,7 @@ export default function Settings() {
 
       await modifySettingsAsync(filteredData)
     },
-    [canReadSettings, canReadGeneral, activeTab, modifySettingsAsync],
+    [canReadSettings, activeTab, modifySettingsAsync],
   )
 
   // Memoize context value to ensure stability during HMR
@@ -220,7 +218,7 @@ export default function Settings() {
       updateSettings: canUpdateSettings ? handleUpdateSettings : async () => {},
       isSaving: canUpdateSettings ? isSaving : false,
     }),
-    [canReadSettings, canReadGeneral, settings, isLoading, error, isSaving, handleUpdateSettings],
+    [canReadSettings, settings, isLoading, error, isSaving, handleUpdateSettings],
   )
 
   // Always render the provider to ensure context is available for child routes

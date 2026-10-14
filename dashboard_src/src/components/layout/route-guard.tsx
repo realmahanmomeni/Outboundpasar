@@ -1,9 +1,9 @@
 import { useAdmin } from '@/hooks/use-admin'
 import {
-  isHiddenAlertingSettingsRoute,
+  isHiddenSettingsRoute,
   isLegacyNativeInfraRoute,
-  ocAlertingSettingsFallbackRoute,
   ocPanelFallbackRoute,
+  ocSettingsFallbackRoute,
 } from '@/constants/oc-product-ui'
 import { canAccessRoute, canReadResourcePage, firstAllowedRoute, hasPermission } from '@/utils/rbac'
 import { useEffect, useRef } from 'react'
@@ -28,18 +28,11 @@ export default function RouteGuard({ children }: { children: React.ReactNode }) 
       return
     }
 
-    if (isHiddenAlertingSettingsRoute(location.pathname)) {
+    if (isHiddenSettingsRoute(location.pathname, admin)) {
       if (hasNavigatedRef.current) return
       hasNavigatedRef.current = true
       const canReadSettings = hasPermission(admin, 'settings', 'read')
-      const canReadGeneral = hasPermission(admin, 'settings', 'read_general')
-      navigate(
-        ocAlertingSettingsFallbackRoute({
-          canReadSettings,
-          canReadGeneral,
-        }),
-        { replace: true },
-      )
+      navigate(ocSettingsFallbackRoute({ canReadSettings }), { replace: true })
       return
     }
 

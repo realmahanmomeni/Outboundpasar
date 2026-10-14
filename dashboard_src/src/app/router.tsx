@@ -8,12 +8,8 @@ import { LoadingSpinner } from '@/components/common/loading-spinner'
 import { RouteErrorPage } from '@/components/layout/error-page'
 import { TabbedRouteSuspenseFallback } from '@/components/layout/tabbed-route-suspense-fallback'
 import { lazyWithChunkRecovery } from '@/utils/chunk-recovery'
-import {
-  hideAlertingSettingsInNav,
-  ocAlertingSettingsFallbackRoute,
-  ocPanelFallbackRoute,
-  showLegacyNativeInfraInNav,
-} from '@/constants/oc-product-ui'
+import { ocPanelFallbackRoute, ocSettingsFallbackRoute, showLegacyNativeInfraInNav } from '@/constants/oc-product-ui'
+import { isPlatformOwner } from '@/utils/admin-session'
 import { isAuthenticationError } from '@/utils/error-utils'
 // Replace direct imports with lazy imports for route-level components
 const CoresLayout = lazyWithChunkRecovery(() => import('@/pages/_dashboard.nodes.cores'))
@@ -43,7 +39,6 @@ const NodeLogs = lazyWithChunkRecovery(() => import('../pages/_dashboard.nodes.l
 const NodeWireGuard = lazyWithChunkRecovery(() => import('../pages/_dashboard.nodes.wireguard'))
 const Settings = lazyWithChunkRecovery(() => import('../pages/_dashboard.settings'))
 const CleanupSettings = lazyWithChunkRecovery(() => import('../pages/_dashboard.settings.cleanup'))
-const GeneralSettings = lazyWithChunkRecovery(() => import('../pages/_dashboard.settings.general'))
 const HwidSettings = lazyWithChunkRecovery(() => import('../pages/_dashboard.settings.hwid'))
 const NotificationSettings = lazyWithChunkRecovery(() => import('../pages/_dashboard.settings.notifications'))
 const SubscriptionSettings = lazyWithChunkRecovery(() => import('../pages/_dashboard.settings.subscriptions'))
@@ -62,13 +57,8 @@ const Login = lazyWithChunkRecovery(() => import('../pages/login'))
 // Component to handle default settings routing based on user permissions
 function SettingsIndex() {
   const { admin } = useAdmin()
-  const canReadGeneral = hasPermission(admin, 'settings', 'read_general')
   const canReadSettings = hasPermission(admin, 'settings', 'read')
-  const defaultPath = canReadGeneral
-    ? '/settings/general'
-    : canReadSettings
-      ? '/settings/subscriptions'
-      : '/settings/theme'
+  const defaultPath = ocSettingsFallbackRoute({ canReadSettings })
 
   return <Navigate to={defaultPath} replace />
 }
@@ -101,24 +91,24 @@ function OcPanelNavigate() {
   return <Navigate to={ocPanelFallbackRoute()} replace />
 }
 
-function OcAlertingSettingsNavigate() {
+function SettingsVisibilityNavigate() {
   const { admin } = useAdmin()
   const canReadSettings = hasPermission(admin, 'settings', 'read')
-  const canReadGeneral = hasPermission(admin, 'settings', 'read_general')
-  return (
-    <Navigate
-      to={ocAlertingSettingsFallbackRoute({
-        canReadSettings,
-        canReadGeneral,
-      })}
-      replace
-    />
-  )
+  return <Navigate to={ocSettingsFallbackRoute({ canReadSettings })} replace />
+}
+
+function GloballyHiddenSettingsRoute() {
+  return <SettingsVisibilityNavigate />
 }
 
 function AlertingSettingsRoute({ children }: { children: React.ReactNode }) {
-  if (hideAlertingSettingsInNav()) {
-    return <OcAlertingSettingsNavigate />
+  return <GloballyHiddenSettingsRoute />
+}
+
+function OwnerOnlySettingsRoute({ children }: { children: React.ReactNode }) {
+  const { admin } = useAdmin()
+  if (!isPlatformOwner(admin)) {
+    return <SettingsVisibilityNavigate />
   }
   return <>{children}</>
 }
@@ -370,11 +360,7 @@ export const router = createHashRouter([
           },
           {
             path: '/settings/general',
-            element: (
-              <Suspense fallback={<LoadingSpinner />}>
-                <GeneralSettings />
-              </Suspense>
-            ),
+            element: <GloballyHiddenSettingsRoute />,
           },
           {
             path: '/settings/notifications',
@@ -405,9 +391,11 @@ export const router = createHashRouter([
           {
             path: '/settings/hwid',
             element: (
-              <Suspense fallback={<LoadingSpinner />}>
-                <HwidSettings />
-              </Suspense>
+              <OwnerOnlySettingsRoute>
+                <Suspense fallback={<LoadingSpinner />}>
+                  <HwidSettings />
+                </Suspense>
+              </OwnerOnlySettingsRoute>
             ),
           },
           {
@@ -423,11 +411,11 @@ export const router = createHashRouter([
           {
             path: '/settings/webhook',
             element: (
-              <AlertingSettingsRoute>
+              <OwnerOnlySettingsRoute>
                 <Suspense fallback={<LoadingSpinner />}>
                   <WebhookSettings />
                 </Suspense>
-              </AlertingSettingsRoute>
+              </OwnerOnlySettingsRoute>
             ),
           },
           {

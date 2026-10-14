@@ -2,6 +2,9 @@
  * PasarGuard 4.x product UI: OC / panel-focused dashboard.
  * Legacy native infrastructure pages remain in the codebase but are not user-facing.
  */
+import type { AdminDetails } from '@/service/api'
+import { isPlatformOwner } from '@/utils/admin-session'
+
 export const LEGACY_NATIVE_INFRA_UI_ENABLED = false
 
 export function showLegacyNativeInfraInNav(): boolean {
@@ -22,34 +25,69 @@ export function ocPanelFallbackRoute(): '/panels' {
   return '/panels'
 }
 
-/** Outbound Center: hide PasarGuard notification / admin-bot Telegram / webhook settings UI. */
-export const OC_HIDE_ALERTING_SETTINGS_UI = true
+/** Phase 2: hidden for every role (backend settings unchanged). */
+const SETTINGS_HIDDEN_FOR_ALL_TAB_IDS = new Set(['general', 'notifications', 'telegram'])
 
-const OC_HIDDEN_ALERTING_SETTINGS_TAB_IDS = new Set(['notifications', 'telegram', 'webhook'])
+/** Phase 2: platform owner only in the dashboard UI. */
+const SETTINGS_OWNER_ONLY_TAB_IDS = new Set(['hwid', 'webhook'])
 
-const OC_HIDDEN_ALERTING_SETTINGS_PATHS = ['/settings/notifications', '/settings/telegram', '/settings/webhook'] as const
+const SETTINGS_HIDDEN_FOR_ALL_PATHS = ['/settings/general', '/settings/notifications', '/settings/telegram'] as const
 
+const SETTINGS_OWNER_ONLY_PATHS = ['/settings/hwid', '/settings/webhook'] as const
+
+export function isSettingsTabVisible(tabId: string, admin: AdminDetails | null | undefined): boolean {
+  if (SETTINGS_HIDDEN_FOR_ALL_TAB_IDS.has(tabId)) return false
+  if (SETTINGS_OWNER_ONLY_TAB_IDS.has(tabId)) return isPlatformOwner(admin)
+  return true
+}
+
+function matchesSettingsPath(pathname: string, base: string): boolean {
+  return pathname === base || pathname.startsWith(`${base}/`)
+}
+
+export function isHiddenSettingsRoute(pathname: string, admin: AdminDetails | null | undefined): boolean {
+  if (SETTINGS_HIDDEN_FOR_ALL_PATHS.some(path => matchesSettingsPath(pathname, path))) return true
+  if (SETTINGS_OWNER_ONLY_PATHS.some(path => matchesSettingsPath(pathname, path))) {
+    return !isPlatformOwner(admin)
+  }
+  return false
+}
+
+/** @deprecated Use isHiddenSettingsRoute(pathname, admin) */
 export function hideAlertingSettingsInNav(): boolean {
-  return OC_HIDE_ALERTING_SETTINGS_UI
+  return true
 }
 
+/** Notifications + Telegram only (always hidden in OC product UI). */
 export function isHiddenAlertingSettingsRoute(pathname: string): boolean {
-  if (!OC_HIDE_ALERTING_SETTINGS_UI) return false
-  return OC_HIDDEN_ALERTING_SETTINGS_PATHS.some(path => pathname === path || pathname.startsWith(`${path}/`))
+  return SETTINGS_HIDDEN_FOR_ALL_PATHS.filter(p => p !== '/settings/general').some(path =>
+    matchesSettingsPath(pathname, path),
+  )
 }
 
-export function filterOcSettingsTabs<T extends { id: string }>(tabs: readonly T[]): T[] {
-  if (!OC_HIDE_ALERTING_SETTINGS_UI) return [...tabs]
-  return tabs.filter(tab => !OC_HIDDEN_ALERTING_SETTINGS_TAB_IDS.has(tab.id))
+export function filterOcSettingsTabs<T extends { id: string }>(
+  tabs: readonly T[],
+  admin?: AdminDetails | null,
+): T[] {
+  return tabs.filter(tab => isSettingsTabVisible(tab.id, admin))
 }
 
-export function filterOcSettingsNavItems<T extends { url: string }>(items: readonly T[]): T[] {
-  if (!OC_HIDE_ALERTING_SETTINGS_UI) return [...items]
-  return items.filter(item => !isHiddenAlertingSettingsRoute(item.url))
+export function filterOcSettingsNavItems<T extends { url: string }>(
+  items: readonly T[],
+  admin?: AdminDetails | null,
+): T[] {
+  return items.filter(item => !isHiddenSettingsRoute(item.url, admin))
 }
 
-export function ocAlertingSettingsFallbackRoute(options: { canReadSettings: boolean; canReadGeneral: boolean }): string {
+export function ocSettingsFallbackRoute(options: { canReadSettings: boolean }): string {
   if (options.canReadSettings) return '/settings/subscriptions'
-  if (options.canReadGeneral) return '/settings/general'
   return '/settings/theme'
+}
+
+/** @deprecated Use ocSettingsFallbackRoute */
+export function ocAlertingSettingsFallbackRoute(options: {
+  canReadSettings: boolean
+  canReadGeneral?: boolean
+}): string {
+  return ocSettingsFallbackRoute({ canReadSettings: options.canReadSettings })
 }

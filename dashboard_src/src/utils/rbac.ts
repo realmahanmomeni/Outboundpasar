@@ -101,7 +101,11 @@ export const canAccessRoute = (admin: AdminDetails | null | undefined, pathname:
   if (pathname.startsWith('/nodes/logs')) return hasPermission(admin, 'nodes', 'logs')
   if (pathname === '/nodes') return canReadResourcePage(admin, 'nodes')
   if (pathname.startsWith('/nodes')) return canReadResourcePage(admin, 'nodes')
-  if (pathname.startsWith('/settings/general')) return hasPermission(admin, 'settings', 'read_general')
+  if (pathname.startsWith('/settings/general')) return false
+  if (pathname.startsWith('/settings/notifications') || pathname.startsWith('/settings/telegram')) return false
+  if (pathname.startsWith('/settings/hwid') || pathname.startsWith('/settings/webhook')) {
+    return isPlatformOwner(admin) && hasPermission(admin, 'settings', 'read')
+  }
   if (pathname.startsWith('/settings')) {
     if (pathname === '/settings' || pathname.startsWith('/settings/theme')) return true
     return hasPermission(admin, 'settings', 'read')
