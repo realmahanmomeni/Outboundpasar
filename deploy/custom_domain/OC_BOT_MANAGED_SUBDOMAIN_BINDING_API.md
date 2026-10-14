@@ -1,73 +1,91 @@
-# Outbound Center bot → PasarGuard managed subdomain binding API
+# Outbound Center bot → PasarGuard managed subdomain binding API (hardened)
 
-When a user chooses **Connect to central panel** in the Outbound Center Telegram bot, the bot must register the subdomain claim on PasarGuard **before** the admin types the label in Settings.
+## Trust model
 
-## Authentication
+- **Service identity:** `X-Integration-Token` (shared integration secret configured on both sides).
+- **Account identity:** `X-OC-Connection-Token` (per-tenant credential issued when Telegram connects). PasarGuard resolves `tenant_id`, `workspace_id`, and `binding_admin_id` **only** from this token — never from JSON body fields.
+- **Request integrity (production):** HMAC-SHA256 over `timestamp`, HTTP method, path, and SHA-256 of the raw body.
 
-| Header | Value |
-|--------|--------|
-| `X-Integration-Token` | Same shared secret as other PasarGuard ↔ Outbound Center integration calls |
+Body fields `tenant_id`, `workspace_id`, `binding_admin_id`, and `oc_account_id` are **not accepted** (removed from contract).
 
-Browser clients and end users must never receive this token.
+## Headers
 
-## Create or refresh claim (idempotent)
+| Header | Required | Purpose |
+|--------|----------|---------|
+| `X-Integration-Token` | Yes | Integration service authentication |
+| `X-OC-Connection-Token` | Yes | Maps to active `TenantTelegramConnection` |
+| `X-PG-Timestamp` | Yes (prod) | Unix seconds; max skew `MANAGED_SUBDOMAIN_BOT_REQUEST_MAX_AGE_SECONDS` (default 300) |
+| `X-PG-Nonce` | Yes (prod) | Unique per request; replay rejected |
+| `X-PG-Signature` | Yes (prod) | HMAC-SHA256 hex of canonical payload |
+
+Canonical signing payload (UTF-8 lines):
+
+```
+{timestamp}
+{METHOD}
+{path}
+{sha256_hex(raw_body)}
+```
+
+Secret: `MANAGED_SUBDOMAIN_BOT_HMAC_SECRET` (rotate by dual-write / overlap window).
+
+In `TESTING=true` without HMAC secret, signature checks are skipped (development only).
+
+## Create / refresh claim
 
 `POST /api/integration/managed-subdomains/bindings`
 
-### Request body
-
 ```json
 {
-  "tenant_id": 1,
-  "workspace_id": 2,
-  "binding_admin_id": 3,
   "label": "alpha",
   "oc_subdomain_id": "stable-id-from-oc-registry",
-  "oc_account_id": 42,
   "idempotency_key": "optional-unique-key"
 }
 ```
 
-- `label` — single DNS label only (not a full hostname).
-- `binding_admin_id` — PasarGuard admin who owns the workspace connection (same scope as Telegram OC binding).
-- `idempotency_key` — when provided, repeats return the same row without duplicating.
+### Idempotency
 
-### Success `201`
+| Case | HTTP | Behavior |
+|------|------|----------|
+| Same `idempotency_key` | 200 | Returns existing row |
+| Same label + same workspace | 200/201 | Refreshes `pending_claim` |
+| Label owned by another workspace | 409 | No transfer |
+| Revoked label, different workspace | 409 | No silent transfer |
 
-```json
-{
-  "id": 10,
-  "label": "alpha",
-  "fqdn": "alpha.outboundcenter.ir",
-  "status": "pending_claim",
-  "workspace_id": 2,
-  "binding_admin_id": 3
-}
-```
-
-### Errors
-
-| Status | Meaning |
-|--------|---------|
-| `401` / `403` | Missing or invalid integration token |
-| `409` | Label already bound to a different workspace |
-| `422` | Invalid label |
-
-## Revoke claim
+## Revoke
 
 `DELETE /api/integration/managed-subdomains/bindings/{label}`
 
-- Marks the bot binding `revoked`.
-- Disables the workspace managed subscription hostname if it was active for that FQDN.
+- Same auth headers; sign empty body.
+- Idempotent: already revoked → `204`.
+- Wrong workspace → `403`.
 
-## Panel admin confirmation (browser)
+## Panel admin confirmation
 
-After the bot creates `pending_claim`, the admin opens **Settings → Subscriptions** and enters `alpha` in `[ x ].{MANAGED_SUBSCRIPTION_BASE_DOMAIN}`.
+`PUT /api/custom-domains/managed/settings` with `{ "label": "alpha" }` or `{ "label": null }`.
 
-`PUT /api/custom-domains/managed/settings` with `{ "label": "alpha" }` succeeds only when a matching `pending_claim` exists for that workspace and admin.
+Server matches `pending_claim` for **derived** workspace/admin only.
+
+## Ownership vs serving
+
+| State | Meaning |
+|-------|---------|
+| `ownership_linked` | Bot claim exists or domain row linked |
+| `serving_ready` | Public ingress flag + routable checks pass |
+
+Subscription URLs use **only** `serving_ready`. Otherwise default `url_prefix`.
 
 ## Configuration
 
-| Variable | Purpose |
+| Variable | Default |
 |----------|---------|
-| `MANAGED_SUBSCRIPTION_BASE_DOMAIN` | Global suffix (default `outboundcenter.ir`) |
+| `MANAGED_SUBSCRIPTION_BASE_DOMAIN` | `outboundcenter.ir` |
+| `MANAGED_SUBDOMAIN_BOT_HMAC_SECRET` | (empty; required in production) |
+| `CUSTOM_DOMAIN_INGRESS_PUBLIC_HTTPS_READY` | `false` |
+
+## Credential rotation
+
+1. Generate new integration token / HMAC secret on PasarGuard.
+2. Update Outbound Center bot configuration.
+3. Revoke old secret after overlap window.
+4. Never log tokens, secrets, or connection credentials.

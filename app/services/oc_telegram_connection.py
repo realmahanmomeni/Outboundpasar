@@ -144,6 +144,7 @@ async def activate_connection(
     telegram_user_id: int,
     oc_account_id: int,
     connection_token_encrypted: str | None = None,
+    connection_token_plain: str | None = None,
     binding_admin_id: int | None = None,
 ) -> TenantTelegramConnection:
     other = await db.scalar(
@@ -181,6 +182,10 @@ async def activate_connection(
     pending.pending_bot_url = None
     if connection_token_encrypted:
         pending.oc_connection_token_encrypted = connection_token_encrypted
+        if connection_token_plain:
+            from app.services.oc_connection_token_lookup import store_connection_token_digest
+
+            await store_connection_token_digest(pending, connection_token_plain)
     await db.flush()
     return pending
 

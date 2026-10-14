@@ -43,6 +43,7 @@ class TenantTelegramConnection(Base, CreatedAtUTCMixin):
     # Scopes every panel/user call to this connection's OC account. Kept after a local
     # revoke so queued user deletions can still be authorised on OC.
     oc_connection_token_encrypted: Mapped[str | None] = mapped_column(String(2048), nullable=True, default=None)
+    oc_connection_token_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None, index=True)
     # Telegram deep link returned by OC when the intent was registered.
     pending_bot_url: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)
     updated_at: Mapped[dt] = mapped_column(

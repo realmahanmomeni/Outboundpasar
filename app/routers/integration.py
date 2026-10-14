@@ -259,6 +259,7 @@ async def telegram_connection_confirm(
         telegram_user_id=int(verify_data["telegram_id"]),
         oc_account_id=int(verify_data["account_id"]),
         connection_token_encrypted=await encrypt_connection_token(connection_token),
+        connection_token_plain=connection_token,
         binding_admin_id=binding_admin_id,
     )
     await db.commit()

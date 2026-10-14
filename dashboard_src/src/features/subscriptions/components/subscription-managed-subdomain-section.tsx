@@ -13,6 +13,8 @@ type ManagedSubdomainSettings = {
   fqdn: string | null
   pending_claim_label: string | null
   state: string | null
+  ownership_linked?: boolean
+  serving_ready?: boolean
 }
 
 export function SubscriptionManagedSubdomainSection() {
@@ -88,7 +90,14 @@ export function SubscriptionManagedSubdomainSection() {
 
       {activeFqdn && (
         <p className="text-muted-foreground text-xs font-mono sm:text-sm">
-          {t('settings.subscriptions.managedSubdomain.active', { defaultValue: 'Active:' })} https://{activeFqdn}/…
+          {t('settings.subscriptions.managedSubdomain.active', { defaultValue: 'Serving on:' })} https://{activeFqdn}/…
+        </p>
+      )}
+      {!activeFqdn && pendingClaim && (
+        <p className="text-muted-foreground text-xs sm:text-sm">
+          {t('settings.subscriptions.managedSubdomain.notServingYet', {
+            defaultValue: 'Linked in Outbound Center; subscription links still use the default domain until public HTTPS ingress is ready.',
+          })}
         </p>
       )}
 

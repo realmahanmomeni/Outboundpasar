@@ -10,6 +10,33 @@ from app.services.custom_domain.normalization import DomainValidationError
 from app.services.custom_domain.normalization import _LABEL_RE
 from config import custom_domain_settings
 
+_RESERVED_MANAGED_LABELS = frozenset(
+    {
+        "www",
+        "api",
+        "admin",
+        "mail",
+        "smtp",
+        "imap",
+        "ftp",
+        "ns",
+        "ns1",
+        "ns2",
+        "mx",
+        "cdn",
+        "static",
+        "assets",
+        "status",
+        "dashboard",
+        "panel",
+        "app",
+        "dev",
+        "staging",
+        "test",
+        "localhost",
+    }
+)
+
 
 class SubscriptionDomainKind(StrEnum):
     arbitrary = "arbitrary"
@@ -75,6 +102,8 @@ def normalize_managed_subdomain_label(raw: str) -> str:
         raise ManagedSubdomainValidationError("Wildcard subdomains are not supported")
     if not _LABEL_RE.match(candidate):
         raise ManagedSubdomainValidationError("Subdomain label contains invalid characters or length")
+    if candidate in _RESERVED_MANAGED_LABELS:
+        raise ManagedSubdomainValidationError("This subdomain label is reserved")
     return candidate
 
 

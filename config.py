@@ -212,6 +212,15 @@ class CustomDomainSettings(EnvSettings):
     oc_managed_subdomain_revalidate_seconds: int = Field(
         default=300, validation_alias="OC_MANAGED_SUBDOMAIN_REVALIDATE_SECONDS"
     )
+    managed_subdomain_bot_hmac_secret: str = Field(
+        default="", validation_alias="MANAGED_SUBDOMAIN_BOT_HMAC_SECRET"
+    )
+    managed_subdomain_bot_request_max_age_seconds: int = Field(
+        default=300, validation_alias="MANAGED_SUBDOMAIN_BOT_REQUEST_MAX_AGE_SECONDS"
+    )
+    managed_subdomain_bot_nonce_ttl_seconds: int = Field(
+        default=600, validation_alias="MANAGED_SUBDOMAIN_BOT_NONCE_TTL_SECONDS"
+    )
     dns_enabled: bool = Field(default=False, validation_alias="CUSTOM_DOMAIN_DNS_ENABLED")
     dns_nameservers: str = Field(default="", validation_alias="CUSTOM_DOMAIN_DNS_NAMESERVERS")
     dns_timeout_seconds: float = Field(default=5.0, validation_alias="CUSTOM_DOMAIN_DNS_TIMEOUT_SECONDS")

@@ -105,9 +105,19 @@ async def upsert_bot_binding(
         if existing is not None:
             return existing
 
-    by_label = await get_binding_by_label(db, label)
+    locked = (
+        await db.execute(
+            select(ManagedSubdomainBotBinding)
+            .where(ManagedSubdomainBotBinding.label == label)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    by_label = locked
     if by_label is not None:
-        if by_label.workspace_id != workspace_id:
+        if by_label.status == ManagedSubdomainBotBindingStatus.revoked.value:
+            if by_label.workspace_id != workspace_id:
+                raise ValueError("label_conflict")
+        elif by_label.workspace_id != workspace_id:
             raise ValueError("label_conflict")
         by_label.tenant_id = tenant_id
         by_label.binding_admin_id = binding_admin_id

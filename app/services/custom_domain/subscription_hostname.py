@@ -5,8 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import SubscriptionCustomDomain, SubscriptionCustomDomainState, SubscriptionDomainKind
-from app.services.custom_domain.ssl_lifecycle import domain_is_routable_for_subscriptions
-from config import custom_domain_settings
+from app.services.custom_domain.serving_readiness import managed_subdomain_serving_ready
 
 
 async def active_managed_subscription_hostname(
@@ -26,10 +25,7 @@ async def active_managed_subscription_hostname(
     ).scalar_one_or_none()
     if row is None:
         return None
-    if not await domain_is_routable_for_subscriptions(
-        row,
-        public_https_ready=custom_domain_settings.ingress_public_https_ready,
-    ):
+    if not await managed_subdomain_serving_ready(db, row):
         return None
     return row.hostname_normalized
 

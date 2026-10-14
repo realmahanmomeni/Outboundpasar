@@ -1169,6 +1169,13 @@ class ManagedSubdomainBotBindingStatus(str, Enum):
     revoked = "revoked"
 
 
+class IntegrationApiNonce(Base):
+    __tablename__ = "integration_api_nonces"
+
+    nonce_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[dt] = mapped_column(DateTime(timezone=True))
+
+
 class ManagedSubdomainBotBinding(Base, CreatedAtUTCMixin):
     """Pre-registered managed subdomain from Outbound Center bot (awaiting panel admin confirmation)."""
 

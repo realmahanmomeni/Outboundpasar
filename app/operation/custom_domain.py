@@ -110,27 +110,32 @@ class CustomDomainOperation(BaseOperation):
     async def get_managed_subdomain_settings(
         self, db: AsyncSession, admin: AdminDetails
     ) -> ManagedSubdomainSettingsResponse:
+        from app.services.custom_domain.serving_readiness import workspace_managed_subdomain_status
+
         _, workspace_id = await self._workspace_scope(db, admin)
         binding_admin_id = await self._binding_admin_id(db, admin)
         pending = await get_pending_binding_for_workspace_admin(
             db, workspace_id=workspace_id, binding_admin_id=binding_admin_id
         )
         domain = await get_managed_domain_for_workspace(db, workspace_id)
-        label = None
-        fqdn = None
+        ownership_linked, serving_ready, label, fqdn = await workspace_managed_subdomain_status(
+            db,
+            workspace_id=workspace_id,
+            binding_admin_id=binding_admin_id,
+        )
         state = None
         if domain is not None:
-            label = domain.oc_subdomain_label or domain.hostname_normalized.split(".", 1)[0]
-            fqdn = domain.hostname_normalized
             state = str(domain.state.value if hasattr(domain.state, "value") else domain.state)
-        elif pending is not None:
-            label = None
+        display_label = label if serving_ready else None
+        display_fqdn = fqdn if serving_ready else None
         return ManagedSubdomainSettingsResponse(
             domain_suffix=managed_domain_suffix(),
-            label=label,
-            fqdn=fqdn,
+            label=display_label,
+            fqdn=display_fqdn,
             pending_claim_label=pending.label if pending else None,
             state=state,
+            ownership_linked=ownership_linked,
+            serving_ready=serving_ready,
         )
 
     async def update_managed_subdomain_settings(
