@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
+from app.services.custom_domain.dns_errors import DnsResolutionError
 from app.services.custom_domain.normalization import verification_txt_record_name, verification_txt_record_value
 
 
@@ -19,15 +20,45 @@ def set_dns_txt_resolver(resolver: DnsTxtResolver | None) -> None:
     _dns_resolver = resolver
 
 
+def get_dns_txt_resolver() -> DnsTxtResolver | None:
+    return _dns_resolver
+
+
+def _configured_production_resolver() -> DnsTxtResolver | None:
+    from config import custom_domain_settings, runtime_settings
+
+    if runtime_settings.testing or not custom_domain_settings.dns_enabled:
+        return None
+    from app.services.custom_domain.dns_resolver import build_production_dns_txt_resolver
+
+    return build_production_dns_txt_resolver(
+        custom_domain_settings.dns_timeout_seconds,
+        custom_domain_settings.dns_nameservers,
+    )
+
+
 async def lookup_txt_records(name: str) -> list[str]:
-    if _dns_resolver is None:
+    resolver = _dns_resolver or _configured_production_resolver()
+    if resolver is None:
         return []
-    return await _dns_resolver.lookup_txt(name)
+    return await resolver.lookup_txt(name)
+
+
+def _normalize_txt_values(values: list[str]) -> set[str]:
+    normalized: set[str] = set()
+    for value in values:
+        stripped = value.strip()
+        if stripped.startswith('"') and stripped.endswith('"') and len(stripped) >= 2:
+            stripped = stripped[1:-1]
+        normalized.add(stripped)
+    return normalized
 
 
 async def dns_verification_matches(hostname_normalized: str, token: str) -> bool:
     record_name = verification_txt_record_name(hostname_normalized)
     expected = verification_txt_record_value(token)
-    values = await lookup_txt_records(record_name)
-    normalized = {v.strip().strip('"') for v in values}
-    return expected in normalized
+    try:
+        values = await lookup_txt_records(record_name)
+    except DnsResolutionError:
+        return False
+    return expected in _normalize_txt_values(values)

@@ -1143,9 +1143,11 @@ class SubscriptionCustomDomain(Base, CreatedAtUTCMixin):
     verification_token_hash: Mapped[str | None] = mapped_column(String(64), default=None)
     verification_expires_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
     verified_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
-    certificate_ref: Mapped[str | None] = mapped_column(String(64), default=None)
+    certificate_ref: Mapped[str | None] = mapped_column(String(128), default=None)
     certificate_not_after: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
     certificate_last_error: Mapped[str | None] = mapped_column(String(512), default=None)
+    certificate_issue_attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    certificate_issue_locked_until: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
     updated_at: Mapped[dt] = mapped_column(
         DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
     )

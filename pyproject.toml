@@ -42,6 +42,7 @@ dependencies = [
     "typer>=0.27.2",
     "pasarguard-node-bridge>=0.9.1",
     "nats-py>=2.15.0",
+    "dnspython>=2.7.0",
 ]
 
 [tool.ruff]

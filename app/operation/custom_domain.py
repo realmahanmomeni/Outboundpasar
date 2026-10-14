@@ -30,7 +30,7 @@ from app.services.custom_domain.normalization import (
     verification_txt_record_name,
     verification_txt_record_value,
 )
-from app.services.custom_domain.ssl_lifecycle import can_request_certificate, certificate_is_operational
+from app.services.custom_domain.ssl_lifecycle import can_request_certificate, get_certificate_provisioner
 from app.services.tenant_admin_scope import require_admin_tenant_id
 from app.services.workspace_scope import require_admin_workspace_id
 
@@ -168,6 +168,8 @@ class CustomDomainOperation(BaseOperation):
             await self.raise_error("Custom domain not found", 404)
         if not can_request_certificate(row.state):
             await self.raise_error("Certificate cannot be requested in the current state", 409)
+        row.certificate_issue_attempts = 0
+        row.certificate_issue_locked_until = None
         await set_domain_state(db, row, SubscriptionCustomDomainState.pending_certificate)
         await db.commit()
         await db.refresh(row)
@@ -178,6 +180,11 @@ class CustomDomainOperation(BaseOperation):
         row = await get_custom_domain_by_id(db, domain_id, workspace_id=workspace_id)
         if row is None:
             await self.raise_error("Custom domain not found", 404)
+        provisioner = get_certificate_provisioner()
+        try:
+            await provisioner.deprovision(row)
+        except Exception:
+            pass
         await set_domain_state(db, row, SubscriptionCustomDomainState.disabled)
         await db.commit()
         await db.refresh(row)
@@ -188,5 +195,10 @@ class CustomDomainOperation(BaseOperation):
         row = await get_custom_domain_by_id(db, domain_id, workspace_id=workspace_id)
         if row is None:
             await self.raise_error("Custom domain not found", 404)
+        provisioner = get_certificate_provisioner()
+        try:
+            await provisioner.deprovision(row)
+        except Exception:
+            pass
         await db.delete(row)
         await db.commit()

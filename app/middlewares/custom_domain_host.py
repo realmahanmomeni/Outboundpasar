@@ -8,6 +8,7 @@ from starlette.responses import JSONResponse, Response
 from app.db import GetDB
 from app.db.models import SubscriptionCustomDomainState
 from app.services.custom_domain.host_resolution import get_domain_by_hostname
+from app.services.custom_domain.ssl_lifecycle import certificate_is_operational
 from config import subscription_env_settings
 
 
@@ -32,7 +33,7 @@ class CustomDomainHostMiddleware(BaseHTTPMiddleware):
         if domain is None:
             return await call_next(request)
 
-        if domain.state == SubscriptionCustomDomainState.active:
+        if domain.state == SubscriptionCustomDomainState.active and certificate_is_operational(domain):
             request.state.subscription_custom_domain_workspace_id = domain.workspace_id
             if not _is_subscription_path(request.url.path):
                 return JSONResponse(status_code=404, content={"detail": "Not found"})

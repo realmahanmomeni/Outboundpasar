@@ -198,6 +198,20 @@ class UsageSettings(EnvSettings):
     )
 
 
+class CustomDomainSettings(EnvSettings):
+    dns_enabled: bool = Field(default=False, validation_alias="CUSTOM_DOMAIN_DNS_ENABLED")
+    dns_nameservers: str = Field(default="", validation_alias="CUSTOM_DOMAIN_DNS_NAMESERVERS")
+    dns_timeout_seconds: float = Field(default=5.0, validation_alias="CUSTOM_DOMAIN_DNS_TIMEOUT_SECONDS")
+    caddy_admin_url: str = Field(default="", validation_alias="CUSTOM_DOMAIN_CADDY_ADMIN_URL")
+    caddy_upstream_dial: str = Field(default="127.0.0.1:8000", validation_alias="CUSTOM_DOMAIN_CADDY_UPSTREAM_DIAL")
+    caddy_ask_secret: str = Field(default="", validation_alias="CUSTOM_DOMAIN_CADDY_ASK_SECRET")
+    certificate_max_attempts: int = Field(default=8, validation_alias="CUSTOM_DOMAIN_CERTIFICATE_MAX_ATTEMPTS")
+    certificate_retry_backoff_seconds: int = Field(
+        default=300, validation_alias="CUSTOM_DOMAIN_CERTIFICATE_RETRY_BACKOFF_SECONDS"
+    )
+    custom_domain_ssl_interval: int = Field(default=300, validation_alias="JOB_CUSTOM_DOMAIN_SSL_INTERVAL")
+
+
 class JobSettings(EnvSettings):
     core_health_check_interval: int = Field(default=10, validation_alias="JOB_CORE_HEALTH_CHECK_INTERVAL")
     record_node_usages_interval: int = Field(default=30, validation_alias="JOB_RECORD_NODE_USAGES_INTERVAL")
@@ -234,6 +248,7 @@ logging_settings = LoggingSettings()
 auth_settings = AuthSettings()
 usage_settings = UsageSettings()
 job_settings = JobSettings()
+custom_domain_settings = CustomDomainSettings()
 feature_settings = FeatureSettings()
 
 if not database_settings.is_postgresql:

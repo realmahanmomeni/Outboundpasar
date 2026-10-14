@@ -1,4 +1,4 @@
-"""Provider-neutral certificate lifecycle (local stub — no live ACME)."""
+"""Provider-neutral certificate lifecycle for custom subscription domains."""
 from __future__ import annotations
 
 import secrets
@@ -8,9 +8,24 @@ from datetime import UTC, datetime as dt, timedelta as td
 from app.db.models import SubscriptionCustomDomain, SubscriptionCustomDomainState
 
 
+class CertificateProvisionerError(Exception):
+    """Base error for certificate issuance; message is safe to store on the domain row."""
+
+
+class CertificateRateLimited(CertificateProvisionerError):
+    """Transient provider rate limit — scheduler may retry with backoff."""
+
+
+class CertificateProviderUnavailable(CertificateProvisionerError):
+    """Transient infrastructure outage — scheduler may retry with backoff."""
+
+
 class CertificateProvisioner:
     async def issue(self, domain: SubscriptionCustomDomain) -> tuple[str, dt]:
         raise NotImplementedError
+
+    async def deprovision(self, domain: SubscriptionCustomDomain) -> None:
+        return None
 
 
 class StubCertificateProvisioner(CertificateProvisioner):
@@ -53,5 +68,25 @@ def certificate_is_operational(domain: SubscriptionCustomDomain) -> bool:
     return not_after > dt.now(UTC)
 
 
+def domain_eligible_for_certificate_job(domain: SubscriptionCustomDomain) -> bool:
+    if domain.state not in {
+        SubscriptionCustomDomainState.pending_certificate,
+        SubscriptionCustomDomainState.renewal_pending,
+    }:
+        return False
+    if domain.verified_at is None:
+        return False
+    return True
+
+
 def new_certificate_job_nonce() -> str:
     return secrets.token_hex(16)
+
+
+def sanitize_certificate_error(exc: BaseException) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    lowered = message.lower()
+    for secret_hint in ("key", "token", "password", "secret", "credential", "private"):
+        if secret_hint in lowered:
+            return "certificate provider error"
+    return message[:512]

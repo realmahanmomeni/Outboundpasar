@@ -380,9 +380,12 @@ def create_app() -> FastAPI:
         import dashboard
         from app import telegram  # noqa: F401
         from app.routers import api_router
+        from app.routers import internal_custom_domain
+        from app.services.custom_domain import bootstrap as custom_domain_bootstrap  # noqa: F401
 
         dashboard.setup_dashboard(app)
         app.include_router(api_router)
+        app.include_router(internal_custom_domain.router)
 
     if runtime_settings.role.runs_node:
         from app.node import worker as node_worker  # noqa: F401
