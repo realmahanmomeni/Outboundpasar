@@ -281,21 +281,22 @@ const DashboardStatistics = ({ resourceData, usersData }: { resourceData: System
                     </span>
                   </div>
 
-                  {/* Incoming/Outgoing Details */}
-                  <div className="flex shrink-0 items-center gap-2 text-xs">
-                    <div className="bg-muted/50 flex items-center gap-1 rounded-md px-1.5 py-1 text-green-600 dark:text-green-400">
-                      <Download className="h-3 w-3" />
-                      <span dir="ltr" className="font-medium">
-                        {formatBytes(getIncomingBandwidth() || 0, 1)}
-                      </span>
+                  {!owner && (
+                    <div className="flex shrink-0 items-center gap-2 text-xs">
+                      <div className="bg-muted/50 flex items-center gap-1 rounded-md px-1.5 py-1 text-green-600 dark:text-green-400">
+                        <Download className="h-3 w-3" />
+                        <span dir="ltr" className="font-medium">
+                          {formatBytes(getIncomingBandwidth() || 0, 1)}
+                        </span>
+                      </div>
+                      <div className="bg-muted/50 flex items-center gap-1 rounded-md px-1.5 py-1 text-blue-600 dark:text-blue-400">
+                        <Upload className="h-3 w-3" />
+                        <span dir="ltr" className="font-medium">
+                          {formatBytes(getOutgoingBandwidth() || 0, 1)}
+                        </span>
+                      </div>
                     </div>
-                    <div className="bg-muted/50 flex items-center gap-1 rounded-md px-1.5 py-1 text-blue-600 dark:text-blue-400">
-                      <Upload className="h-3 w-3" />
-                      <span dir="ltr" className="font-medium">
-                        {formatBytes(getOutgoingBandwidth() || 0, 1)}
-                      </span>
-                    </div>
-                  </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
