@@ -9,9 +9,9 @@ from sqlalchemy import select
 
 from app.db import GetDB
 from app.db.crud.admin import build_admin_details
-from app.db.crud.panel_statistics import aggregate_panel_statistics
+from app.db.crud.panel_statistics import aggregate_panel_statistics, sum_mapping_traffic_in_scope
 from app.db.crud.workspace import create_workspace_for_administrator
-from app.db.models import Admin, AdminRole, Tenant, TenantStatus, User, UserStatus
+from app.db.models import Admin, AdminRole, System, Tenant, TenantStatus, User, UserStatus
 from app.db.models_oc import OCIntegration, OCUserMapping, OCPanel
 from app.operation import OperatorType
 from app.operation.panel_statistics import PanelStatisticsOperation
@@ -305,3 +305,216 @@ async def test_list_panels_response_shape_unchanged(monkeypatch):
             assert hasattr(item, "traffic_used")
             assert hasattr(item, "last_activity_at")
             assert hasattr(item, "expiration_distribution")
+
+
+async def _owner(db, tenant_id: int) -> Admin:
+    owner_role = (await db.execute(select(AdminRole).where(AdminRole.is_owner.is_(True)))).scalar_one()
+    owner = Admin(
+        username=f"own_{uuid.uuid4().hex[:8]}",
+        hashed_password="x",
+        role_id=owner_role.id,
+        tenant_id=tenant_id,
+    )
+    db.add(owner)
+    await db.flush()
+    return owner
+
+
+async def _owner_details(db, owner: Admin):
+    await db.refresh(owner, attribute_names=["role"])
+    return build_admin_details(owner, include_loaded_metrics=False)
+
+
+@pytest.mark.asyncio
+async def test_owner_overview_traffic_sums_mappings_not_system_table(monkeypatch):
+    monkeypatch.setattr(panel_statistics_settings, "enabled", True)
+    op = PanelStatisticsOperation(OperatorType.API)
+
+    async with GetDB() as db:
+        baseline_traffic = await sum_mapping_traffic_in_scope(
+            db, workspace_id=None, tenant_id=None, oc_account_id=None
+        )
+        tenant_id = await _tenant(db)
+        admin = await _administrator(db, tenant_id)
+        owner = await _owner(db, tenant_id)
+        integration = await _integration(db)
+        panel = OCPanel(
+            integration_id=integration.id,
+            source_panel_id="own-sum",
+            purchaser_identity="buyer",
+            name="Owner Sum Panel",
+            tenant_id=tenant_id,
+            workspace_id=admin.workspace_id,
+            oc_account_id=1,
+        )
+        db.add(panel)
+        await db.flush()
+        user = User(
+            username=f"u_{uuid.uuid4().hex[:6]}",
+            admin_id=admin.id,
+            workspace_id=admin.workspace_id,
+            status=UserStatus.active,
+        )
+        db.add(user)
+        await db.flush()
+        db.add(
+            OCUserMapping(
+                user_id=user.id,
+                panel_id=panel.id,
+                external_user_id="ext-own",
+                last_cumulative_traffic=4200,
+            )
+        )
+        sys_row = (await db.execute(select(System))).scalar_one_or_none()
+        if sys_row is not None:
+            sys_row.uplink = 99_999_999
+            sys_row.downlink = 99_999_999
+        await db.commit()
+
+        overview = await op.get_overview(db, await _owner_details(db, owner))
+        assert overview.traffic_used == baseline_traffic + 4200
+
+
+@pytest.mark.asyncio
+async def test_workspace_admin_overview_traffic_unchanged(monkeypatch):
+    monkeypatch.setattr(panel_statistics_settings, "enabled", True)
+    monkeypatch.setattr(PanelStatisticsOperation, "_tenant_oc_panel_filter", _connected_oc_filter)
+    op = PanelStatisticsOperation(OperatorType.API)
+    async with GetDB() as db:
+        tenant_id = await _tenant(db)
+        admin = await _administrator(db, tenant_id)
+        integration = await _integration(db)
+        panel = OCPanel(
+            integration_id=integration.id,
+            source_panel_id="ws",
+            purchaser_identity="buyer",
+            name="WS Panel",
+            tenant_id=tenant_id,
+            workspace_id=admin.workspace_id,
+            oc_account_id=1,
+        )
+        db.add(panel)
+        await db.flush()
+        user = User(
+            username=f"u_{uuid.uuid4().hex[:6]}",
+            admin_id=admin.id,
+            workspace_id=admin.workspace_id,
+            status=UserStatus.active,
+        )
+        db.add(user)
+        await db.flush()
+        db.add(
+            OCUserMapping(
+                user_id=user.id,
+                panel_id=panel.id,
+                external_user_id="ext-ws",
+                last_cumulative_traffic=1800,
+            )
+        )
+        await db.commit()
+        details = build_admin_details(admin, include_loaded_metrics=False)
+        overview = await op.get_overview(db, details)
+        assert overview.traffic_used == 1800
+
+
+@pytest.mark.asyncio
+async def test_owner_overview_excludes_other_workspace_from_tenant_admin_view(monkeypatch):
+    """Tenant admin overview stays workspace-scoped while owner sees global mapping sum."""
+    monkeypatch.setattr(panel_statistics_settings, "enabled", True)
+    monkeypatch.setattr(PanelStatisticsOperation, "_tenant_oc_panel_filter", _connected_oc_filter)
+    op = PanelStatisticsOperation(OperatorType.API)
+    async with GetDB() as db:
+        baseline_traffic = await sum_mapping_traffic_in_scope(
+            db, workspace_id=None, tenant_id=None, oc_account_id=None
+        )
+        tenant_id = await _tenant(db)
+        admin_a = await _administrator(db, tenant_id)
+        admin_b = await _administrator(db, tenant_id)
+        owner = await _owner(db, tenant_id)
+        integration = await _integration(db)
+        panel_a = OCPanel(
+            integration_id=integration.id,
+            source_panel_id="oa",
+            purchaser_identity="buyer",
+            name="A",
+            tenant_id=tenant_id,
+            workspace_id=admin_a.workspace_id,
+            oc_account_id=1,
+        )
+        panel_b = OCPanel(
+            integration_id=integration.id,
+            source_panel_id="ob",
+            purchaser_identity="buyer",
+            name="B",
+            tenant_id=tenant_id,
+            workspace_id=admin_b.workspace_id,
+            oc_account_id=2,
+        )
+        db.add_all([panel_a, panel_b])
+        await db.flush()
+        user_a = User(
+            username=f"ua_{uuid.uuid4().hex[:6]}",
+            admin_id=admin_a.id,
+            workspace_id=admin_a.workspace_id,
+            status=UserStatus.active,
+        )
+        user_b = User(
+            username=f"ub_{uuid.uuid4().hex[:6]}",
+            admin_id=admin_b.id,
+            workspace_id=admin_b.workspace_id,
+            status=UserStatus.active,
+        )
+        db.add_all([user_a, user_b])
+        await db.flush()
+        db.add_all(
+            [
+                OCUserMapping(
+                    user_id=user_a.id,
+                    panel_id=panel_a.id,
+                    external_user_id="ma",
+                    last_cumulative_traffic=1000,
+                ),
+                OCUserMapping(
+                    user_id=user_b.id,
+                    panel_id=panel_b.id,
+                    external_user_id="mb",
+                    last_cumulative_traffic=5000,
+                ),
+            ]
+        )
+        await db.commit()
+
+        overview_a = await op.get_overview(db, build_admin_details(admin_a, include_loaded_metrics=False))
+        overview_owner = await op.get_overview(db, await _owner_details(db, owner))
+        assert overview_a.traffic_used == 1000
+        assert overview_owner.traffic_used == baseline_traffic + 6000
+
+
+@pytest.mark.asyncio
+async def test_sum_mapping_traffic_zero_when_no_panels_in_scope():
+    async with GetDB() as db:
+        traffic = await sum_mapping_traffic_in_scope(
+            db,
+            workspace_id=-1,
+            tenant_id=None,
+            oc_account_id=None,
+        )
+        assert traffic == 0
+
+
+@pytest.mark.asyncio
+async def test_owner_overview_response_shape_unchanged(monkeypatch):
+    monkeypatch.setattr(panel_statistics_settings, "enabled", True)
+    op = PanelStatisticsOperation(OperatorType.API)
+    async with GetDB() as db:
+        tenant_id = await _tenant(db)
+        owner = await _owner(db, tenant_id)
+        overview = await op.get_overview(db, await _owner_details(db, owner))
+        assert hasattr(overview, "total_users")
+        assert hasattr(overview, "active_users")
+        assert hasattr(overview, "expired_users")
+        assert hasattr(overview, "online_users")
+        assert hasattr(overview, "active_subscriptions")
+        assert hasattr(overview, "expired_subscriptions")
+        assert hasattr(overview, "traffic_used")
+        assert hasattr(overview, "panel_count")

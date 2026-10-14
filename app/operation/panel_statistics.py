@@ -4,7 +4,6 @@ from datetime import timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.crud.general import get_system_usage
 from app.db.crud.panel_statistics import (
     aggregate_panel_statistics,
     count_panels_in_scope,
@@ -82,8 +81,12 @@ class PanelStatisticsOperation(BaseOperation):
         )
 
         if admin.is_owner and workspace_id is None:
-            system = await get_system_usage(db)
-            traffic_used = int((system.uplink or 0) + (system.downlink or 0)) if system else 0
+            traffic_used = await sum_mapping_traffic_in_scope(
+                db,
+                workspace_id=None,
+                tenant_id=None,
+                oc_account_id=None,
+            )
         elif workspace_id is not None:
             traffic_used = await sum_mapping_traffic_in_scope(
                 db,
