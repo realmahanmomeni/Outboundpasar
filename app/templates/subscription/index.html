@@ -1,7 +1,16 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <title>{{ user.username }} - Subscription Information</title>
+        <title>{{ user.username }} - {% if experience and experience.title %}{{ experience.title }}{% else %}Subscription Information{% endif %}</title>
+        {% if experience and experience.theme %}
+        <style>
+            {% if experience.theme.primary %}:root { --primary: {{ experience.theme.primary }}; }{% endif %}
+            {% if experience.theme.background %}:root { --background: {{ experience.theme.background }}; }{% endif %}
+            {% if experience.theme.foreground %}:root { --foreground: {{ experience.theme.foreground }}; }{% endif %}
+            {% if experience.theme.card %}:root { --card: {{ experience.theme.card }}; }{% endif %}
+            {% if experience.theme.accent %}:root { --accent: {{ experience.theme.accent }}; }{% endif %}
+        </style>
+        {% endif %}
         <style>
             * {
                 margin: 0;
@@ -546,7 +555,13 @@
         </button>
 
         <div class="container">
-            <h1>Subscription Information</h1>
+            {% if experience and experience.logo_url %}
+            <div style="margin-bottom: 16px;"><img src="{{ experience.logo_url }}" alt="Logo" style="max-height: 56px;" /></div>
+            {% endif %}
+            <h1>{% if experience and experience.title %}{{ experience.title }}{% else %}Subscription Information{% endif %}</h1>
+            {% if experience and experience.description %}
+            <p style="margin-bottom: 16px; color: hsl(var(--muted-foreground));">{{ experience.description }}</p>
+            {% endif %}
 
             {% if announce %}
             <div class="announcement">
@@ -655,6 +670,32 @@
                 </div>
                 {% endfor %}
             </div>
+            {% endif %}
+
+            {% if experience and experience.support_links %}
+            <div class="user-info" style="margin-top: 24px;">
+                <h2>Support</h2>
+                <ul>
+                    {% for link in experience.support_links %}
+                    <li><a href="{{ link.url }}" target="_blank" rel="noopener">{{ link.label }}</a></li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+
+            {% if experience and experience.custom_blocks %}
+            {% for block in experience.custom_blocks %}
+            <div class="user-info" style="margin-top: 16px;">
+                <h2>{{ block.title }}</h2>
+                <p>{{ block.body }}</p>
+            </div>
+            {% endfor %}
+            {% endif %}
+
+            {% if experience and experience.footer_text %}
+            <footer style="margin-top: 32px; font-size: 0.9rem; color: hsl(var(--muted-foreground));">
+                {{ experience.footer_text }}
+            </footer>
             {% endif %}
         </div>
 

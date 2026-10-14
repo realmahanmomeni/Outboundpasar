@@ -198,6 +198,10 @@ class UsageSettings(EnvSettings):
     )
 
 
+class SubscriptionExperienceSettings(EnvSettings):
+    enabled: bool = Field(default=False, validation_alias="SUBSCRIPTION_EXPERIENCE_TEMPLATES_ENABLED")
+
+
 class CustomDomainSettings(EnvSettings):
     managed_subscription_base_domain: str = Field(
         default="outboundcenter.ir", validation_alias="MANAGED_SUBSCRIPTION_BASE_DOMAIN"
@@ -283,6 +287,7 @@ auth_settings = AuthSettings()
 usage_settings = UsageSettings()
 job_settings = JobSettings()
 custom_domain_settings = CustomDomainSettings()
+subscription_experience_settings = SubscriptionExperienceSettings()
 feature_settings = FeatureSettings()
 
 if not database_settings.is_postgresql:

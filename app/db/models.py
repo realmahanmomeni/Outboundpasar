@@ -562,6 +562,27 @@ class UserTemplate(Base, IdMixin):
         return [group.id for group in self.groups]
 
 
+class SubscriptionExperienceTemplate(Base, CreatedAtUTCMixin):
+    """Workspace-scoped subscription page appearance (Phase 3-C)."""
+
+    __tablename__ = "subscription_experience_templates"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "name", name="uq_subscription_experience_templates_workspace_name"),
+    )
+
+    name: Mapped[str] = mapped_column(String(128))
+    workspace_id: Mapped[int] = fk_id_column("workspaces.id", ondelete="CASCADE")
+    is_enabled: Mapped[bool] = mapped_column(default=True, server_default="1")
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    title: Mapped[str | None] = mapped_column(String(512), default=None)
+    description: Mapped[str | None] = mapped_column(Text(), default=None)
+    logo_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    theme: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), default=None)
+    support_links: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON(none_as_null=True), default=None)
+    footer_text: Mapped[str | None] = mapped_column(Text(), default=None)
+    custom_blocks: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON(none_as_null=True), default=None)
+
+
 class UserUsageResetLogs(Base, IdMixin):
     __tablename__ = "user_usage_logs"
     __table_args__ = (

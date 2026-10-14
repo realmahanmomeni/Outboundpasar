@@ -321,6 +321,10 @@ class Subscription(BaseModel):
     allow_browser_config: bool = Field(default=True)
     disable_sub_template: bool = Field(default=False)
     randomize_order: bool = Field(default=False)
+    active_experience_template_id: int | None = Field(
+        default=None,
+        description="Optional Phase 3-C subscription page experience template id for this workspace.",
+    )
     custom_variables: list[CustomVariable] = Field(default_factory=list)
 
     @field_validator("custom_variables")

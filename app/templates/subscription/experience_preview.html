@@ -1,0 +1,27 @@
+<div class="experience-preview">
+  {% if experience.logo_url %}
+  <img src="{{ experience.logo_url }}" alt="Logo" style="max-height: 48px; margin-bottom: 12px;" />
+  {% endif %}
+  {% if experience.title %}
+  <h2>{{ experience.title }}</h2>
+  {% endif %}
+  {% if experience.description %}
+  <p>{{ experience.description }}</p>
+  {% endif %}
+  {% if experience.support_links %}
+  <ul>
+    {% for link in experience.support_links %}
+    <li><a href="{{ link.url }}">{{ link.label }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% for block in experience.custom_blocks %}
+  <section>
+    <h3>{{ block.title }}</h3>
+    <p>{{ block.body }}</p>
+  </section>
+  {% endfor %}
+  {% if experience.footer_text %}
+  <footer>{{ experience.footer_text }}</footer>
+  {% endif %}
+</div>

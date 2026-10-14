@@ -494,13 +494,20 @@ class SubscriptionOperation(BaseOperation):
 
             format_variables = await self.get_format_variables(user, db=db, sub_settings=sub_settings)
             formatted_announce = self._format_announce(sub_settings, format_variables)
+            body_payload = self._build_subscription_body_payload(
+                user, links, formatted_announce, sub_settings, format_variables, is_hwid_enabled
+            )
+            workspace_id = db_user.admin.workspace_id if db_user.admin else None
+            from app.services.subscription_experience import resolve_subscription_experience_context
+
+            experience = await resolve_subscription_experience_context(db, workspace_id=workspace_id)
+            if experience:
+                body_payload = {**body_payload, "experience": experience}
 
             return HTMLResponse(
                 render_template(
                     template,
-                    self._build_subscription_body_payload(
-                        user, links, formatted_announce, sub_settings, format_variables, is_hwid_enabled
-                    ),
+                    body_payload,
                 )
             )
         else:

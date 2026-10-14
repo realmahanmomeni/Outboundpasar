@@ -3,7 +3,7 @@ import { useAdmin } from '@/hooks/use-admin'
 import { cn } from '@/lib/utils'
 import { getGetGeneralSettingsQueryKey, getGetSettingsQueryKey, useGetSettings, useModifySettings } from '@/service/api'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bell, Database, Fingerprint, ListTodo, LucideIcon, Palette, Send, Settings as SettingsIcon, Webhook } from 'lucide-react'
+import { Bell, Database, Fingerprint, ListTodo, LucideIcon, Palette, Send, Settings as SettingsIcon, Sparkles, Webhook } from 'lucide-react'
 import { createContext, useCallback, useContext, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Outlet, useLocation, useNavigate } from 'react-router'
@@ -41,6 +41,12 @@ const allTabs: Tab[] = [
   { id: 'general', label: 'settings.general.title', icon: SettingsIcon, url: '/settings/general' },
   { id: 'notifications', label: 'settings.notifications.title', icon: Bell, url: '/settings/notifications' },
   { id: 'subscriptions', label: 'settings.subscriptions.title', icon: ListTodo, url: '/settings/subscriptions' },
+  {
+    id: 'subscription-appearance',
+    label: 'settings.subscriptionAppearance.title',
+    icon: Sparkles,
+    url: '/settings/subscription-appearance',
+  },
   { id: 'hwid', label: 'settings.hwid.title', icon: Fingerprint, url: '/settings/hwid' },
   { id: 'telegram', label: 'settings.telegram.title', icon: Send, url: '/settings/telegram' },
   { id: 'webhook', label: 'settings.webhook.title', icon: Webhook, url: '/settings/webhook' },
