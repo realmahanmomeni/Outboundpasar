@@ -1,6 +1,6 @@
 from app.models.admin import AdminDetails
 from app.notification.client import send_discord_webhook
-from app.notification.helpers import get_discord_webhook, trusted_global_channel_scope
+from app.notification.helpers import admin_dm_queue_scope, get_discord_webhook, trusted_global_channel_scope
 from app.notification.delivery_scope import notification_settings_for_delivery
 from app.utils.helpers import escape_ds_markdown_list
 from app.utils.system import readable_size
@@ -107,7 +107,8 @@ async def admin_usage_limit_reached(admin: AdminDetails, usage_percentage: int, 
             data,
             admin.discord_webhook,
             delivery_workspace_id=delivery_workspace_id,
-            **trusted_global_channel_scope(delivery_workspace_id),
+            **trusted_global_channel_scope(delivery_workspace_id, "admin_usage_limit_reached"),
+            **admin_dm_queue_scope(admin.id),
         )
 
 
@@ -131,5 +132,5 @@ async def admin_login(username: str, password: str, client_ip: str, success: boo
             data,
             webhook,
             delivery_workspace_id=delivery_workspace_id,
-            **trusted_global_channel_scope(delivery_workspace_id),
+            **trusted_global_channel_scope(delivery_workspace_id, "admin_login"),
         )

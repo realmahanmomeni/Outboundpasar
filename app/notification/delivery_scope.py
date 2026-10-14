@@ -25,6 +25,13 @@ SkipDelivery = Literal["skip"]
 logger = get_logger("Notification")
 
 # Serialized ``action`` values for webhook payloads that always carry a user subject.
+TRUSTED_GLOBAL_CHANNEL_EVENT_KINDS = frozenset(
+    {
+        "admin_login",
+        "admin_usage_limit_reached",
+    }
+)
+
 USER_SUBJECT_WEBHOOK_ACTIONS = frozenset(
     {
         "user_created",
@@ -334,11 +341,71 @@ async def _resolve_user_subject_workspace_from_id(user_id: int) -> int | None | 
     )
 
 
+async def verify_channel_dm_recipient(
+    *,
+    admin_recipient_id: int | None,
+    user_subject_id: int | None,
+    telegram_chat_id: int | None,
+    discord_webhook: str | None,
+) -> bool:
+    """
+    When ``admin_recipient_id`` is set, ensure the destination matches that admin in the database.
+    If ``user_subject_id`` is also set, the admin must be the user's linked admin.
+    """
+    if admin_recipient_id is None:
+        return True
+
+    from app.db.models import Admin
+
+    async with GetDB() as db:
+        admin_row = await db.get(Admin, admin_recipient_id)
+
+    if admin_row is None:
+        logger.warning("Channel queue admin_recipient_id=%s not found", admin_recipient_id)
+        return False
+
+    if user_subject_id is not None:
+        db_scope = await _lookup_user_owner_scope(user_subject_id)
+        if db_scope is None or db_scope.linked_admin_id != admin_recipient_id:
+            logger.warning(
+                "Channel queue admin_recipient_id=%s does not match user_subject_id=%s ownership",
+                admin_recipient_id,
+                user_subject_id,
+            )
+            return False
+
+    if telegram_chat_id is not None:
+        if admin_row.telegram_id is None or telegram_chat_id != admin_row.telegram_id:
+            logger.warning(
+                "Channel queue telegram chat_id=%s does not match admin_recipient_id=%s",
+                telegram_chat_id,
+                admin_recipient_id,
+            )
+            return False
+        return True
+
+    if discord_webhook is not None:
+        if not admin_row.discord_webhook or discord_webhook != admin_row.discord_webhook:
+            logger.warning(
+                "Channel queue discord webhook does not match admin_recipient_id=%s",
+                admin_recipient_id,
+            )
+            return False
+        return True
+
+    logger.warning(
+        "Channel queue admin_recipient_id=%s set without telegram chat_id or discord webhook",
+        admin_recipient_id,
+    )
+    return False
+
+
 async def resolve_channel_queue_delivery_scope(
     delivery_workspace_id: int | None,
     *,
     user_subject_id: int | None = None,
     scope_authorization: str | None = None,
+    channel_event_kind: str | None = None,
 ) -> int | None | SkipDelivery:
     """
     Resolve Telegram/Discord delivery scope for a queued item.
@@ -380,13 +447,20 @@ async def resolve_channel_queue_delivery_scope(
         return delivery_workspace_id
 
     if scope_authorization == "global":
+        if channel_event_kind not in TRUSTED_GLOBAL_CHANNEL_EVENT_KINDS:
+            logger.warning(
+                "Rejecting forged or unknown global channel authorization (event_kind=%s)",
+                channel_event_kind,
+            )
+            return "skip"
         return None
 
     logger.warning(
         "Skipping channel queue message without workspace scope or trusted global authorization "
-        "(delivery_workspace_id=%s, scope_authorization=%s)",
+        "(delivery_workspace_id=%s, scope_authorization=%s, event_kind=%s)",
         delivery_workspace_id,
         scope_authorization,
+        channel_event_kind,
     )
     return "skip"
 

@@ -19,6 +19,8 @@ class TelegramNotification(BaseModel):
     topic_id: int | None = Field(default=None)
     delivery_workspace_id: int | None = Field(default=None)
     user_subject_id: int | None = Field(default=None)
+    admin_recipient_id: int | None = Field(default=None)
+    channel_event_kind: str | None = Field(default=None)
     scope_authorization: WebhookScopeAuthorization | None = Field(default=None)
     tries: int = Field(default=0)
 
@@ -31,6 +33,8 @@ class DiscordNotification(BaseModel):
     webhook: str
     delivery_workspace_id: int | None = Field(default=None)
     user_subject_id: int | None = Field(default=None)
+    admin_recipient_id: int | None = Field(default=None)
+    channel_event_kind: str | None = Field(default=None)
     scope_authorization: WebhookScopeAuthorization | None = Field(default=None)
     tries: int = Field(default=0)
 
@@ -133,6 +137,8 @@ async def enqueue_telegram(
     *,
     delivery_workspace_id: int | None = None,
     user_subject_id: int | None = None,
+    admin_recipient_id: int | None = None,
+    channel_event_kind: str | None = None,
     scope_authorization: WebhookScopeAuthorization | None = None,
 ) -> None:
     """Add a Telegram notification to the queue"""
@@ -148,6 +154,8 @@ async def enqueue_telegram(
         topic_id=topic_id,
         delivery_workspace_id=delivery_workspace_id,
         user_subject_id=user_subject_id,
+        admin_recipient_id=admin_recipient_id,
+        channel_event_kind=channel_event_kind,
         scope_authorization=scope_authorization,
     )
     await get_queue().enqueue(notification.model_dump())
@@ -159,6 +167,8 @@ async def enqueue_discord(
     *,
     delivery_workspace_id: int | None = None,
     user_subject_id: int | None = None,
+    admin_recipient_id: int | None = None,
+    channel_event_kind: str | None = None,
     scope_authorization: WebhookScopeAuthorization | None = None,
 ) -> None:
     """Add a Discord notification to the queue"""
@@ -173,6 +183,8 @@ async def enqueue_discord(
         webhook=webhook,
         delivery_workspace_id=delivery_workspace_id,
         user_subject_id=user_subject_id,
+        admin_recipient_id=admin_recipient_id,
+        channel_event_kind=channel_event_kind,
         scope_authorization=scope_authorization,
     )
     await get_queue().enqueue(notification.model_dump())

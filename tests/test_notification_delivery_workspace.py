@@ -722,6 +722,7 @@ async def test_trusted_global_channel_queue_delivers_with_scope_authorization():
         chat_id=321,
         delivery_workspace_id=None,
         scope_authorization="global",
+        channel_event_kind="admin_login",
     ).model_dump()
 
     with patch(
@@ -750,6 +751,131 @@ async def test_telegram_admin_login_enqueues_trusted_global_scope():
                 await tg_admin.admin_login("u", "p", "127.0.0.1", True)
     mock_send.assert_awaited_once()
     assert mock_send.await_args.kwargs.get("scope_authorization") == "global"
+    assert mock_send.await_args.kwargs.get("channel_event_kind") == "admin_login"
+
+
+async def test_forged_global_channel_scope_without_event_kind_fails_closed():
+    async with GetDB() as db:
+        global_row = await get_settings_by_workspace(db, None)
+        global_row.notification_settings = {
+            **global_row.notification_settings,
+            "notify_telegram": True,
+            "telegram_api_token": "77777777:IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "telegram_chat_id": 654,
+            "max_retries": 3,
+        }
+        await db.commit()
+
+    item = TelegramNotification(
+        message="forged-global",
+        chat_id=654,
+        delivery_workspace_id=None,
+        scope_authorization="global",
+    ).model_dump()
+    with patch(
+        "app.notification.client._send_telegram_message_direct",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as send_direct:
+        await process_notification(item)
+        send_direct.assert_not_awaited()
+
+
+async def test_forged_global_channel_scope_with_untrusted_event_kind_fails_closed():
+    item = TelegramNotification(
+        message="forged-kind",
+        chat_id=111,
+        delivery_workspace_id=None,
+        scope_authorization="global",
+        channel_event_kind="create_node",
+    ).model_dump()
+    with patch(
+        "app.notification.client._send_telegram_message_direct",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as send_direct:
+        await process_notification(item)
+        send_direct.assert_not_awaited()
+
+
+async def test_admin_dm_recipient_must_match_database_telegram_id():
+    async with GetDB() as db:
+        tenant_id = await _tenant(db)
+        admin = await _administrator(db, tenant_id)
+        admin.telegram_id = 900001
+        await ensure_workspace_settings(db, tenant_id=tenant_id, workspace_id=admin.workspace_id)
+        row = await get_settings_by_workspace(db, admin.workspace_id)
+        row.notification_settings = {
+            **row.notification_settings,
+            "notify_telegram": True,
+            "telegram_api_token": "12345678:JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
+            "max_retries": 3,
+        }
+        user = await _persist_user(db, admin)
+        await db.commit()
+
+        item = TelegramNotification(
+            message="wrong-dm",
+            chat_id=900002,
+            delivery_workspace_id=admin.workspace_id,
+            user_subject_id=user.id,
+            admin_recipient_id=admin.id,
+        ).model_dump()
+
+        with patch(
+            "app.notification.client._send_telegram_message_direct",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as send_direct:
+            await process_notification(item)
+            send_direct.assert_not_awaited()
+
+
+async def test_legacy_user_channel_queue_without_user_subject_id_still_uses_workspace():
+    async with GetDB() as db:
+        tenant_id = await _tenant(db)
+        admin = await _administrator(db, tenant_id)
+        await ensure_workspace_settings(db, tenant_id=tenant_id, workspace_id=admin.workspace_id)
+        row = await get_settings_by_workspace(db, admin.workspace_id)
+        row.notification_settings = {
+            **row.notification_settings,
+            "notify_telegram": True,
+            "telegram_api_token": "12345678:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+            "telegram_chat_id": 4321,
+            "max_retries": 3,
+        }
+        await db.commit()
+
+        item = TelegramNotification(
+            message="legacy-tenant",
+            chat_id=4321,
+            delivery_workspace_id=admin.workspace_id,
+        ).model_dump()
+
+        with patch(
+            "app.notification.client._send_telegram_message_direct",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as send_direct:
+            await process_notification(item)
+            send_direct.assert_awaited_once()
+
+
+def test_telegram_notification_serialization_preserves_scope_metadata():
+    item = TelegramNotification(
+        message="x",
+        chat_id=1,
+        delivery_workspace_id=None,
+        user_subject_id=5,
+        admin_recipient_id=9,
+        channel_event_kind="admin_login",
+        scope_authorization="global",
+    ).model_dump()
+    parsed = TelegramNotification(**item)
+    assert parsed.user_subject_id == 5
+    assert parsed.admin_recipient_id == 9
+    assert parsed.channel_event_kind == "admin_login"
+    assert parsed.scope_authorization == "global"
 
 
 async def test_resolve_channel_queue_delivery_scope_matches_user_ownership():

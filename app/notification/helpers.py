@@ -5,7 +5,10 @@ from typing import Any
 from app.models.admin import AdminContactInfo
 from app.models.settings import NotificationSettings
 from app.models.user import UserNotificationResponse
+from app.notification.delivery_scope import TRUSTED_GLOBAL_CHANNEL_EVENT_KINDS
 from app.notification.queue_manager import WebhookScopeAuthorization
+
+TrustedGlobalChannelEventKind = str
 
 
 def user_event_queue_scope(user: UserNotificationResponse) -> dict[str, Any]:
@@ -15,10 +18,23 @@ def user_event_queue_scope(user: UserNotificationResponse) -> dict[str, Any]:
     return {"user_subject_id": user.id}
 
 
-def trusted_global_channel_scope(delivery_workspace_id: int | None) -> dict[str, WebhookScopeAuthorization]:
+def admin_dm_queue_scope(admin_id: int | None) -> dict[str, int]:
+    """Queue metadata so workers can verify per-admin DM destinations at dequeue time."""
+    if admin_id is None:
+        return {}
+    return {"admin_recipient_id": admin_id}
+
+
+def trusted_global_channel_scope(
+    delivery_workspace_id: int | None,
+    event_kind: TrustedGlobalChannelEventKind,
+) -> dict[str, Any]:
+    if event_kind not in TRUSTED_GLOBAL_CHANNEL_EVENT_KINDS:
+        raise ValueError(f"Unsupported trusted global channel event: {event_kind}")
+    metadata: dict[str, Any] = {"channel_event_kind": event_kind}
     if delivery_workspace_id is None:
-        return {"scope_authorization": "global"}
-    return {}
+        metadata["scope_authorization"] = "global"
+    return metadata
 
 
 def get_telegram_channel(settings: NotificationSettings, entity: str) -> tuple[int | None, int | None]:
