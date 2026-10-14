@@ -210,6 +210,10 @@ class PanelStatisticsSettings(EnvSettings):
     enabled: bool = Field(default=False, validation_alias="PANEL_STATISTICS_DASHBOARD_ENABLED")
 
 
+class HwidManagementSettings(EnvSettings):
+    enabled: bool = Field(default=False, validation_alias="HWID_MANAGEMENT_ENABLED")
+
+
 class CustomDomainSettings(EnvSettings):
     managed_subscription_base_domain: str = Field(
         default="outboundcenter.ir", validation_alias="MANAGED_SUBSCRIPTION_BASE_DOMAIN"
@@ -298,6 +302,7 @@ custom_domain_settings = CustomDomainSettings()
 subscription_experience_settings = SubscriptionExperienceSettings()
 subscription_branding_settings = SubscriptionBrandingSettings()
 panel_statistics_settings = PanelStatisticsSettings()
+hwid_management_settings = HwidManagementSettings()
 feature_settings = FeatureSettings()
 
 if not database_settings.is_postgresql:

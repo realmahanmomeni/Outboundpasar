@@ -26,6 +26,7 @@ from . import (
     custom_domain,
     integration_managed_subdomain,
     panel_statistics,
+    hwid_management,
 )
 
 api_router = APIRouter()
@@ -56,6 +57,7 @@ routers = [
     custom_domain.router,
     integration_managed_subdomain.router,
     panel_statistics.router,
+    hwid_management.router,
 ]
 
 for router in routers:
