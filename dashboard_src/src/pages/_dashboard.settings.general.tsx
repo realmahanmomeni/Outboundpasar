@@ -16,6 +16,8 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { z } from 'zod'
 import { useSettingsContext } from './_dashboard.settings'
+import { useAdmin } from '@/hooks/use-admin'
+import { canReconnectAllNodes } from '@/utils/rbac'
 
 // general settings validation schema
 const generalSettingsSchema = z.object({
@@ -26,6 +28,8 @@ type GeneralSettingsFormInput = z.input<typeof generalSettingsSchema>
 
 export default function General() {
   const { t } = useTranslation()
+  const { admin } = useAdmin()
+  const canReconnectAll = canReconnectAllNodes(admin)
   const { isLoading, error, updateSettings, isSaving } = useSettingsContext()
   const { data: generalSettings, isLoading: isGeneralLoading, error: generalError } = useGetGeneralSettings()
   const [isReconnectAllDialogOpen, setIsReconnectAllDialogOpen] = useState(false)
@@ -190,9 +194,11 @@ export default function General() {
             </div>
           </div>
 
-          <Separator className="my-3" />
+          {canReconnectAll && <Separator className="my-3" />}
 
-          {/* Reconnect All Nodes Section */}
+          {/* Reconnect All Nodes Section — platform owner only */}
+          {canReconnectAll && (
+          <>
           <div className="flex flex-col gap-3 py-3 sm:gap-4 md:flex-row md:items-start md:justify-between">
             <div className="space-y-1">
               <h3 className="text-base font-semibold sm:text-lg">{t('nodes.title', { defaultValue: 'Reconnect All Nodes' })}</h3>
@@ -249,6 +255,8 @@ export default function General() {
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
+          </>
+          )}
 
           <SubscriptionFormActions onCancel={handleCancel} isSaving={isSaving} className="mt-auto sm:mt-auto" />
         </form>

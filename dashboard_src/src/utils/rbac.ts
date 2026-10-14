@@ -40,6 +40,9 @@ export const canFilterByAdminStatistics = (admin: AdminDetails | null | undefine
   return hasScopeAll(admin, 'users', 'read')
 }
 
+/** Reconnect-all restarts every platform node; reserved for the platform owner. */
+export const canReconnectAllNodes = (admin: AdminDetails | null | undefined) => isOwner(admin)
+
 /**
  * Full dashboard pages are exposed by the resource `read` permission only.
  * Simple read permissions are reserved for selector/dropdown endpoints and do
