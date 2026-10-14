@@ -305,8 +305,7 @@ async def reset_users_data_usage(
     db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(require_scope_all("users", "reset_usage"))
 ):
     """Reset all users data usage"""
-    await user_operator.reset_users_data_usage(db, admin)
-    await node_operator.restart_all_node(db, admin)
+    await user_operator.reset_all_users_data_usage_and_reconnect_nodes(db, admin, node_operator)
     return {}
 
 
