@@ -261,43 +261,19 @@ export default function AdminsTable({ onEdit, onDelete, onToggleStatus, onResetU
 
   // Expose counts to parent component for statistics
   useEffect(() => {
-    if (!onTotalAdminsChange) return
-    if (!adminsResponse && adminsData.length === 0) {
-      onTotalAdminsChange(null)
-      return
+    if (onTotalAdminsChange) {
+      if (adminsResponse) {
+        onTotalAdminsChange({
+          total: adminsResponse.total,
+          active: adminsResponse.active,
+          disabled: adminsResponse.disabled,
+          limited: adminsResponse.limited,
+        })
+      } else {
+        onTotalAdminsChange(null)
+      }
     }
-
-    const apiTotal = adminsResponse?.total ?? 0
-    const apiActive = adminsResponse?.active ?? 0
-    const apiDisabled = adminsResponse?.disabled ?? 0
-    const apiLimited = adminsResponse?.limited ?? 0
-
-    if (apiTotal > 0 || adminsData.length === 0) {
-      onTotalAdminsChange({
-        total: apiTotal,
-        active: apiActive,
-        disabled: apiDisabled,
-        limited: apiLimited,
-      })
-      return
-    }
-
-    let active = 0
-    let disabled = 0
-    let limited = 0
-    for (const row of adminsData) {
-      const status = getAdminStatus(row)
-      if (status === 'disabled') disabled += 1
-      else if (status === 'limited') limited += 1
-      else active += 1
-    }
-    onTotalAdminsChange({
-      total: adminsData.length,
-      active,
-      disabled,
-      limited,
-    })
-  }, [adminsResponse, adminsData, onTotalAdminsChange])
+  }, [adminsResponse, onTotalAdminsChange])
   const disableAllActiveUsersMutation = useDisableAllActiveUsersById()
   const activateAllDisabledUsersMutation = useActivateAllDisabledUsersById()
   const removeAllUsersMutation = useRemoveAllUsersById()
