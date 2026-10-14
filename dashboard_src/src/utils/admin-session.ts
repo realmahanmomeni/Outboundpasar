@@ -27,8 +27,3 @@ export function unwrapAdminDetails(value: unknown): AdminDetails | null {
 
   return null
 }
-
-export function selectCurrentAdminDetails(response: getCurrentAdminResponse): AdminDetails | null {
-  if (response.status === 200) return response.data
-  return null
-}

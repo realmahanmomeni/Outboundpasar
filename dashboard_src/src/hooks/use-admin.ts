@@ -1,10 +1,11 @@
 import { AdminDetails, useGetCurrentAdmin } from '@/service/api'
-import { selectCurrentAdminDetails, unwrapAdminDetails } from '@/utils/admin-session'
 import { useLoaderData } from 'react-router'
 
 export const useAdmin = () => {
-  const loaderAdmin = unwrapAdminDetails(useLoaderData())
+  // Get initial admin data from loader
+  const initialAdminData = useLoaderData() as AdminDetails
 
+  // Use React Query's useGetCurrentAdmin with proper configuration
   const {
     data: admin,
     isLoading,
@@ -12,35 +13,24 @@ export const useAdmin = () => {
     refetch,
   } = useGetCurrentAdmin({
     query: {
-      select: selectCurrentAdminDetails,
-      initialData: loaderAdmin
-        ? {
-            data: loaderAdmin,
-            status: 200,
-            headers: new Headers(),
-          }
-        : undefined,
+      initialData: initialAdminData,
       staleTime: 5 * 60 * 1000,
       gcTime: 10 * 60 * 1000,
-      refetchOnMount: loaderAdmin ? 'always' : true,
-      retry: (failureCount, err) => {
-        const status = typeof err === 'object' && err !== null && 'status' in err ? Number((err as { status?: unknown }).status) : undefined
-        if (status === 401 || status === 403) return false
-        return failureCount < 2
-      },
+      refetchOnMount: !initialAdminData,
+      retry: 2,
       refetchOnReconnect: 'always',
     },
   })
 
-  const resolvedAdmin: AdminDetails | null = admin ?? loaderAdmin ?? null
-
   const clearAdmin = () => {
+    // This would typically invalidate the query cache
+    // but since we're using React Query, we can just refetch
     refetch()
   }
 
   return {
-    admin: resolvedAdmin,
-    isLoading: isLoading && !resolvedAdmin,
+    admin: admin || null,
+    isLoading,
     error: error as Error | null,
     clearAdmin,
   }

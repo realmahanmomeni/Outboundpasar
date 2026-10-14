@@ -238,11 +238,7 @@ const UsageModal = ({ open, onClose, userId }: UsageModalProps) => {
   const chartViewType = useChartViewType()
 
   // Get current admin to check permissions
-  const { data: currentAdmin } = useGetCurrentAdmin({
-    query: {
-      select: data => (data.status === 200 ? data.data : null),
-    },
-  })
+  const { data: currentAdmin } = useGetCurrentAdmin()
   const canReadAllUserUsage = hasScopeAll(currentAdmin, 'users', 'read')
   const allNodesSelected = selectedNodeId === undefined && canReadAllUserUsage
   const dir = useDirDetection()
