@@ -292,7 +292,8 @@ class CustomDomainOperation(BaseOperation):
         tenant_id, workspace_id = await self._workspace_scope(db, admin)
         try:
             hostname = normalize_custom_domain_hostname(payload.hostname)
-            reject_arbitrary_managed_hostname(hostname)
+            if custom_domain_settings.custom_domain_register_managed_zone_guard_enabled:
+                reject_arbitrary_managed_hostname(hostname)
         except DomainValidationError as exc:
             await self.raise_error(str(exc), 422)
 
@@ -403,12 +404,6 @@ class CustomDomainOperation(BaseOperation):
             await self.raise_error("Custom domain not found", 404)
         if not can_request_certificate(row.state):
             await self.raise_error("Certificate cannot be requested in the current state", 409)
-        provider_status = await get_ingress_provider_status()
-        if not provider_status.configured:
-            await self.raise_error(
-                "Custom domain ingress is not configured on this deployment",
-                503,
-            )
         row.certificate_issue_attempts = 0
         row.certificate_issue_locked_until = None
         await set_domain_state(db, row, SubscriptionCustomDomainState.pending_certificate)

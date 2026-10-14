@@ -77,7 +77,10 @@ def test_normalize_accepts_label_or_fqdn():
 
 
 @pytest.mark.asyncio
-async def test_arbitrary_register_rejects_managed_zone():
+async def test_arbitrary_register_rejects_managed_zone(monkeypatch):
+    monkeypatch.setattr(
+        custom_domain_settings, "custom_domain_register_managed_zone_guard_enabled", True
+    )
     op = CustomDomainOperation()
     async with GetDB() as db:
         tenant_id = await _tenant(db)
@@ -94,6 +97,7 @@ async def test_arbitrary_register_rejects_managed_zone():
 @pytest.mark.asyncio
 async def test_subscription_url_uses_active_managed_hostname(monkeypatch):
     monkeypatch.setattr(custom_domain_settings, "ingress_public_https_ready", True)
+    monkeypatch.setattr(custom_domain_settings, "managed_subscription_hostname_in_urls_enabled", True)
     label = f"url{uuid.uuid4().hex[:6]}"
     fqdn = f"{label}.outboundcenter.ir"
     async with GetDB() as db:

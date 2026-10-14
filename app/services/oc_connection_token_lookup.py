@@ -23,7 +23,10 @@ async def resolve_active_connection_by_token(
     db: AsyncSession,
     connection_token: str,
 ) -> TenantTelegramConnection:
-    digest = connection_token_sha256(connection_token.strip())
+    from app.utils.crypto import decrypt_secret
+
+    token = connection_token.strip()
+    digest = connection_token_sha256(token)
     row = await db.scalar(
         select(TenantTelegramConnection).where(
             TenantTelegramConnection.oc_connection_token_sha256 == digest,
@@ -32,6 +35,27 @@ async def resolve_active_connection_by_token(
             TenantTelegramConnection.revoked_at.is_(None),
         )
     )
+    if row is None:
+        candidates = (
+            await db.scalars(
+                select(TenantTelegramConnection).where(
+                    TenantTelegramConnection.status == TenantTelegramConnectionStatus.active.value,
+                    TenantTelegramConnection.active.is_(True),
+                    TenantTelegramConnection.revoked_at.is_(None),
+                    TenantTelegramConnection.oc_connection_token_encrypted.is_not(None),
+                )
+            )
+        ).all()
+        for candidate in candidates:
+            try:
+                plain = await decrypt_secret(candidate.oc_connection_token_encrypted)
+            except Exception:
+                continue
+            if plain == token:
+                await store_connection_token_digest(candidate, token)
+                await db.flush()
+                row = candidate
+                break
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

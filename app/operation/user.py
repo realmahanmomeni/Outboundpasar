@@ -261,7 +261,13 @@ class UserOperation(BaseOperation):
             else settings.url_prefix
         )
         workspace_id = user.admin.workspace_id if user.admin else None
-        if workspace_id is not None and db is not None:
+        from config import custom_domain_settings
+
+        if (
+            custom_domain_settings.managed_subscription_hostname_in_urls_enabled
+            and workspace_id is not None
+            and db is not None
+        ):
             from app.services.custom_domain.subscription_hostname import subscription_url_prefix_for_workspace
 
             raw_prefix = await subscription_url_prefix_for_workspace(
@@ -269,7 +275,11 @@ class UserOperation(BaseOperation):
                 workspace_id,
                 default_prefix=raw_prefix,
             )
-        elif workspace_id is not None and db is None:
+        elif (
+            custom_domain_settings.managed_subscription_hostname_in_urls_enabled
+            and workspace_id is not None
+            and db is None
+        ):
             async with GetDB() as session:
                 from app.services.custom_domain.subscription_hostname import subscription_url_prefix_for_workspace
 

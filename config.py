@@ -228,6 +228,14 @@ class CustomDomainSettings(EnvSettings):
     ingress_public_https_ready: bool = Field(
         default=False, validation_alias="CUSTOM_DOMAIN_INGRESS_PUBLIC_HTTPS_READY"
     )
+    managed_subscription_hostname_in_urls_enabled: bool = Field(
+        default=False,
+        validation_alias="MANAGED_SUBSCRIPTION_HOSTNAME_IN_URLS_ENABLED",
+    )
+    custom_domain_register_managed_zone_guard_enabled: bool = Field(
+        default=False,
+        validation_alias="CUSTOM_DOMAIN_REGISTER_MANAGED_ZONE_GUARD_ENABLED",
+    )
     caddy_admin_url: str = Field(default="", validation_alias="CUSTOM_DOMAIN_CADDY_ADMIN_URL")
     caddy_upstream_dial: str = Field(default="127.0.0.1:8000", validation_alias="CUSTOM_DOMAIN_CADDY_UPSTREAM_DIAL")
     caddy_ask_secret: str = Field(default="", validation_alias="CUSTOM_DOMAIN_CADDY_ASK_SECRET")

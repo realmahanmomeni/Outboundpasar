@@ -178,7 +178,8 @@ async def test_ingress_status_operation_reports_architecture_options():
 
 
 @pytest.mark.asyncio
-async def test_request_certificate_rejected_when_ingress_unconfigured():
+async def test_request_certificate_preserves_baseline_when_ingress_unconfigured():
+    """Existing POST certificate route must not add 503 when ingress is unconfigured (11456d3 parity)."""
     set_certificate_provisioner(UnconfiguredCertificateProvisioner())
     op = CustomDomainOperation()
     async with GetDB() as db:
@@ -202,6 +203,5 @@ async def test_request_certificate_rejected_when_ingress_unconfigured():
         row.state = SubscriptionCustomDomainState.verified
         row.verified_at = dt.now(UTC)
         await db.commit()
-        with pytest.raises(Exception) as exc:
-            await op.request_certificate(db, row.id, details)
-        assert getattr(exc.value, "status_code", None) == 503
+        result = await op.request_certificate(db, row.id, details)
+        assert result.state == SubscriptionCustomDomainState.pending_certificate
