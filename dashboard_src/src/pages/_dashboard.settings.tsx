@@ -8,7 +8,7 @@ import { createContext, useCallback, useContext, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Outlet, useLocation, useNavigate } from 'react-router'
 import { toast } from 'sonner'
-import { filterOcSettingsTabs } from '@/constants/oc-product-ui'
+import { canAccessOcSettingsSection, filterOcSettingsTabs } from '@/constants/oc-product-ui'
 import { hasPermission } from '@/utils/rbac'
 
 interface Tab {
@@ -60,8 +60,7 @@ export default function Settings() {
   const navigate = useNavigate()
   const { admin } = useAdmin()
   const canUpdateSettings = hasPermission(admin, 'settings', 'update')
-  const canReadSettings = hasPermission(admin, 'settings', 'read')
-  const canAccessSettingsTabs = canReadSettings || canUpdateSettings
+  const canAccessSettingsTabs = canAccessOcSettingsSection(admin)
   const tabs = filterOcSettingsTabs(allTabs, admin).filter(tab => {
     if (tab.id === 'theme') return true
     return canAccessSettingsTabs
@@ -69,8 +68,9 @@ export default function Settings() {
 
   const pathTab = allTabs.find(tab => location.pathname === tab.url)
   const currentTab = tabs.find(tab => location.pathname === tab.url)
-  const activeTab = pathTab?.id ?? currentTab?.id ?? (canAccessSettingsTabs ? 'subscriptions' : 'theme')
-  const headerTab = pathTab ?? allTabs.find(tab => tab.id === activeTab) ?? allTabs.find(tab => tab.id === 'theme')!
+  const activeTab = currentTab?.id ?? pathTab?.id ?? (canAccessSettingsTabs ? 'subscriptions' : 'theme')
+  const headerTab =
+    currentTab ?? pathTab ?? tabs.find(tab => tab.id === activeTab) ?? allTabs.find(tab => tab.id === 'theme')!
 
   const queryClient = useQueryClient()
 

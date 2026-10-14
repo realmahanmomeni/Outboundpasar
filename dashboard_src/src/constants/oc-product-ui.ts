@@ -4,6 +4,7 @@
  */
 import type { AdminDetails } from '@/service/api'
 import { isPlatformOwner } from '@/utils/admin-session'
+import { hasPermission } from '@/utils/rbac'
 
 export const LEGACY_NATIVE_INFRA_UI_ENABLED = false
 
@@ -70,6 +71,12 @@ export function filterOcSettingsTabs<T extends { id: string }>(
   admin?: AdminDetails | null,
 ): T[] {
   return tabs.filter(tab => isSettingsTabVisible(tab.id, admin))
+}
+
+/** Matches sidebar: subscriptions/cleanup/etc. require both settings read and update. */
+export function canAccessOcSettingsSection(admin: AdminDetails | null | undefined): boolean {
+  if (!admin) return false
+  return hasPermission(admin, 'settings', 'read') && hasPermission(admin, 'settings', 'update')
 }
 
 export function filterOcSettingsNavItems<T extends { url: string }>(

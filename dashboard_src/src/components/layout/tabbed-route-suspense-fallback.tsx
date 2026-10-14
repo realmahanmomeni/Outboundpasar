@@ -1,4 +1,4 @@
-import { filterOcSettingsTabs, showLegacyNativeInfraInNav } from '@/constants/oc-product-ui'
+import { canAccessOcSettingsSection, filterOcSettingsTabs, showLegacyNativeInfraInNav } from '@/constants/oc-product-ui'
 import { Spinner } from '@/components/common/spinner'
 import { LoadingSpinner } from '@/components/common/loading-spinner'
 import PageHeader from '@/components/layout/page-header'
@@ -98,9 +98,11 @@ function nodesHeader(pathname: string): { title: string; description: string } {
   return { title: 'nodes.title', description: 'manageNodes' }
 }
 
-function settingsActiveTabId(pathname: string, tabs: TabDef[]): string {
+function settingsActiveTabId(pathname: string, tabs: TabDef[], allTabs: TabDef[] = SETTINGS_SUDO_TAB_DEFS): string {
   const hit = tabs.find(t => pathname === t.url)
-  return hit?.id ?? tabs[0].id
+  if (hit) return hit.id
+  const pathHit = allTabs.find(t => pathname === t.url)
+  return pathHit?.id ?? tabs[0]?.id ?? 'theme'
 }
 
 function bulkActiveTabId(pathname: string, tabs: TabDef[]): string {
@@ -179,14 +181,19 @@ function NodesTabbedFallback({ pathname }: { pathname: string }) {
   )
 }
 
-function SettingsTabbedFallback({ pathname, isSudo }: { pathname: string; isSudo: boolean }) {
+function SettingsTabbedFallback({ pathname }: { pathname: string }) {
   const { t } = useTranslation()
   const { admin } = useAdmin()
-  const tabs = isSudo ? filterOcSettingsTabs(SETTINGS_SUDO_TAB_DEFS, admin) : SETTINGS_NON_SUDO_TABS
+  const canUseSettings = canAccessOcSettingsSection(admin)
+  const tabs = canUseSettings
+    ? filterOcSettingsTabs(SETTINGS_SUDO_TAB_DEFS, admin).filter(tab => tab.id === 'theme' || canUseSettings)
+    : SETTINGS_NON_SUDO_TABS
   const activeId = settingsActiveTabId(pathname, tabs)
+  const activeTab = tabs.find(tab => tab.id === activeId) ?? SETTINGS_SUDO_TAB_DEFS.find(tab => tab.url === pathname) ?? tabs[0]
+  const titleKey = activeTab?.labelKey ?? 'theme.title'
   return (
     <div className="flex w-full flex-col items-start gap-0">
-      <PageHeader title={t(`settings.${activeId}.title`)} description="manageSettings" tutorialUrl={getDocsUrl(pathname)} />
+      <PageHeader title={titleKey} description="manageSettings" tutorialUrl={getDocsUrl(pathname)} />
       <div className="relative w-full">
         <div className="flex w-full min-w-0 flex-col">
           <TabStripPlaceholder tabs={tabs} activeId={activeId} />
@@ -233,14 +240,13 @@ function TemplatesTabbedFallback({ pathname }: { pathname: string }) {
 export function TabbedRouteSuspenseFallback() {
   const { pathname } = useLocation()
   const { admin } = useAdmin()
-  const canUseSettings = hasPermission(admin, 'settings', 'read') || hasPermission(admin, 'settings', 'update')
   const canUseBulkAll = hasScopeAll(admin, 'users', 'update')
 
   if (pathname.startsWith('/nodes')) {
     return <NodesTabbedFallback pathname={pathname} />
   }
   if (pathname.startsWith('/settings')) {
-    return <SettingsTabbedFallback pathname={pathname} isSudo={canUseSettings} />
+    return <SettingsTabbedFallback pathname={pathname} />
   }
   if (pathname.startsWith('/bulk')) {
     return <BulkTabbedFallback pathname={pathname} isSudo={canUseBulkAll} />
