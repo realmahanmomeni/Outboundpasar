@@ -31,9 +31,8 @@ export default function RouteGuard({ children }: { children: React.ReactNode }) 
     if (isHiddenAlertingSettingsRoute(location.pathname)) {
       if (hasNavigatedRef.current) return
       hasNavigatedRef.current = true
-      const canUpdateSettings = hasPermission(admin, 'settings', 'update')
-      const canReadSettings = hasPermission(admin, 'settings', 'read') && canUpdateSettings
-      const canReadGeneral = hasPermission(admin, 'settings', 'read_general') && canUpdateSettings
+      const canReadSettings = hasPermission(admin, 'settings', 'read')
+      const canReadGeneral = hasPermission(admin, 'settings', 'read_general')
       navigate(
         ocAlertingSettingsFallbackRoute({
           canReadSettings,

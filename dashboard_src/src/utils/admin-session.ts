@@ -2,11 +2,14 @@ import type { AdminDetails, getCurrentAdminResponse } from '@/service/api'
 
 export const PLATFORM_OWNER_ROLE_ID = 1
 
-/** Platform owner (builtin owner role). Fail closed when role data is missing. */
+/** Platform owner (builtin owner role). Align with admin modal / RBAC owner checks. */
 export function isPlatformOwner(admin: AdminDetails | null | undefined): boolean {
-  const role = admin?.role
-  if (!role || role.id == null) return false
-  return role.id === PLATFORM_OWNER_ROLE_ID && role.is_owner === true
+  if (!admin) return false
+  if (admin.is_owner === true) return true
+  const role = admin.role
+  if (!role) return false
+  if (role.is_owner === true) return true
+  return role.id === PLATFORM_OWNER_ROLE_ID
 }
 
 export function unwrapAdminDetails(value: unknown): AdminDetails | null {

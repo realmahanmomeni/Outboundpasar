@@ -282,16 +282,33 @@ export default function AdminsTable({ onEdit, onDelete, onToggleStatus, onResetU
 
     const rows = adminsResponse.admins ?? []
     const apiTotal = adminsResponse.total ?? 0
-    if (apiTotal === 0 && rows.length > 0) {
-      onTotalAdminsChange(countAdminsFromRows(rows))
-      return
+    const apiActive = adminsResponse.active ?? 0
+    const apiDisabled = adminsResponse.disabled ?? 0
+    const apiLimited = adminsResponse.limited ?? 0
+    const apiStatusSum = apiActive + apiDisabled + apiLimited
+
+    if (rows.length > 0) {
+      const fromRows = countAdminsFromRows(rows)
+      const rowStatusSum = fromRows.active + fromRows.disabled + fromRows.limited
+      const aggregatesUntrusted =
+        apiTotal === 0 || (apiStatusSum === 0 && rowStatusSum > 0) || (apiTotal > 0 && apiStatusSum === 0 && rowStatusSum > 0)
+
+      if (aggregatesUntrusted) {
+        onTotalAdminsChange({
+          total: Math.max(apiTotal, fromRows.total),
+          active: fromRows.active,
+          disabled: fromRows.disabled,
+          limited: fromRows.limited,
+        })
+        return
+      }
     }
 
     onTotalAdminsChange({
-      total: adminsResponse.total,
-      active: adminsResponse.active,
-      disabled: adminsResponse.disabled,
-      limited: adminsResponse.limited,
+      total: apiTotal,
+      active: apiActive,
+      disabled: apiDisabled,
+      limited: apiLimited,
     })
   }, [adminsResponse, onTotalAdminsChange])
   const disableAllActiveUsersMutation = useDisableAllActiveUsersById()

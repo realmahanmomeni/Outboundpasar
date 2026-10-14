@@ -62,9 +62,13 @@ const Login = lazyWithChunkRecovery(() => import('../pages/login'))
 // Component to handle default settings routing based on user permissions
 function SettingsIndex() {
   const { admin } = useAdmin()
-  const canUpdateSettings = hasPermission(admin, 'settings', 'update')
-  const canSeeGeneral = hasPermission(admin, 'settings', 'read_general') && canUpdateSettings
-  const defaultPath = canSeeGeneral ? '/settings/general' : '/settings/theme'
+  const canReadGeneral = hasPermission(admin, 'settings', 'read_general')
+  const canReadSettings = hasPermission(admin, 'settings', 'read')
+  const defaultPath = canReadGeneral
+    ? '/settings/general'
+    : canReadSettings
+      ? '/settings/subscriptions'
+      : '/settings/theme'
 
   return <Navigate to={defaultPath} replace />
 }
@@ -99,9 +103,8 @@ function OcPanelNavigate() {
 
 function OcAlertingSettingsNavigate() {
   const { admin } = useAdmin()
-  const canUpdateSettings = hasPermission(admin, 'settings', 'update')
-  const canReadSettings = hasPermission(admin, 'settings', 'read') && canUpdateSettings
-  const canReadGeneral = hasPermission(admin, 'settings', 'read_general') && canUpdateSettings
+  const canReadSettings = hasPermission(admin, 'settings', 'read')
+  const canReadGeneral = hasPermission(admin, 'settings', 'read_general')
   return (
     <Navigate
       to={ocAlertingSettingsFallbackRoute({

@@ -16,6 +16,7 @@ import {
   encodeSubscriptionContentToBase64,
   extractAddressFromConfigUrl,
   extractNameFromConfigUrl,
+  fetchSubscriptionContent,
   fetchUserSubscriptionContent,
   getWireGuardDownloadPayload,
   prepareSubscriptionContentForCopy,
@@ -74,7 +75,9 @@ const SubscriptionModal: FC<SubscriptionModalProps> = memo(({ open, subscribeUrl
     setError(null)
 
     try {
-      const text = await fetchUserSubscriptionContent(userId, 'links', LINKS_FETCH_TIMEOUT_MS)
+      const text = subscribeUrl
+        ? await fetchSubscriptionContent(subscribeUrl, 'links', LINKS_FETCH_TIMEOUT_MS)
+        : await fetchUserSubscriptionContent(userId, 'links', LINKS_FETCH_TIMEOUT_MS)
       const configLines = text.split('\n').filter(line => line.trim() !== '')
 
       setConfigs(

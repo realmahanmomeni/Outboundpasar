@@ -60,11 +60,11 @@ export default function Settings() {
   const navigate = useNavigate()
   const { admin } = useAdmin()
   const canUpdateSettings = hasPermission(admin, 'settings', 'update')
-  const canReadSettings = hasPermission(admin, 'settings', 'read') && canUpdateSettings
-  const canReadGeneral = hasPermission(admin, 'settings', 'read_general') && canUpdateSettings
+  const canReadSettings = hasPermission(admin, 'settings', 'read')
+  const canReadGeneral = hasPermission(admin, 'settings', 'read_general')
   const tabs = filterOcSettingsTabs(allTabs).filter(tab => {
     if (tab.id === 'theme') return true
-    if (tab.id === 'general') return canReadGeneral
+    if (tab.id === 'general') return canReadGeneral || canReadSettings
     return canReadSettings
   })
 
@@ -217,8 +217,8 @@ export default function Settings() {
       settings: canReadSettings ? settings || {} : {},
       isLoading: canReadSettings ? isLoading : false,
       error: canReadSettings ? error : null,
-      updateSettings: canReadSettings || canReadGeneral ? handleUpdateSettings : async () => {},
-      isSaving: canReadSettings || canReadGeneral ? isSaving : false,
+      updateSettings: canUpdateSettings ? handleUpdateSettings : async () => {},
+      isSaving: canUpdateSettings ? isSaving : false,
     }),
     [canReadSettings, canReadGeneral, settings, isLoading, error, isSaving, handleUpdateSettings],
   )
