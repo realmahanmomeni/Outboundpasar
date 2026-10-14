@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
+from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +34,22 @@ from app.utils.logger import get_logger
 
 logger = get_logger("oc-user-sub-hosts")
 
+PANEL_UPSTREAM_FETCH_CONCURRENCY = 3
+
+
+@dataclass
+class OcSubscriptionLinksState:
+    user_id: int
+    oc_tags: list[str]
+    allowed_panels: set[int]
+    synced_by_panel: dict[int, set[str]]
+    mappings: dict[int, OCUserMapping]
+    dest_tags: list[str]
+    legacy_tags: list[str]
+    catalog_names: dict[tuple[int, str], str]
+    dest_rows: list[Any]
+    legacy_config_rows: list[tuple[OCPanelConfig, ProxyHost]]
+
 
 async def _fetch_user_links(mapping: OCUserMapping) -> list[str] | None:
     url = (mapping.external_subscription_url or "").strip()
@@ -58,6 +77,26 @@ async def _fetch_user_links(mapping: OCUserMapping) -> list[str] | None:
     ]
 
 
+async def _fetch_upstream_links_by_panel(
+    mappings: dict[int, OCUserMapping],
+    panel_ids: set[int],
+) -> dict[int, list[str]]:
+    sem = asyncio.Semaphore(PANEL_UPSTREAM_FETCH_CONCURRENCY)
+    out: dict[int, list[str]] = {}
+
+    async def _one(panel_id: int) -> None:
+        mapping = mappings.get(panel_id)
+        if mapping is None:
+            return
+        async with sem:
+            fetched = await _fetch_user_links(mapping)
+        out[panel_id] = fetched or []
+
+    if panel_ids:
+        await asyncio.gather(*(_one(panel_id) for panel_id in panel_ids))
+    return out
+
+
 def _structural_index(panel_links: list[str]) -> dict[str, list[str]]:
     """Endpoint identity (credential/remark independent) -> distinct user links."""
     index: dict[str, list[str]] = {}
@@ -65,7 +104,6 @@ def _structural_index(panel_links: list[str]) -> dict[str, list[str]]:
         key = share_link_structural_key(link)
         if key:
             bucket = index.setdefault(key, [])
-            # Same credential + endpoint under different remarks is one config.
             if all(share_link_config_base(existing) != share_link_config_base(link) for existing in bucket):
                 bucket.append(link)
     return index
@@ -88,24 +126,19 @@ def match_user_link_by_endpoint(
     return candidates[0] if len(candidates) == 1 else None
 
 
-async def collect_oc_subscription_links_for_user(
+async def load_oc_subscription_links_state(
     db: AsyncSession,
     user_id: int,
     oc_tags: list[str],
-    format_variables: dict,
     *,
     user_tenant_id: int | None,
-) -> list[str]:
-    """
-    Return share links (remark templated) for OC virtual tags the user may use.
-    Destination host tags match upstream configs by stable OC catalog config id, not discovery URI fingerprint.
-    """
+) -> OcSubscriptionLinksState | None:
     if not oc_tags:
-        return []
+        return None
 
     allowed_panels, synced_by_panel = await load_runtime_oc_subscription_state(db, user_id, user_tenant_id)
     if not allowed_panels:
-        return []
+        return None
 
     mappings = {
         row.panel_id: row
@@ -119,11 +152,6 @@ async def collect_oc_subscription_links_for_user(
             )
         ).scalars().all()
     }
-
-    out: list[str] = []
-    seen: set[str] = set()
-    stages: Counter[str] = Counter()
-    stages["selected_tags"] = len(oc_tags)
 
     dest_tags = [t for t in oc_tags if parse_destination_tag(t)]
     legacy_tags = [t for t in oc_tags if t not in dest_tags]
@@ -141,28 +169,116 @@ async def collect_oc_subscription_links_for_user(
         for panel_id, sid, sname in sid_rows:
             catalog_names[(panel_id, sid)] = sname
 
+    dest_rows: list[Any] = []
     if dest_tags:
+        dest_rows = await load_destination_hosts_for_tags(db, dest_tags, list(allowed_panels))
+
+    legacy_config_rows: list[tuple[OCPanelConfig, ProxyHost]] = []
+    if legacy_tags:
+        legacy_config_rows = list(
+            (
+                await db.execute(
+                    select(OCPanelConfig, ProxyHost)
+                    .join(ProxyHost, ProxyHost.inbound_tag == OCPanelConfig.virtual_inbound_tag)
+                    .where(
+                        OCPanelConfig.virtual_inbound_tag.in_(legacy_tags),
+                        OCPanelConfig.panel_id.in_(allowed_panels),
+                        OCPanelConfig.source_missing.is_(False),
+                        OCPanelConfig.locally_hidden.is_(False),
+                        or_(ProxyHost.is_disabled.is_(False), ProxyHost.is_disabled.is_(None)),
+                    )
+                )
+            ).all()
+        )
+
+    return OcSubscriptionLinksState(
+        user_id=user_id,
+        oc_tags=oc_tags,
+        allowed_panels=allowed_panels,
+        synced_by_panel=synced_by_panel,
+        mappings=mappings,
+        dest_tags=dest_tags,
+        legacy_tags=legacy_tags,
+        catalog_names=catalog_names,
+        dest_rows=dest_rows,
+        legacy_config_rows=legacy_config_rows,
+    )
+
+
+def _panel_ids_for_upstream_fetch(state: OcSubscriptionLinksState) -> set[int]:
+    from app.services.oc_destination_runtime import destination_config_allowed_by_sync
+
+    panel_ids: set[int] = set()
+    if state.dest_tags:
         desired_by_key = {
             parsed: tag
-            for tag in dest_tags
+            for tag in state.dest_tags
             for parsed in [parse_destination_tag(tag)]
             if parsed is not None
         }
-        dest_rows = await load_destination_hosts_for_tags(db, dest_tags, list(allowed_panels))
-        links_by_panel: dict[int, list[str]] = {}
-        structural_by_panel: dict[int, dict[str, list[str]]] = {}
-        stages["destination_rows"] = len(dest_rows)
-        stages["dest_tags_without_row"] = max(0, len(dest_tags) - len(dest_rows))
-        for dest_host, _proxy in dest_rows:
+        for dest_host, _proxy in state.dest_rows:
             tag = desired_by_key.get((dest_host.panel_id, dest_host.destination_config_id))
-            if not tag or tag not in oc_tags:
+            if not tag or tag not in state.oc_tags:
+                continue
+            if state.mappings.get(dest_host.panel_id) is None:
+                continue
+            synced = state.synced_by_panel.get(dest_host.panel_id, set())
+            payload = dest_host.source_payload if isinstance(dest_host.source_payload, dict) else {}
+            oc_sid = str(payload.get("oc_source_config_id") or "").strip()
+            if synced and not destination_config_allowed_by_sync(
+                oc_source_config_id=oc_sid,
+                panel_id=dest_host.panel_id,
+                destination_config_id=dest_host.destination_config_id,
+                synced=synced,
+            ):
+                continue
+            panel_ids.add(dest_host.panel_id)
+
+    for config, _host in state.legacy_config_rows:
+        tag = config.virtual_inbound_tag
+        if not tag or tag not in state.legacy_tags:
+            continue
+        if config.source_config_id not in state.synced_by_panel.get(config.panel_id, set()):
+            continue
+        if state.mappings.get(config.panel_id) is None:
+            continue
+        panel_ids.add(config.panel_id)
+
+    return panel_ids
+
+
+async def build_oc_subscription_links_from_state(
+    state: OcSubscriptionLinksState,
+    format_variables: dict,
+) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    stages: Counter[str] = Counter()
+    stages["selected_tags"] = len(state.oc_tags)
+
+    panel_ids = _panel_ids_for_upstream_fetch(state)
+    links_by_panel = await _fetch_upstream_links_by_panel(state.mappings, panel_ids)
+    structural_by_panel = {pid: _structural_index(links) for pid, links in links_by_panel.items()}
+
+    if state.dest_tags:
+        desired_by_key = {
+            parsed: tag
+            for tag in state.dest_tags
+            for parsed in [parse_destination_tag(tag)]
+            if parsed is not None
+        }
+        stages["destination_rows"] = len(state.dest_rows)
+        stages["dest_tags_without_row"] = max(0, len(state.dest_tags) - len(state.dest_rows))
+        for dest_host, _proxy in state.dest_rows:
+            tag = desired_by_key.get((dest_host.panel_id, dest_host.destination_config_id))
+            if not tag or tag not in state.oc_tags:
                 stages["rejected_tag_not_selected"] += 1
                 continue
-            mapping = mappings.get(dest_host.panel_id)
+            mapping = state.mappings.get(dest_host.panel_id)
             if mapping is None:
                 stages["rejected_no_active_mapping"] += 1
                 continue
-            synced = synced_by_panel.get(dest_host.panel_id, set())
+            synced = state.synced_by_panel.get(dest_host.panel_id, set())
             payload = dest_host.source_payload if isinstance(dest_host.source_payload, dict) else {}
             oc_sid = str(payload.get("oc_source_config_id") or "").strip()
             from app.services.oc_destination_runtime import destination_config_allowed_by_sync
@@ -175,23 +291,19 @@ async def collect_oc_subscription_links_for_user(
             ):
                 stages["rejected_not_in_synced_configs"] += 1
                 continue
-            if dest_host.panel_id not in links_by_panel:
-                user_links = await _fetch_user_links(mapping)
-                links_by_panel[dest_host.panel_id] = user_links or []
-                structural_by_panel[dest_host.panel_id] = _structural_index(user_links or [])
-            panel_links = links_by_panel[dest_host.panel_id]
+            panel_links = links_by_panel.get(dest_host.panel_id, [])
             if not panel_links:
                 stages["rejected_no_user_links"] += 1
             raw: str | None = None
             stored_discovery = str(payload.get("subscription_link") or "").strip()
             if panel_links and stored_discovery:
-                raw = match_user_link_by_endpoint(structural_by_panel[dest_host.panel_id], stored_discovery)
+                raw = match_user_link_by_endpoint(structural_by_panel.get(dest_host.panel_id, {}), stored_discovery)
                 if raw:
                     stages["matched_by_endpoint"] += 1
             if raw:
                 pass
             elif oc_sid and panel_links:
-                source_name = catalog_names.get((dest_host.panel_id, oc_sid), oc_sid)
+                source_name = state.catalog_names.get((dest_host.panel_id, oc_sid), oc_sid)
                 raw = match_upstream_link_for_destination(
                     panel_links,
                     oc_sid,
@@ -234,36 +346,23 @@ async def collect_oc_subscription_links_for_user(
             seen.add(link)
             out.append(link)
 
-    if legacy_tags:
+    if state.legacy_tags:
         logger.warning(
             "oc_user_sub_legacy_tags user=%s tags=%s count=%s",
-            user_id,
-            legacy_tags[:8],
-            len(legacy_tags),
+            state.user_id,
+            state.legacy_tags[:8],
+            len(state.legacy_tags),
         )
-        config_rows = (
-            await db.execute(
-                select(OCPanelConfig, ProxyHost)
-                .join(ProxyHost, ProxyHost.inbound_tag == OCPanelConfig.virtual_inbound_tag)
-                .where(
-                    OCPanelConfig.virtual_inbound_tag.in_(legacy_tags),
-                    OCPanelConfig.panel_id.in_(allowed_panels),
-                    OCPanelConfig.source_missing.is_(False),
-                    OCPanelConfig.locally_hidden.is_(False),
-                    or_(ProxyHost.is_disabled.is_(False), ProxyHost.is_disabled.is_(None)),
-                )
-            )
-        ).all()
-        for config, host in config_rows:
+        for config, host in state.legacy_config_rows:
             tag = config.virtual_inbound_tag
-            if not tag or tag not in legacy_tags:
+            if not tag or tag not in state.legacy_tags:
                 continue
-            if config.source_config_id not in synced_by_panel.get(config.panel_id, set()):
+            if config.source_config_id not in state.synced_by_panel.get(config.panel_id, set()):
                 continue
-            mapping = mappings.get(config.panel_id)
+            mapping = state.mappings.get(config.panel_id)
             if mapping is None:
                 continue
-            user_links = await _fetch_user_links(mapping)
+            user_links = links_by_panel.get(config.panel_id, [])
             if not user_links:
                 continue
             parsed = match_link_for_config(
@@ -290,11 +389,29 @@ async def collect_oc_subscription_links_for_user(
 
     logger.info(
         "oc_user_sub_collected user=%s desired_dest=%s desired_legacy=%s rendered=%s panels=%s stages=%s",
-        user_id,
-        len(dest_tags),
-        len(legacy_tags),
+        state.user_id,
+        len(state.dest_tags),
+        len(state.legacy_tags),
         len(out),
-        sorted(allowed_panels),
+        sorted(state.allowed_panels),
         dict(sorted(stages.items())),
     )
     return out
+
+
+async def collect_oc_subscription_links_for_user(
+    db: AsyncSession,
+    user_id: int,
+    oc_tags: list[str],
+    format_variables: dict,
+    *,
+    user_tenant_id: int | None,
+) -> list[str]:
+    """
+    Return share links (remark templated) for OC virtual tags the user may use.
+    Destination host tags match upstream configs by stable OC catalog config id, not discovery URI fingerprint.
+    """
+    state = await load_oc_subscription_links_state(db, user_id, oc_tags, user_tenant_id=user_tenant_id)
+    if state is None:
+        return []
+    return await build_oc_subscription_links_from_state(state, format_variables)

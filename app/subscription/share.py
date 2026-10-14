@@ -639,9 +639,13 @@ async def process_inbounds_and_tags(
             filter_oc_inbound_tags_for_runtime_subscription,
             resolve_user_tenant_id,
         )
-        from app.services.oc_user_subscription_hosts import collect_oc_subscription_links_for_user
+        from app.services.oc_user_subscription_hosts import (
+            build_oc_subscription_links_from_state,
+            load_oc_subscription_links_state,
+        )
         from app.services.subscription_scope import resolve_subscription_native_workspace_id
 
+        oc_collection_state = None
         async with GetDB() as db:
             user_tenant_id = await resolve_user_tenant_id(db, user.id, getattr(user, "admin_id", None))
             user_workspace_id = await resolve_subscription_native_workspace_id(db, user)
@@ -657,13 +661,14 @@ async def process_inbounds_and_tags(
                     db, user.id, desired_oc_tags, user_tenant_id
                 )
                 if oc_tags:
-                    oc_raw_links = await collect_oc_subscription_links_for_user(
+                    oc_collection_state = await load_oc_subscription_links_state(
                         db,
                         user.id,
                         oc_tags,
-                        format_variables,
                         user_tenant_id=user_tenant_id,
                     )
+        if oc_collection_state is not None:
+            oc_raw_links = await build_oc_subscription_links_from_state(oc_collection_state, format_variables)
 
     cached_hosts = await host_manager.get_hosts()
     host_entries = [

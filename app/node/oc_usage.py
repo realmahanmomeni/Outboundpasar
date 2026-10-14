@@ -18,6 +18,7 @@ from app.utils.logger import get_logger
 logger = get_logger("oc-usage")
 
 OC_API_SEM = asyncio.Semaphore(10)
+ACCOUNT_MAPPING_USAGE_SEM = asyncio.Semaphore(3)
 
 
 async def fetch_oc_user_usage(
@@ -335,7 +336,8 @@ async def record_oc_user_usages(session: aiohttp.ClientSession | None = None) ->
                     **extra,
                 )
                 if remote_cumulative is not None:
-                    return await account_mapping_usage(mapping.id, remote_cumulative)
+                    async with ACCOUNT_MAPPING_USAGE_SEM:
+                        return await account_mapping_usage(mapping.id, remote_cumulative)
             except Exception as exc:
                 logger.warning(
                     "Failed processing usage for mapping %s (panel %s): %s",
