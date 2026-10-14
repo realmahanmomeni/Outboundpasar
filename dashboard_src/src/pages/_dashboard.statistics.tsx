@@ -1,5 +1,6 @@
 import PageHeader from '@/components/layout/page-header'
 import MainContent from '@/features/statistics/components/statistics-charts'
+import PanelStatisticsSection from '@/features/statistics/components/panel-statistics-section'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useGetSystemResourceStats, useGetSystemUsersStats, useGetNodesSimple, NodeSimple, NodeStatus } from '@/service/api'
@@ -17,6 +18,7 @@ const Statistics = () => {
   const { admin } = useAdmin()
   const canViewNodeStats = hasPermission(admin, 'nodes', 'stats')
   const canViewSystemStats = hasPermission(admin, 'system', 'read')
+  const canViewPanelBusinessStats = hasPermission(admin, 'users', 'read')
 
   // Fetch nodes for the selector
   const { data: nodesResponse, isLoading: isLoadingNodes } = useGetNodesSimple(
@@ -126,6 +128,8 @@ const Statistics = () => {
           </div>
         </div>
       )}
+
+      {canViewPanelBusinessStats && <PanelStatisticsSection />}
 
       <div className="w-full">
         <div className="w-full px-3 pt-2 sm:px-4">

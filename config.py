@@ -206,6 +206,10 @@ class SubscriptionBrandingSettings(EnvSettings):
     enabled: bool = Field(default=False, validation_alias="SUBSCRIPTION_BRANDING_ENABLED")
 
 
+class PanelStatisticsSettings(EnvSettings):
+    enabled: bool = Field(default=False, validation_alias="PANEL_STATISTICS_DASHBOARD_ENABLED")
+
+
 class CustomDomainSettings(EnvSettings):
     managed_subscription_base_domain: str = Field(
         default="outboundcenter.ir", validation_alias="MANAGED_SUBSCRIPTION_BASE_DOMAIN"
@@ -293,6 +297,7 @@ job_settings = JobSettings()
 custom_domain_settings = CustomDomainSettings()
 subscription_experience_settings = SubscriptionExperienceSettings()
 subscription_branding_settings = SubscriptionBrandingSettings()
+panel_statistics_settings = PanelStatisticsSettings()
 feature_settings = FeatureSettings()
 
 if not database_settings.is_postgresql:
