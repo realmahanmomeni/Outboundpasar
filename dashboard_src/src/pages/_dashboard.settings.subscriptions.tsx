@@ -21,10 +21,14 @@ import { FieldErrors, useFieldArray, useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { useSettingsContext } from './_dashboard.settings'
+import { shouldShowManagedSubdomainSettingsUi } from '@/constants/oc-product-ui'
+import { useAdmin } from '@/hooks/use-admin'
 
 export default function SubscriptionSettings() {
   const { t } = useTranslation()
+  const { admin } = useAdmin()
   const { settings, isLoading, error, updateSettings, isSaving } = useSettingsContext()
+  const showManagedSubdomain = shouldShowManagedSubdomainSettingsUi(admin)
   const [isAddAppOpen, setIsAddAppOpen] = useState(false)
 
   const form = useForm<SubscriptionFormData>({
@@ -358,7 +362,7 @@ export default function SubscriptionSettings() {
     <div className="w-full">
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit, onInvalid)} className="space-y-6 p-4 sm:space-y-8 sm:py-6 lg:space-y-10 lg:py-8">
-          <SubscriptionManagedSubdomainSection />
+          {showManagedSubdomain ? <SubscriptionManagedSubdomainSection /> : null}
           <SubscriptionGeneralSettingsSection form={form} />
 
           <Separator className="my-3" />

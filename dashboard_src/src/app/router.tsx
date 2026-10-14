@@ -106,7 +106,17 @@ function AlertingSettingsRoute({ children }: { children: React.ReactNode }) {
 }
 
 function OwnerOnlySettingsRoute({ children }: { children: React.ReactNode }) {
-  const { admin } = useAdmin()
+  const { admin, isLoading } = useAdmin()
+  if (!admin) {
+    if (isLoading) {
+      return (
+        <Suspense fallback={<LoadingSpinner />}>
+          <LoadingSpinner />
+        </Suspense>
+      )
+    }
+    return <SettingsVisibilityNavigate />
+  }
   if (!isPlatformOwner(admin)) {
     return <SettingsVisibilityNavigate />
   }

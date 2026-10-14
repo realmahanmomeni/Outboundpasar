@@ -66,9 +66,9 @@ export default function Settings() {
     return canReadSettings
   })
 
-  // Derive activeTab from current location instead of state
+  const pathTab = allTabs.find(tab => location.pathname === tab.url)
   const currentTab = tabs.find(tab => location.pathname === tab.url)
-  const activeTab = currentTab?.id || (canReadSettings ? 'subscriptions' : 'theme')
+  const activeTab = pathTab?.id ?? currentTab?.id ?? (canReadSettings ? 'subscriptions' : 'theme')
 
   const queryClient = useQueryClient()
 

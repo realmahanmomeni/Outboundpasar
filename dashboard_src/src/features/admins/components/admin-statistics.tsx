@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils.ts'
 import { useTranslation } from 'react-i18next'
 import { Card, CardTitle } from '@/components/ui/card'
 import { CountUp } from '@/components/ui/count-up'
+import { Skeleton } from '@/components/ui/skeleton'
 import { User, UserCheck, UserLock, UserX } from 'lucide-react'
 import React, { useEffect, useState } from 'react'
 
@@ -16,14 +17,16 @@ export default function AdminStatisticsSection({ counts }: AdminsStatisticsProps
   const [prevStats, setPrevStats] = useState<{ total: number; active: number; disabled: number; limited: number } | null>(null)
   const [isIncreased, setIsIncreased] = useState<Record<string, boolean>>({})
 
-  const total = counts?.total || 0
-  const active = counts?.active || 0
-  const disabled = counts?.disabled || 0
-  const limited = counts?.limited || 0
+  const loading = counts === null
+  const total = counts?.total ?? 0
+  const active = counts?.active ?? 0
+  const disabled = counts?.disabled ?? 0
+  const limited = counts?.limited ?? 0
 
   const currentStats = { total, active, disabled, limited }
 
   useEffect(() => {
+    if (loading || !counts) return
     if (prevStats) {
       setIsIncreased({
         total: currentStats.total > prevStats.total,
@@ -34,7 +37,7 @@ export default function AdminStatisticsSection({ counts }: AdminsStatisticsProps
     }
     setPrevStats(currentStats)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [counts])
+  }, [counts, loading])
 
   const stats = [
     {
@@ -86,7 +89,7 @@ export default function AdminStatisticsSection({ counts }: AdminsStatisticsProps
               <span>{stat.label}</span>
             </div>
             <span className={cn('mx-2 text-3xl tabular-nums transition-all duration-500', isIncreased[stat.key] ? 'animate-zoom-out' : '')}>
-              <CountUp end={stat.value} />
+              {loading ? <Skeleton className="inline-block h-9 w-12" /> : <CountUp end={stat.value} />}
             </span>
           </CardTitle>
         </Card>

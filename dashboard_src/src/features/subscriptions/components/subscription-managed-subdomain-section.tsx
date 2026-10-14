@@ -34,7 +34,12 @@ export function SubscriptionManagedSubdomainSection() {
       setLabel(data.label || '')
       setPendingClaim(data.pending_claim_label)
       setActiveFqdn(data.fqdn)
-    } catch {
+    } catch (e: unknown) {
+      const status =
+        e && typeof e === 'object' && 'status' in e ? Number((e as { status?: unknown }).status) : undefined
+      if (status === 403 || status === 404) {
+        return
+      }
       toast.error(t('settings.subscriptions.managedSubdomain.loadError', { defaultValue: 'Failed to load managed subdomain settings' }))
     } finally {
       setLoading(false)

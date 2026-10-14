@@ -84,6 +84,13 @@ export function ocSettingsFallbackRoute(options: { canReadSettings: boolean }): 
   return '/settings/theme'
 }
 
+/** Managed subdomain settings API is workspace-scoped; platform owner has no workspace row. */
+export function shouldShowManagedSubdomainSettingsUi(admin: AdminDetails | null | undefined): boolean {
+  if (!admin) return false
+  if (isPlatformOwner(admin)) return false
+  return admin.workspace_id != null
+}
+
 /** @deprecated Use ocSettingsFallbackRoute */
 export function ocAlertingSettingsFallbackRoute(options: {
   canReadSettings: boolean
