@@ -7,7 +7,12 @@ from datetime import UTC, datetime as dt, timedelta as td
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import SubscriptionCustomDomain, SubscriptionCustomDomainState, Workspace
+from app.db.models import (
+    SubscriptionCustomDomain,
+    SubscriptionCustomDomainState,
+    SubscriptionDomainKind,
+    Workspace,
+)
 
 
 def hash_verification_token(token: str) -> str:
@@ -47,6 +52,23 @@ async def get_custom_domain_by_id(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def get_managed_domain_for_workspace(
+    db: AsyncSession,
+    workspace_id: int,
+) -> SubscriptionCustomDomain | None:
+    return (
+        await db.execute(
+            select(SubscriptionCustomDomain)
+            .where(
+                SubscriptionCustomDomain.workspace_id == workspace_id,
+                SubscriptionCustomDomain.domain_kind == SubscriptionDomainKind.oc_managed.value,
+            )
+            .order_by(SubscriptionCustomDomain.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 async def create_custom_domain(
     db: AsyncSession,
     *,
@@ -59,6 +81,7 @@ async def create_custom_domain(
         workspace_id=workspace_id,
         tenant_id=tenant_id,
         hostname_normalized=hostname_normalized,
+        domain_kind=SubscriptionDomainKind.arbitrary.value,
         state=SubscriptionCustomDomainState.pending_verification,
         verification_token_hash=hash_verification_token(token),
         verification_expires_at=dt.now(UTC) + td(days=7),
@@ -76,6 +99,48 @@ async def refresh_verification_token(db: AsyncSession, domain: SubscriptionCusto
     domain.verified_at = None
     await db.flush()
     return token
+
+
+async def upsert_managed_subdomain(
+    db: AsyncSession,
+    *,
+    workspace_id: int,
+    tenant_id: int,
+    hostname_normalized: str,
+    label: str,
+    oc_subdomain_id: str,
+    oc_owner_account_id: int,
+    active: bool,
+) -> SubscriptionCustomDomain:
+    existing = await get_managed_domain_for_workspace(db, workspace_id)
+    now = dt.now(UTC)
+    state = SubscriptionCustomDomainState.active if active else SubscriptionCustomDomainState.verified
+    if existing is not None:
+        existing.hostname_normalized = hostname_normalized
+        existing.oc_subdomain_id = oc_subdomain_id
+        existing.oc_subdomain_label = label
+        existing.oc_owner_account_id = oc_owner_account_id
+        existing.oc_last_validated_at = now
+        existing.domain_kind = SubscriptionDomainKind.oc_managed.value
+        existing.state = state
+        existing.certificate_last_error = None
+        await db.flush()
+        return existing
+    row = SubscriptionCustomDomain(
+        workspace_id=workspace_id,
+        tenant_id=tenant_id,
+        hostname_normalized=hostname_normalized,
+        domain_kind=SubscriptionDomainKind.oc_managed.value,
+        state=state,
+        oc_subdomain_id=oc_subdomain_id,
+        oc_subdomain_label=label,
+        oc_owner_account_id=oc_owner_account_id,
+        oc_last_validated_at=now,
+        verified_at=now,
+    )
+    db.add(row)
+    await db.flush()
+    return row
 
 
 async def mark_domain_verified(db: AsyncSession, domain: SubscriptionCustomDomain) -> None:

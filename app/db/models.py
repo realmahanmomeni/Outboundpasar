@@ -1107,6 +1107,11 @@ class TempKey(Base):
     used_by_ip: Mapped[str | None] = mapped_column(String(45), default=None)
 
 
+class SubscriptionDomainKind(str, Enum):
+    arbitrary = "arbitrary"
+    oc_managed = "oc_managed"
+
+
 class SubscriptionCustomDomainState(str, Enum):
     pending_verification = "pending_verification"
     verified = "verified"
@@ -1129,6 +1134,11 @@ class SubscriptionCustomDomain(Base, CreatedAtUTCMixin):
     workspace_id: Mapped[int] = fk_id_column("workspaces.id", ondelete="CASCADE")
     tenant_id: Mapped[int] = fk_id_column("tenants.id", ondelete="CASCADE")
     hostname_normalized: Mapped[str] = mapped_column(String(253))
+    domain_kind: Mapped[str] = mapped_column(String(32), default=SubscriptionDomainKind.arbitrary.value, server_default="arbitrary")
+    oc_subdomain_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    oc_subdomain_label: Mapped[str | None] = mapped_column(String(63), default=None)
+    oc_owner_account_id: Mapped[int | None] = mapped_column(default=None)
+    oc_last_validated_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
     state: Mapped[SubscriptionCustomDomainState] = mapped_column(
         SQLEnum(
             SubscriptionCustomDomainState,

@@ -1,5 +1,11 @@
 # Custom-domain ingress architecture (Phase 3-B.3)
 
+## Product direction (re-scope)
+
+Subscription links use **Outbound Center managed subdomains** under `outboundcenter.ir` (for example `alpha.outboundcenter.ir`). Ownership is verified through the Outbound Center Telegram bot via a server-to-server API (`OC_MANAGED_SUBDOMAIN_API.md`). Arbitrary customer-owned custom domains remain disabled unless explicitly re-enabled later.
+
+# Custom-domain ingress architecture (Phase 3-B.3 legacy notes)
+
 ## Reported production constraints
 
 - PasarGuard listens with TLS on `0.0.0.0:2053` inside `pasarguard-pasarguard-1`.

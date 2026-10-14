@@ -199,6 +199,19 @@ class UsageSettings(EnvSettings):
 
 
 class CustomDomainSettings(EnvSettings):
+    managed_subscription_base_domain: str = Field(
+        default="outboundcenter.ir", validation_alias="MANAGED_SUBSCRIPTION_BASE_DOMAIN"
+    )
+    oc_managed_subdomain_api_enabled: bool = Field(
+        default=False, validation_alias="OC_MANAGED_SUBDOMAIN_API_ENABLED"
+    )
+    oc_managed_subdomain_lookup_path: str = Field(
+        default="/v1/integration/pasarguard/subdomains/{label}",
+        validation_alias="OC_MANAGED_SUBDOMAIN_LOOKUP_PATH",
+    )
+    oc_managed_subdomain_revalidate_seconds: int = Field(
+        default=300, validation_alias="OC_MANAGED_SUBDOMAIN_REVALIDATE_SECONDS"
+    )
     dns_enabled: bool = Field(default=False, validation_alias="CUSTOM_DOMAIN_DNS_ENABLED")
     dns_nameservers: str = Field(default="", validation_alias="CUSTOM_DOMAIN_DNS_NAMESERVERS")
     dns_timeout_seconds: float = Field(default=5.0, validation_alias="CUSTOM_DOMAIN_DNS_TIMEOUT_SECONDS")

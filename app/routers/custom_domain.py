@@ -8,6 +8,7 @@ from app.models.custom_domain import (
     CustomDomainIngressStatusResponse,
     CustomDomainResponse,
     CustomDomainVerificationInstructions,
+    ManagedSubdomainAssociate,
 )
 from app.operation import OperatorType
 from app.operation.custom_domain import CustomDomainOperation
@@ -28,6 +29,22 @@ async def custom_domain_ingress_status(
     admin: AdminDetails = Depends(require_permission("settings", "read")),
 ):
     return await operator.ingress_status()
+
+
+@router.get("/managed/api-contract")
+async def managed_subdomain_required_api_contract(
+    admin: AdminDetails = Depends(require_permission("settings", "read")),
+):
+    return await operator.managed_subdomain_api_contract()
+
+
+@router.post("/managed/associate", response_model=CustomDomainResponse)
+async def associate_managed_subdomain(
+    payload: ManagedSubdomainAssociate,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(require_permission("settings", "update")),
+):
+    return await operator.associate_managed_subdomain(db, payload, admin)
 
 
 @router.get("", response_model=list[CustomDomainResponse])

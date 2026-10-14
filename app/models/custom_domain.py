@@ -11,6 +11,12 @@ class CustomDomainCreate(BaseModel):
     hostname: str = Field(min_length=1, max_length=512)
 
 
+class ManagedSubdomainAssociate(BaseModel):
+    """Label or full hostname under the managed base domain (for example alpha or alpha.outboundcenter.ir)."""
+
+    subdomain: str = Field(min_length=1, max_length=253)
+
+
 class CustomDomainVerificationInstructions(BaseModel):
     record_type: str = "TXT"
     record_name: str
@@ -21,6 +27,7 @@ class CustomDomainVerificationInstructions(BaseModel):
 class CustomDomainResponse(BaseModel):
     id: int
     hostname: str
+    domain_kind: str = "arbitrary"
     state: SubscriptionCustomDomainState
     verified_at: datetime | None = None
     certificate_ref: str | None = None
@@ -34,6 +41,7 @@ class CustomDomainResponse(BaseModel):
         return cls(
             id=row.id,
             hostname=row.hostname_normalized,
+            domain_kind=getattr(row, "domain_kind", "arbitrary") or "arbitrary",
             state=row.state,
             verified_at=row.verified_at,
             certificate_ref=row.certificate_ref,

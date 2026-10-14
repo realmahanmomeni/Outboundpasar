@@ -8,13 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.crud.custom_domain import (
     create_custom_domain,
     get_custom_domain_by_id,
+    get_managed_domain_for_workspace,
     hash_verification_token,
     list_custom_domains_for_workspace,
     mark_domain_verified,
     refresh_verification_token,
     set_domain_state,
+    upsert_managed_subdomain,
 )
 from app.db.models import SubscriptionCustomDomain, SubscriptionCustomDomainState
+from sqlalchemy import select
 from app.models.admin import AdminDetails
 from app.models.custom_domain import (
     CustomDomainCreate,
@@ -22,15 +25,36 @@ from app.models.custom_domain import (
     CustomDomainIngressStatusResponse,
     CustomDomainResponse,
     CustomDomainVerificationInstructions,
+    ManagedSubdomainAssociate,
 )
 from app.operation import BaseOperation, OperatorType
 from app.services.custom_domain.dns import dns_verification_matches
+from app.services.custom_domain.managed_subdomain import (
+    ManagedSubdomainApiUnavailable,
+    ManagedSubdomainNotEligible,
+    ManagedSubdomainNotOwned,
+    ManagedSubdomainValidationError,
+    normalize_managed_subdomain_input,
+    reject_arbitrary_managed_hostname,
+)
+from app.services.custom_domain.oc_managed_subdomain_client import (
+    get_managed_subdomain_client,
+    required_oc_api_contract,
+)
 from app.services.custom_domain.normalization import (
     DomainValidationError,
     normalize_custom_domain_hostname,
     verification_txt_record_name,
     verification_txt_record_value,
 )
+from app.services.oc_actor_connection import resolve_telegram_binding_admin_id
+from app.services.oc_connection_credentials import (
+    OcConnectionTokenMissing,
+    connection_token_for_actor,
+    get_connection_for_tenant,
+)
+from app.services.oc_integration_client import get_active_integration
+from config import custom_domain_settings
 from app.services.custom_domain.ingress_provider import describe_ingress_architecture_options
 from app.services.custom_domain.ssl_lifecycle import (
     can_request_certificate,
@@ -63,6 +87,79 @@ class CustomDomainOperation(BaseOperation):
             architecture_options=describe_ingress_architecture_options(),
         )
 
+    async def managed_subdomain_api_contract(self) -> dict:
+        return required_oc_api_contract()
+
+    async def associate_managed_subdomain(
+        self,
+        db: AsyncSession,
+        payload: ManagedSubdomainAssociate,
+        admin: AdminDetails,
+    ) -> CustomDomainResponse:
+        tenant_id, workspace_id = await self._workspace_scope(db, admin)
+        try:
+            label, fqdn = normalize_managed_subdomain_input(payload.subdomain)
+        except ManagedSubdomainValidationError as exc:
+            await self.raise_error(str(exc), 422)
+
+        if not custom_domain_settings.oc_managed_subdomain_api_enabled:
+            await self.raise_error(
+                "Outbound Center managed subdomain API is not enabled on this deployment",
+                503,
+            )
+
+        try:
+            integration = await get_active_integration(db)
+            binding = await resolve_telegram_binding_admin_id(db, admin, admin.is_owner)
+            connection = await get_connection_for_tenant(db, tenant_id, binding_admin_id=binding)
+            if connection is None or connection.oc_account_id is None:
+                await self.raise_error("Connect Telegram to Outbound Center before associating a subdomain", 409)
+            token = await connection_token_for_actor(db, admin, admin.is_owner, tenant_id)
+            record = await get_managed_subdomain_client().fetch_owned_subdomain(
+                integration,
+                connection_token=token,
+                label=label,
+                expected_account_id=int(connection.oc_account_id),
+            )
+        except OcConnectionTokenMissing:
+            await self.raise_error("Outbound Center connection credential missing. Reconnect Telegram.", 409)
+        except ManagedSubdomainNotOwned:
+            await self.raise_error("This subdomain is not registered to your Outbound Center account", 403)
+        except ManagedSubdomainNotEligible:
+            await self.raise_error("This subdomain is not eligible for subscription hosting", 409)
+        except ManagedSubdomainApiUnavailable:
+            await self.raise_error("Could not verify subdomain ownership with Outbound Center", 503)
+
+        conflict = (
+            await db.execute(
+                select(SubscriptionCustomDomain).where(
+                    SubscriptionCustomDomain.hostname_normalized == fqdn,
+                    SubscriptionCustomDomain.workspace_id != workspace_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if conflict is not None:
+            await self.raise_error("This subdomain is already associated with another workspace", 409)
+
+        active = custom_domain_settings.ingress_public_https_ready
+        try:
+            row = await upsert_managed_subdomain(
+                db,
+                workspace_id=workspace_id,
+                tenant_id=tenant_id,
+                hostname_normalized=fqdn,
+                label=record.label,
+                oc_subdomain_id=record.subdomain_id,
+                oc_owner_account_id=record.oc_account_id,
+                active=active,
+            )
+            await db.commit()
+            await db.refresh(row)
+        except IntegrityError:
+            await db.rollback()
+            await self.raise_error("This subdomain is already registered", 409)
+        return CustomDomainResponse.from_db(row)
+
     async def list_domains(self, db: AsyncSession, admin: AdminDetails) -> list[CustomDomainResponse]:
         _, workspace_id = await self._workspace_scope(db, admin)
         rows = await list_custom_domains_for_workspace(db, workspace_id)
@@ -77,6 +174,7 @@ class CustomDomainOperation(BaseOperation):
         tenant_id, workspace_id = await self._workspace_scope(db, admin)
         try:
             hostname = normalize_custom_domain_hostname(payload.hostname)
+            reject_arbitrary_managed_hostname(hostname)
         except DomainValidationError as exc:
             await self.raise_error(str(exc), 422)
 

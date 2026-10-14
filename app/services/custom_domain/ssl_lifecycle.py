@@ -173,6 +173,21 @@ async def ingress_ready_for_hostname(
     provisioner: CertificateProvisioner | None = None,
     public_https_ready: bool,
 ) -> bool:
+    from app.db.models import SubscriptionDomainKind
+    from app.services.custom_domain.managed_subdomain import managed_validation_fresh
+    from config import custom_domain_settings
+
+    if domain.domain_kind == SubscriptionDomainKind.oc_managed.value:
+        if domain.state != SubscriptionCustomDomainState.active:
+            return False
+        if not public_https_ready:
+            return False
+        if not managed_validation_fresh(
+            domain,
+            max_age_seconds=custom_domain_settings.oc_managed_subdomain_revalidate_seconds,
+        ):
+            return False
+        return True
     if not certificate_is_operational(domain):
         return False
     if not await (provisioner or get_certificate_provisioner()).certificate_ready(domain):

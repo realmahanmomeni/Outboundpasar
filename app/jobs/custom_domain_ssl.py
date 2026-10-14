@@ -7,7 +7,7 @@ from sqlalchemy import or_, select
 
 from app import scheduler
 from app.db import GetDB
-from app.db.models import SubscriptionCustomDomain, SubscriptionCustomDomainState
+from app.db.models import SubscriptionCustomDomain, SubscriptionCustomDomainState, SubscriptionDomainKind
 from app.services.custom_domain import bootstrap as _custom_domain_bootstrap  # noqa: F401
 from app.services.custom_domain.ssl_lifecycle import (
     CertificateProvisionerError,
@@ -32,6 +32,8 @@ def _retry_delay_seconds() -> int:
 
 async def _process_issuance_row(domain: SubscriptionCustomDomain, provisioner) -> None:
     if domain.state == SubscriptionCustomDomainState.disabled:
+        return
+    if domain.domain_kind == SubscriptionDomainKind.oc_managed.value:
         return
     if not domain_eligible_for_certificate_job(domain):
         domain.state = SubscriptionCustomDomainState.failed

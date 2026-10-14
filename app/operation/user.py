@@ -260,6 +260,24 @@ class UserOperation(BaseOperation):
             if user.admin and user.admin.sub_domain
             else settings.url_prefix
         )
+        workspace_id = user.admin.workspace_id if user.admin else None
+        if workspace_id is not None and db is not None:
+            from app.services.custom_domain.subscription_hostname import subscription_url_prefix_for_workspace
+
+            raw_prefix = await subscription_url_prefix_for_workspace(
+                db,
+                workspace_id,
+                default_prefix=raw_prefix,
+            )
+        elif workspace_id is not None and db is None:
+            async with GetDB() as session:
+                from app.services.custom_domain.subscription_hostname import subscription_url_prefix_for_workspace
+
+                raw_prefix = await subscription_url_prefix_for_workspace(
+                    session,
+                    workspace_id,
+                    default_prefix=raw_prefix,
+                )
         if "*" in raw_prefix:
             salt = secrets.token_hex(8)
             url_prefix = raw_prefix.replace("*", salt)
