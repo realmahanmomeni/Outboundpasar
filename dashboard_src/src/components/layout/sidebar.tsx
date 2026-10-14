@@ -2,7 +2,6 @@ import { Language } from '@/components/common/language'
 import Snowfall from '@/components/common/snowfall'
 import { useTheme } from '@/app/providers/theme-provider'
 import { ThemeToggle } from '@/components/common/theme-toggle'
-import { GoalProgress } from '@/components/layout/goal-progress'
 import { NavMain } from '@/components/layout/nav-main'
 import { NavSecondary } from '@/components/layout/nav-secondary'
 import { NavUser } from '@/components/layout/nav-user'
@@ -11,7 +10,6 @@ import { VersionBadge } from '@/components/layout/version-badge'
 import { Button } from '@/components/ui/button'
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail, useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { DISCUSSION_GROUP } from '@/constants/Project'
 import { useAdmin } from '@/hooks/use-admin'
 import useDirDetection from '@/hooks/use-dir-detection'
 import { useSystemVersion } from '@/hooks/use-system-version'
@@ -41,7 +39,6 @@ import {
   Network,
   Palette,
   PieChart,
-  RssIcon,
   Send,
   Server,
   Settings,
@@ -376,14 +373,6 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       },
     ],
     navSecondary: [],
-    community: [
-      {
-        title: 'discussionGroup',
-        url: DISCUSSION_GROUP,
-        icon: RssIcon,
-        target: '_blank',
-      },
-    ],
   }
 
   return (
@@ -541,9 +530,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarHeader>
         <SidebarContent>
           <NavMain items={data.navMain} />
-          {isOwner(admin) && <NavSecondary items={data.community} label={t('community')} />}
           <NavSecondary items={data.navSecondary} className="mt-auto" />
-          <GoalProgress />
           <div className="flex items-center justify-end px-2 [&>:first-child]:[direction:ltr]">
             {state !== 'collapsed' && (
               <div className="flex items-start gap-2">

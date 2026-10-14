@@ -770,10 +770,7 @@ export default function NodesList() {
                   <h3 className="text-lg font-semibold">{t('nodes.noNodes')}</h3>
                   <p className="text-muted-foreground mx-auto max-w-2xl">
                     {t('nodes.noNodesDescription')}{' '}
-                    <a href="https://github.com/PasarGuard/node" target="_blank" rel="noopener noreferrer" className="text-primary font-medium underline-offset-4 hover:underline">
-                      PasarGuard/node
-                    </a>{' '}
-                    {t('nodes.noNodesDescription2', { defaultValue: 'and connect it to the panel.' })}
+                    {t('nodes.noNodesDescription2', { defaultValue: 'Install an OutboundCenter node and connect it to the panel.' })}
                   </p>
                 </div>
               </CardContent>

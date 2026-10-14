@@ -34,7 +34,7 @@ export function VersionUpdateBanner() {
   const [isClosing, setIsClosing] = useState(false)
   const [isAnimating, setIsAnimating] = useState(false)
   const normalizedVersion = currentVersion ? currentVersion.replace(/[^0-9.]/g, '') : null
-  const { hasUpdate, latestVersion, releaseUrl, isLoading } = useVersionCheck(normalizedVersion, { enabled: isOwnerAdmin })
+  const { hasUpdate, latestVersion, isLoading } = useVersionCheck(normalizedVersion, { enabled: isOwnerAdmin })
 
   const gradientBg = getGradientByColorTheme(colorTheme, isDark, 'banner')
   const indicatorColor = getIndicatorColorByTheme(colorTheme, isDark)
@@ -120,8 +120,6 @@ export function VersionUpdateBanner() {
 
   if (!isOwnerAdmin || isLoading || !hasUpdate || !isVisible || !latestVersion || !normalizedVersion) return null
 
-  const releaseLink = releaseUrl || 'https://github.com/PasarGuard/panel/releases/latest'
-
   return (
     <div
       className={cn(
@@ -139,12 +137,7 @@ export function VersionUpdateBanner() {
       }}
       dir={isRTL ? 'rtl' : 'ltr'}
     >
-      <a
-        href={releaseLink}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={cn('block w-full cursor-pointer transition-all duration-200 ease-in-out hover:opacity-95', isRTL ? 'pr-4 pl-10 sm:pr-4 sm:pl-10' : 'pr-10 pl-4 sm:pr-10 sm:pl-4')}
-      >
+      <div className={cn('block w-full transition-all duration-200 ease-in-out', isRTL ? 'pr-4 pl-10 sm:pr-4 sm:pl-10' : 'pr-10 pl-4 sm:pr-10 sm:pl-4')}>
         <div className="flex items-start gap-2 py-2.5 sm:gap-3 sm:py-3">
           <span className={cn('mt-1.5 flex h-2 w-2 shrink-0 rounded-full sm:mt-1.5 sm:h-2.5 sm:w-2.5', indicatorColor)} />
           <div className="min-w-0 flex-1 overflow-hidden">
@@ -164,7 +157,7 @@ export function VersionUpdateBanner() {
             </div>
           </div>
         </div>
-      </a>
+      </div>
 
       <Button
         variant="ghost"

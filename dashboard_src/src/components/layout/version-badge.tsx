@@ -11,14 +11,13 @@ interface VersionBadgeProps {
 
 export function VersionBadge({ currentVersion, className }: VersionBadgeProps) {
   const { t } = useTranslation()
-  const { hasUpdate, latestVersion, releaseUrl, isLoading } = useVersionCheck(currentVersion)
+  const { hasUpdate, latestVersion, isLoading } = useVersionCheck(currentVersion)
   const { state, isMobile } = useSidebar()
 
   if (isLoading || !currentVersion) {
     return null
   }
 
-  const releaseLink = releaseUrl || 'https://github.com/PasarGuard/panel/releases/latest'
   const showText = isMobile || state === 'expanded'
   const showBadge = state === 'collapsed' && !isMobile
 
@@ -37,19 +36,15 @@ export function VersionBadge({ currentVersion, className }: VersionBadgeProps) {
     return (
       <Tooltip delayDuration={100}>
         <TooltipTrigger asChild>
-          <a
-            href={releaseLink}
-            target="_blank"
-            rel="noopener noreferrer"
+          <span
             className={cn(
-              'inline-flex min-w-max items-center gap-0.5 text-[10px] leading-none whitespace-nowrap text-amber-600 opacity-70 transition-opacity hover:underline hover:opacity-100 dark:text-amber-400',
+              'inline-flex min-w-max items-center gap-0.5 text-[10px] leading-none whitespace-nowrap text-amber-600 opacity-70 dark:text-amber-400',
               className,
             )}
-            onClick={e => e.stopPropagation()}
           >
             <span className="h-1 w-1 shrink-0 rounded-full bg-amber-500 dark:bg-amber-400" />
             <span className="leading-none whitespace-nowrap">{t('version.needsUpdate')}</span>
-          </a>
+          </span>
         </TooltipTrigger>
         <TooltipContent side="bottom" className="p-1.5">
           <div className="space-y-0.5 text-[10px]">
@@ -104,9 +99,9 @@ export function VersionBadge({ currentVersion, className }: VersionBadgeProps) {
   return (
     <Tooltip delayDuration={100}>
       <TooltipTrigger asChild>
-        <a href={releaseLink} target="_blank" rel="noopener noreferrer" className={cn('inline-flex', className)} onClick={e => e.stopPropagation()}>
+        <span className={cn('inline-flex', className)}>
           <span className="h-1.5 w-1.5 rounded-full bg-amber-500 dark:bg-amber-400" />
-        </a>
+        </span>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="p-1.5">
         <div className="space-y-0.5 text-[10px]">
