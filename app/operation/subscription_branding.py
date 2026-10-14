@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,7 +12,16 @@ from app.db.crud.subscription_branding import (
     update_branding_profile,
 )
 from app.models.admin import AdminDetails
-from app.models.subscription_branding import SubscriptionBrandingResponse, SubscriptionBrandingUpsert
+from app.models.subscription_branding import (
+    SubscriptionAppearancePreviewRequest,
+    SubscriptionAppearancePreviewResponse,
+    SubscriptionBrandingResponse,
+    SubscriptionBrandingUpsert,
+)
+from app.services.subscription_customer_experience import (
+    render_customer_subscription_page_html,
+    resolve_customer_subscription_experience_for_preview,
+)
 from app.operation import BaseOperation
 from app.services.workspace_scope import require_admin_workspace_id
 
@@ -73,3 +84,33 @@ class SubscriptionBrandingOperation(BaseOperation):
             await self.raise_error("Subscription branding not found", 404)
         await delete_branding_profile(db, row)
         await db.commit()
+
+    async def preview_customer_page(
+        self,
+        db: AsyncSession,
+        admin: AdminDetails,
+        payload: SubscriptionAppearancePreviewRequest,
+    ) -> SubscriptionAppearancePreviewResponse:
+        _, workspace_id = await self._workspace_scope(db, admin)
+        draft: dict[str, Any] | None = None
+        if not payload.use_active_template:
+            theme = {}
+            if payload.theme_primary:
+                theme["primary"] = payload.theme_primary
+            draft = {
+                "title": payload.title,
+                "description": payload.description,
+                "logo_url": payload.logo_url,
+                "footer_text": payload.footer_text,
+                "theme": theme,
+                "support_links": [],
+                "custom_blocks": [],
+            }
+        experience = await resolve_customer_subscription_experience_for_preview(
+            db,
+            workspace_id=workspace_id,
+            use_active_template=payload.use_active_template,
+            template_draft=draft,
+        )
+        html = render_customer_subscription_page_html(experience)
+        return SubscriptionAppearancePreviewResponse(html=html)

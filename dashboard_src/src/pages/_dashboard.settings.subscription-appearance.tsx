@@ -9,7 +9,6 @@ import {
   createSubscriptionExperienceTemplate,
   deleteSubscriptionExperienceTemplate,
   listSubscriptionExperienceTemplates,
-  previewSubscriptionExperienceTemplate,
   type SubscriptionExperienceTemplate,
   type SubscriptionExperienceTemplatePayload,
   updateSubscriptionExperienceTemplate,
@@ -18,6 +17,7 @@ import {
   createSubscriptionBranding,
   deleteSubscriptionBranding,
   getSubscriptionBranding,
+  previewSubscriptionCustomerPage,
   updateSubscriptionBranding,
   type SubscriptionBrandingPayload,
 } from '@/service/subscription-branding-api'
@@ -38,22 +38,29 @@ const emptyForm: SubscriptionExperienceTemplatePayload = {
   custom_blocks: [],
 }
 
+const emptyBranding: SubscriptionBrandingPayload = {
+  brand_name: '',
+  logo_url: '',
+  support_url: '',
+  telegram_url: '',
+  welcome_message: '',
+  footer_text: '',
+  primary_color: '',
+  secondary_color: '',
+  favicon_url: '',
+  custom_css: '',
+  support_text: '',
+  customer_footer: '',
+  hide_platform_branding: false,
+}
+
 export default function SubscriptionAppearanceSettings() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<number | 'new' | null>(null)
   const [form, setForm] = useState<SubscriptionExperienceTemplatePayload>(emptyForm)
   const [previewHtml, setPreviewHtml] = useState<string>('')
-  const [brandingForm, setBrandingForm] = useState<SubscriptionBrandingPayload>({
-    brand_name: '',
-    logo_url: '',
-    support_url: '',
-    telegram_url: '',
-    welcome_message: '',
-    footer_text: '',
-    primary_color: '',
-    secondary_color: '',
-  })
+  const [brandingForm, setBrandingForm] = useState<SubscriptionBrandingPayload>(emptyBranding)
 
   const { data: brandingData, refetch: refetchBranding } = useQuery({
     queryKey: ['subscription-branding'],
@@ -77,6 +84,11 @@ export default function SubscriptionAppearanceSettings() {
         footer_text: brandingData.footer_text ?? '',
         primary_color: brandingData.primary_color ?? '',
         secondary_color: brandingData.secondary_color ?? '',
+        favicon_url: brandingData.favicon_url ?? '',
+        custom_css: brandingData.custom_css ?? '',
+        support_text: brandingData.support_text ?? '',
+        customer_footer: brandingData.customer_footer ?? '',
+        hide_platform_branding: brandingData.hide_platform_branding ?? false,
       })
     }
   }, [brandingData])
@@ -100,7 +112,7 @@ export default function SubscriptionAppearanceSettings() {
       return
     }
     if (typeof selectedId === 'number') {
-      const row = templates.find((t) => t.id === selectedId)
+      const row = templates.find((tpl) => tpl.id === selectedId)
       if (row) {
         setForm({
           name: row.name,
@@ -154,22 +166,23 @@ export default function SubscriptionAppearanceSettings() {
     },
   })
 
-  const previewMutation = useMutation({
-    mutationFn: () =>
-      previewSubscriptionExperienceTemplate({
+  const customerPreviewMutation = useMutation({
+    mutationFn: () => {
+      const editingTemplate = selectedId === 'new' || typeof selectedId === 'number'
+      return previewSubscriptionCustomerPage({
+        use_active_template: !editingTemplate,
         title: form.title,
         description: form.description,
         logo_url: form.logo_url,
-        theme: form.theme,
-        support_links: form.support_links,
         footer_text: form.footer_text,
-        custom_blocks: form.custom_blocks,
-      }).then((res) => res.html),
+        theme_primary: form.theme?.primary,
+      }).then((res) => res.html)
+    },
     onSuccess: (html) => setPreviewHtml(html),
     onError: () => toast.error(t('settings.subscriptionAppearance.previewFailed', 'Preview failed')),
   })
 
-  const activeTemplate = templates.find((t) => t.is_active)
+  const activeTemplate = templates.find((tpl) => tpl.is_active)
 
   return (
     <div className="space-y-6 p-1">
@@ -178,7 +191,7 @@ export default function SubscriptionAppearanceSettings() {
         <p className="text-sm text-muted-foreground">
           {t(
             'settings.subscriptionAppearance.description',
-            'Customize the browser subscription page for your workspace. Existing subscription API responses are unchanged until the feature flag is enabled on the server.',
+            'Customize the browser subscription page for your workspace. Subscription config/token APIs stay unchanged until server feature flags are enabled.',
           )}
         </p>
       </div>
@@ -187,40 +200,73 @@ export default function SubscriptionAppearanceSettings() {
         <CardHeader>
           <CardTitle>{t('settings.subscriptionBranding.title', 'White-label branding')}</CardTitle>
           <CardDescription>
-            {t(
-              'settings.subscriptionBranding.hint',
-              'One branding profile per workspace. Applied when SUBSCRIPTION_BRANDING_ENABLED is on.',
-            )}
+            {t('settings.subscriptionBranding.hint', 'One profile per workspace. Merged under active template when flags are on.')}
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-2">
           <div>
             <Label>{t('settings.subscriptionBranding.brandName', 'Brand name')}</Label>
-            <Input
-              value={brandingForm.brand_name ?? ''}
-              onChange={(e) => setBrandingForm({ ...brandingForm, brand_name: e.target.value })}
-            />
+            <Input value={brandingForm.brand_name ?? ''} onChange={(e) => setBrandingForm({ ...brandingForm, brand_name: e.target.value })} />
           </div>
           <div>
             <Label>{t('settings.subscriptionAppearance.logoUrl', 'Logo URL')}</Label>
-            <Input
-              value={brandingForm.logo_url ?? ''}
-              onChange={(e) => setBrandingForm({ ...brandingForm, logo_url: e.target.value })}
-            />
+            <Input value={brandingForm.logo_url ?? ''} onChange={(e) => setBrandingForm({ ...brandingForm, logo_url: e.target.value })} />
+          </div>
+          <div>
+            <Label>{t('settings.subscriptionBranding.favicon', 'Favicon URL')}</Label>
+            <Input value={brandingForm.favicon_url ?? ''} onChange={(e) => setBrandingForm({ ...brandingForm, favicon_url: e.target.value })} />
           </div>
           <div>
             <Label>{t('settings.subscriptions.support_url', 'Support URL')}</Label>
-            <Input
-              value={brandingForm.support_url ?? ''}
-              onChange={(e) => setBrandingForm({ ...brandingForm, support_url: e.target.value })}
-            />
+            <Input value={brandingForm.support_url ?? ''} onChange={(e) => setBrandingForm({ ...brandingForm, support_url: e.target.value })} />
           </div>
           <div>
             <Label>{t('settings.subscriptionBranding.telegram', 'Telegram URL')}</Label>
+            <Input value={brandingForm.telegram_url ?? ''} onChange={(e) => setBrandingForm({ ...brandingForm, telegram_url: e.target.value })} />
+          </div>
+          <div>
+            <Label>{t('settings.subscriptionAppearance.primaryColor', 'Primary color (HSL)')}</Label>
             <Input
-              value={brandingForm.telegram_url ?? ''}
-              onChange={(e) => setBrandingForm({ ...brandingForm, telegram_url: e.target.value })}
+              placeholder="216 46% 40%"
+              value={brandingForm.primary_color ?? ''}
+              onChange={(e) => setBrandingForm({ ...brandingForm, primary_color: e.target.value })}
             />
+          </div>
+          <div>
+            <Label>{t('settings.subscriptionAppearance.accentColor', 'Accent color (HSL)')}</Label>
+            <Input
+              placeholder="240 5% 90%"
+              value={brandingForm.secondary_color ?? ''}
+              onChange={(e) => setBrandingForm({ ...brandingForm, secondary_color: e.target.value })}
+            />
+          </div>
+          <div className="md:col-span-2">
+            <Label>{t('settings.subscriptionBranding.welcome', 'Welcome message')}</Label>
+            <Textarea value={brandingForm.welcome_message ?? ''} onChange={(e) => setBrandingForm({ ...brandingForm, welcome_message: e.target.value })} />
+          </div>
+          <div className="md:col-span-2">
+            <Label>{t('settings.subscriptionBranding.supportText', 'Support text')}</Label>
+            <Textarea value={brandingForm.support_text ?? ''} onChange={(e) => setBrandingForm({ ...brandingForm, support_text: e.target.value })} />
+          </div>
+          <div className="md:col-span-2">
+            <Label>{t('settings.subscriptionBranding.customerFooter', 'Customer footer')}</Label>
+            <Textarea value={brandingForm.customer_footer ?? ''} onChange={(e) => setBrandingForm({ ...brandingForm, customer_footer: e.target.value })} />
+          </div>
+          <div className="md:col-span-2">
+            <Label>{t('settings.subscriptionBranding.customCss', 'Custom CSS')}</Label>
+            <Textarea
+              className="font-mono text-xs"
+              rows={4}
+              value={brandingForm.custom_css ?? ''}
+              onChange={(e) => setBrandingForm({ ...brandingForm, custom_css: e.target.value })}
+            />
+          </div>
+          <div className="flex items-center gap-2 md:col-span-2">
+            <Switch
+              checked={brandingForm.hide_platform_branding ?? false}
+              onCheckedChange={(v) => setBrandingForm({ ...brandingForm, hide_platform_branding: v })}
+            />
+            <Label>{t('settings.subscriptionBranding.hidePlatform', 'Hide recommended applications block')}</Label>
           </div>
           <div className="md:col-span-2 flex flex-wrap gap-2">
             <Button
@@ -260,11 +306,11 @@ export default function SubscriptionAppearanceSettings() {
 
       <Card>
         <CardHeader>
-          <CardTitle>{t('settings.subscriptionAppearance.templates', 'Templates')}</CardTitle>
+          <CardTitle>{t('settings.subscriptionAppearance.templates', 'Experience templates')}</CardTitle>
           <CardDescription>
             {activeTemplate
               ? t('settings.subscriptionAppearance.active', { name: activeTemplate.name, defaultValue: `Active: ${activeTemplate.name}` })
-              : t('settings.subscriptionAppearance.noActive', 'No active template (default page)')}
+              : t('settings.subscriptionAppearance.noActive', 'No active template (branding-only or default page)')}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
@@ -272,12 +318,7 @@ export default function SubscriptionAppearanceSettings() {
             <span className="text-sm text-muted-foreground">{t('common.loading', 'Loading…')}</span>
           ) : (
             templates.map((tpl: SubscriptionExperienceTemplate) => (
-              <Button
-                key={tpl.id}
-                variant={selectedId === tpl.id ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setSelectedId(tpl.id)}
-              >
+              <Button key={tpl.id} variant={selectedId === tpl.id ? 'default' : 'outline'} size="sm" onClick={() => setSelectedId(tpl.id)}>
                 {tpl.name}
                 {tpl.is_active ? ' ✓' : ''}
               </Button>
@@ -292,7 +333,7 @@ export default function SubscriptionAppearanceSettings() {
       {(selectedId === 'new' || typeof selectedId === 'number') && (
         <Card>
           <CardHeader>
-            <CardTitle>{t('settings.subscriptionAppearance.editor', 'Editor')}</CardTitle>
+            <CardTitle>{t('settings.subscriptionAppearance.editor', 'Template editor')}</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2">
             <div className="space-y-3">
@@ -301,10 +342,7 @@ export default function SubscriptionAppearanceSettings() {
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
               </div>
               <div className="flex items-center gap-2">
-                <Switch
-                  checked={form.is_enabled ?? true}
-                  onCheckedChange={(v) => setForm({ ...form, is_enabled: v })}
-                />
+                <Switch checked={form.is_enabled ?? true} onCheckedChange={(v) => setForm({ ...form, is_enabled: v })} />
                 <Label>{t('common.enabled', 'Enabled')}</Label>
               </div>
               <div>
@@ -332,14 +370,6 @@ export default function SubscriptionAppearanceSettings() {
                 <Textarea value={form.footer_text ?? ''} onChange={(e) => setForm({ ...form, footer_text: e.target.value })} />
               </div>
             </div>
-            <div className="space-y-3">
-              <Button type="button" variant="outline" onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending}>
-                {t('settings.subscriptionAppearance.preview', 'Preview')}
-              </Button>
-              {previewHtml ? (
-                <div className="rounded-md border p-3 text-sm" dangerouslySetInnerHTML={{ __html: previewHtml }} />
-              ) : null}
-            </div>
             <div className="flex flex-wrap gap-2 md:col-span-2">
               <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
                 {t('common.save', 'Save')}
@@ -361,6 +391,31 @@ export default function SubscriptionAppearanceSettings() {
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('settings.subscriptionAppearance.customerPreview', 'Customer page preview')}</CardTitle>
+          <CardDescription>
+            {t(
+              'settings.subscriptionAppearance.customerPreviewHint',
+              'Uses the same HTML template as live subscription pages, merging the active template (or current editor draft) with your workspace branding.',
+            )}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Button type="button" variant="outline" onClick={() => customerPreviewMutation.mutate()} disabled={customerPreviewMutation.isPending}>
+            {t('settings.subscriptionAppearance.preview', 'Preview customer page')}
+          </Button>
+          {previewHtml ? (
+            <iframe
+              title="subscription-preview"
+              className="h-[min(70vh,720px)] w-full rounded-md border bg-white"
+              sandbox="allow-same-origin"
+              srcDoc={previewHtml}
+            />
+          ) : null}
+        </CardContent>
+      </Card>
     </div>
   )
 }

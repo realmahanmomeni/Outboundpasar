@@ -2,7 +2,12 @@ from fastapi import APIRouter, Depends, status
 
 from app.db import AsyncSession, get_db
 from app.models.admin import AdminDetails
-from app.models.subscription_branding import SubscriptionBrandingResponse, SubscriptionBrandingUpsert
+from app.models.subscription_branding import (
+    SubscriptionAppearancePreviewRequest,
+    SubscriptionAppearancePreviewResponse,
+    SubscriptionBrandingResponse,
+    SubscriptionBrandingUpsert,
+)
 from app.operation import OperatorType
 from app.operation.subscription_branding import SubscriptionBrandingOperation
 from app.utils import responses
@@ -51,3 +56,12 @@ async def delete_subscription_branding(
 ):
     await operator.delete_branding(db, admin)
     return {}
+
+
+@router.post("/preview", response_model=SubscriptionAppearancePreviewResponse)
+async def preview_subscription_customer_page(
+    payload: SubscriptionAppearancePreviewRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(require_permission("settings", "read")),
+):
+    return await operator.preview_customer_page(db, admin, payload)

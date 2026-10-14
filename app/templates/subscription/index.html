@@ -2,6 +2,12 @@
 <html>
     <head>
         <title>{{ user.username }} - {% if experience and experience.title %}{{ experience.title }}{% else %}Subscription Information{% endif %}</title>
+        {% if experience and experience.favicon_url %}
+        <link rel="icon" href="{{ experience.favicon_url }}" />
+        {% endif %}
+        {% if experience and experience.custom_css %}
+        <style>{{ experience.custom_css }}</style>
+        {% endif %}
         {% if experience and experience.theme %}
         <style>
             {% if experience.theme.primary %}:root { --primary: {{ experience.theme.primary }}; }{% endif %}
@@ -562,6 +568,9 @@
             {% if experience and experience.description %}
             <p style="margin-bottom: 16px; color: hsl(var(--muted-foreground));">{{ experience.description }}</p>
             {% endif %}
+            {% if experience and experience.support_text %}
+            <p style="margin-bottom: 16px; color: hsl(var(--muted-foreground));">{{ experience.support_text }}</p>
+            {% endif %}
 
             {% if announce %}
             <div class="announcement">
@@ -635,7 +644,7 @@
             </div>
             {% endif %}
 
-            {% if apps %}
+            {% if apps and not (experience and experience.hide_platform_branding) %}
             <h2 style="text-align: center; font-size: 1.8rem; font-weight: 600; margin-bottom: 25px;">Recommended Applications</h2>
             <div class="applications-container">
                 {% for app in apps %}
@@ -692,9 +701,9 @@
             {% endfor %}
             {% endif %}
 
-            {% if experience and experience.footer_text %}
+            {% if experience and (experience.customer_footer or experience.footer_text) %}
             <footer style="margin-top: 32px; font-size: 0.9rem; color: hsl(var(--muted-foreground));">
-                {{ experience.footer_text }}
+                {{ experience.customer_footer or experience.footer_text }}
             </footer>
             {% endif %}
         </div>

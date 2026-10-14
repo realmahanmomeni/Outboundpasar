@@ -36,6 +36,11 @@ async def create_branding_profile(
         footer_text=payload.footer_text,
         primary_color=payload.primary_color,
         secondary_color=payload.secondary_color,
+        favicon_url=payload.favicon_url,
+        custom_css=payload.custom_css,
+        support_text=payload.support_text,
+        customer_footer=payload.customer_footer,
+        hide_platform_branding=bool(payload.hide_platform_branding),
         updated_at=now,
     )
     db.add(row)
@@ -56,6 +61,11 @@ async def update_branding_profile(
     row.footer_text = payload.footer_text
     row.primary_color = payload.primary_color
     row.secondary_color = payload.secondary_color
+    row.favicon_url = payload.favicon_url
+    row.custom_css = payload.custom_css
+    row.support_text = payload.support_text
+    row.customer_footer = payload.customer_footer
+    row.hide_platform_branding = bool(payload.hide_platform_branding)
     row.updated_at = dt.now(UTC)
     await db.flush()
     return row

@@ -11,6 +11,11 @@ export interface SubscriptionBrandingProfile {
   footer_text?: string | null
   primary_color?: string | null
   secondary_color?: string | null
+  favicon_url?: string | null
+  custom_css?: string | null
+  support_text?: string | null
+  customer_footer?: string | null
+  hide_platform_branding?: boolean
   created_at: string
   updated_at: string
 }
@@ -24,6 +29,20 @@ export type SubscriptionBrandingPayload = {
   footer_text?: string | null
   primary_color?: string | null
   secondary_color?: string | null
+  favicon_url?: string | null
+  custom_css?: string | null
+  support_text?: string | null
+  customer_footer?: string | null
+  hide_platform_branding?: boolean
+}
+
+export type SubscriptionAppearancePreviewPayload = {
+  use_active_template: boolean
+  title?: string | null
+  description?: string | null
+  logo_url?: string | null
+  footer_text?: string | null
+  theme_primary?: string | null
 }
 
 const base = '/api/subscription/branding'
@@ -50,4 +69,12 @@ export function updateSubscriptionBranding(data: SubscriptionBrandingPayload) {
 
 export function deleteSubscriptionBranding() {
   return orvalFetcher<void>(base, { method: 'DELETE' })
+}
+
+export function previewSubscriptionCustomerPage(data: SubscriptionAppearancePreviewPayload) {
+  return orvalFetcher<{ html: string }>(`${base}/preview`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+    headers: { 'Content-Type': 'application/json' },
+  })
 }

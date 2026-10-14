@@ -29,8 +29,13 @@ class SubscriptionBrandingUpsert(BaseModel):
     footer_text: str | None = Field(default=None, max_length=4096)
     primary_color: str | None = Field(default=None, max_length=64)
     secondary_color: str | None = Field(default=None, max_length=64)
+    favicon_url: str | None = Field(default=None, max_length=2048)
+    custom_css: str | None = Field(default=None, max_length=16384)
+    support_text: str | None = Field(default=None, max_length=4096)
+    customer_footer: str | None = Field(default=None, max_length=4096)
+    hide_platform_branding: bool | None = False
 
-    @field_validator("logo_url", "support_url", "telegram_url")
+    @field_validator("logo_url", "support_url", "telegram_url", "favicon_url")
     @classmethod
     def validate_urls(cls, value: str | None) -> str | None:
         return _optional_http_url(value)
@@ -47,6 +52,11 @@ class SubscriptionBrandingResponse(BaseModel):
     footer_text: str | None = None
     primary_color: str | None = None
     secondary_color: str | None = None
+    favicon_url: str | None = None
+    custom_css: str | None = None
+    support_text: str | None = None
+    customer_footer: str | None = None
+    hide_platform_branding: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -63,9 +73,29 @@ class SubscriptionBrandingResponse(BaseModel):
             footer_text=row.footer_text,
             primary_color=row.primary_color,
             secondary_color=row.secondary_color,
+            favicon_url=row.favicon_url,
+            custom_css=row.custom_css,
+            support_text=row.support_text,
+            customer_footer=row.customer_footer,
+            hide_platform_branding=bool(row.hide_platform_branding),
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
+
+
+class SubscriptionAppearancePreviewRequest(BaseModel):
+    """Draft template fields for merged customer-page preview (workspace-scoped)."""
+
+    use_active_template: bool = True
+    title: str | None = Field(default=None, max_length=512)
+    description: str | None = Field(default=None, max_length=4096)
+    logo_url: str | None = Field(default=None, max_length=2048)
+    footer_text: str | None = Field(default=None, max_length=4096)
+    theme_primary: str | None = Field(default=None, max_length=64)
+
+
+class SubscriptionAppearancePreviewResponse(BaseModel):
+    html: str
 
 
 def branding_experience_overlay(row) -> dict[str, Any]:
@@ -80,11 +110,17 @@ def branding_experience_overlay(row) -> dict[str, Any]:
         theme["primary"] = row.primary_color
     if row.secondary_color:
         theme["accent"] = row.secondary_color
+    footer = row.customer_footer or row.footer_text
     return {
         "title": row.brand_name,
         "description": row.welcome_message,
         "logo_url": row.logo_url,
-        "footer_text": row.footer_text,
+        "footer_text": footer,
+        "customer_footer": footer,
+        "support_text": row.support_text,
+        "favicon_url": row.favicon_url,
+        "custom_css": row.custom_css,
+        "hide_platform_branding": bool(row.hide_platform_branding),
         "theme": theme,
         "support_links": support_links,
         "custom_blocks": [],

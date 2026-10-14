@@ -600,6 +600,11 @@ class SubscriptionBrandingProfile(Base, CreatedAtUTCMixin):
     footer_text: Mapped[str | None] = mapped_column(Text(), default=None)
     primary_color: Mapped[str | None] = mapped_column(String(64), default=None)
     secondary_color: Mapped[str | None] = mapped_column(String(64), default=None)
+    favicon_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    custom_css: Mapped[str | None] = mapped_column(Text(), default=None)
+    support_text: Mapped[str | None] = mapped_column(Text(), default=None)
+    customer_footer: Mapped[str | None] = mapped_column(Text(), default=None)
+    hide_platform_branding: Mapped[bool] = mapped_column(default=False, server_default="0")
     updated_at: Mapped[dt] = mapped_column(
         DateTime(timezone=True),
         default=lambda: dt.now(UTC),

@@ -26,6 +26,18 @@ def merge_experience_with_branding(
         merged["support_links"] = existing
     elif links:
         merged["support_links"] = links
+    for key in (
+        "favicon_url",
+        "custom_css",
+        "support_text",
+        "customer_footer",
+        "hide_platform_branding",
+    ):
+        template_val = base.get(key)
+        if template_val not in (None, "", [], {}):
+            merged[key] = template_val
+        elif key in branding_overlay:
+            merged[key] = branding_overlay[key]
     return merged
 
 
