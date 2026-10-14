@@ -10,7 +10,7 @@ from app.db.crud.user_panel_binding import (
     list_user_panel_bindings,
 )
 from app.db.models import User
-from app.db.models_oc import OCPanel, UserPanelBinding, UserPanelBindingSource
+from app.db.models_oc import OCPanel, UserPanelBinding
 from app.models.admin import AdminDetails
 from app.models.user_panel_binding import (
     UserPanelBindingCreate,
@@ -19,11 +19,12 @@ from app.models.user_panel_binding import (
     UserPanelBindingUpdate,
 )
 from app.operation import BaseOperation
+from app.services.tenant_admin_scope import resolve_admin_tenant_id
 from app.services.workspace_scope import ensure_actor_panel_access
 
 
 class UserPanelBindingOperation(BaseOperation):
-    async def _user_tenant_id(self, db_user: User) -> int | None:
+    async def _user_tenant_id(self, db: AsyncSession, db_user: User) -> int | None:
         if db_user.admin_id is None:
             return None
         if db_user.admin is not None:
@@ -50,7 +51,8 @@ class UserPanelBindingOperation(BaseOperation):
             return
         if user_tenant_id is None or panel.tenant_id is None:
             await self.raise_error(message="Panel not found", code=404)
-        if panel.tenant_id != user_tenant_id or panel.tenant_id != admin.tenant_id:
+        caller_tenant_id = await resolve_admin_tenant_id(db, admin, False)
+        if caller_tenant_id is None or panel.tenant_id != user_tenant_id or panel.tenant_id != caller_tenant_id:
             await self.raise_error(message="Panel not found", code=404)
         try:
             await ensure_actor_panel_access(
@@ -100,7 +102,7 @@ class UserPanelBindingOperation(BaseOperation):
             db, user_id, admin, scope_action="update", load_admin=True
         )
         panel = await self._get_panel_or_404(db, payload.oc_panel_id)
-        user_tenant_id = await self._user_tenant_id(db_user)
+        user_tenant_id = await self._user_tenant_id(db, db_user)
         if admin.is_owner:
             await self._ensure_owner_cross_tenant_panel(panel, user_tenant_id)
         else:
@@ -134,7 +136,8 @@ class UserPanelBindingOperation(BaseOperation):
         await self.get_validated_user_by_id(db, user_id, admin, scope_action="update")
         binding = await self._get_binding_for_user(db, user_id, binding_id)
         if not admin.is_owner:
-            if binding.tenant_id != admin.tenant_id:
+            caller_tenant_id = await resolve_admin_tenant_id(db, admin, False)
+            if caller_tenant_id is None or binding.tenant_id != caller_tenant_id:
                 await self.raise_error(message="Panel binding not found", code=404)
             panel = await self._get_panel_or_404(db, binding.oc_panel_id)
             await self._ensure_panel_tenant_compatible(db, panel, binding.tenant_id, admin)
@@ -156,7 +159,8 @@ class UserPanelBindingOperation(BaseOperation):
         await self.get_validated_user_by_id(db, user_id, admin, scope_action="update")
         binding = await self._get_binding_for_user(db, user_id, binding_id)
         if not admin.is_owner:
-            if binding.tenant_id != admin.tenant_id:
+            caller_tenant_id = await resolve_admin_tenant_id(db, admin, False)
+            if caller_tenant_id is None or binding.tenant_id != caller_tenant_id:
                 await self.raise_error(message="Panel binding not found", code=404)
             panel = await self._get_panel_or_404(db, binding.oc_panel_id)
             await self._ensure_panel_tenant_compatible(db, panel, binding.tenant_id, admin)

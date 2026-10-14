@@ -461,8 +461,9 @@ class UserOperation(BaseOperation):
         return [user.subscription_url for user in users_list]
 
     async def validate_user(self, db_user: User, include_subscription_url: bool = True) -> UserNotificationResponse:
-        from sqlalchemy.ext.asyncio import async_object_session
         from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_object_session
+
         from app.db.models_oc import OCUserMapping
 
         lifetime_used_traffic = db_user.lifetime_used_traffic
@@ -1060,11 +1061,12 @@ class UserOperation(BaseOperation):
             limit=len(ids_list),
         )
         workspace_id = await _actor_workspace_id(db, admin)
+        tenant_id = await _actor_tenant_id(db, admin)
         users = await get_users(
             db,
             query=query,
             load_admin_role=load_admin_role,
-            tenant_id=admin.tenant_id if not admin.is_owner else None,
+            tenant_id=tenant_id,
             workspace_id=workspace_id,
         )
 
@@ -1530,13 +1532,14 @@ class UserOperation(BaseOperation):
             query = query.model_copy(update={"owner": [admin.username], "admin_ids": None})
 
         workspace_id = await _actor_workspace_id(db, admin)
+        tenant_id = await _actor_tenant_id(db, admin)
         users, count = await get_users(
             db=db,
             query=query,
             return_with_count=True,
             load_usage_logs=False,
             load_lifetime_used_traffic=True,
-            tenant_id=admin.tenant_id if not admin.is_owner else None,
+            tenant_id=tenant_id,
             workspace_id=workspace_id,
         )
 
@@ -1567,11 +1570,12 @@ class UserOperation(BaseOperation):
 
         # Call CRUD function
         workspace_id = await _actor_workspace_id(db, admin)
+        tenant_id = await _actor_tenant_id(db, admin)
         rows, total = await get_users_simple(
             db=db,
             query=query,
             admin=admin_filter,
-            tenant_id=admin.tenant_id if not admin.is_owner else None,
+            tenant_id=tenant_id,
             workspace_id=workspace_id,
         )
 
@@ -1669,7 +1673,7 @@ class UserOperation(BaseOperation):
         """
 
         expired_after, expired_before = await self.validate_dates(query.expired_after, query.expired_before, False)
-        tenant_id = admin.tenant_id if not admin.is_owner else None
+        tenant_id = await _actor_tenant_id(db, admin)
         workspace_id = await _actor_workspace_id(db, admin)
         if query.admin_username:
             admin_id = (await self.get_validated_admin(db, query.admin_username, current_admin=admin)).id
@@ -1701,7 +1705,7 @@ class UserOperation(BaseOperation):
         """
 
         expired_after, expired_before = await self.validate_dates(query.expired_after, query.expired_before, False)
-        tenant_id = admin.tenant_id if not admin.is_owner else None
+        tenant_id = await _actor_tenant_id(db, admin)
         workspace_id = await _actor_workspace_id(db, admin)
 
         if query.admin_username:
