@@ -45,6 +45,11 @@ def managed_base_domain() -> str:
     return custom_domain_settings.managed_subscription_base_domain.strip().lower().rstrip(".")
 
 
+def managed_domain_suffix() -> str:
+    """Public suffix shown in Settings UI (single global config)."""
+    return managed_base_domain()
+
+
 def fqdn_for_label(label: str) -> str:
     normalized_label = normalize_managed_subdomain_label(label)
     return f"{normalized_label}.{managed_base_domain()}"

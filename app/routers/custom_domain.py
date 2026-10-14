@@ -2,6 +2,10 @@ from fastapi import APIRouter, Depends, Query
 
 from app.db import AsyncSession, get_db
 from app.models.admin import AdminDetails
+from app.models.managed_subdomain_integration import (
+    ManagedSubdomainSettingsResponse,
+    ManagedSubdomainSettingsUpdate,
+)
 from app.models.custom_domain import (
     CustomDomainCreate,
     CustomDomainCreateResponse,
@@ -36,6 +40,23 @@ async def managed_subdomain_required_api_contract(
     admin: AdminDetails = Depends(require_permission("settings", "read")),
 ):
     return await operator.managed_subdomain_api_contract()
+
+
+@router.get("/managed/settings", response_model=ManagedSubdomainSettingsResponse)
+async def get_managed_subdomain_settings(
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(require_permission("settings", "read")),
+):
+    return await operator.get_managed_subdomain_settings(db, admin)
+
+
+@router.put("/managed/settings", response_model=ManagedSubdomainSettingsResponse)
+async def update_managed_subdomain_settings(
+    payload: ManagedSubdomainSettingsUpdate,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(require_permission("settings", "update")),
+):
+    return await operator.update_managed_subdomain_settings(db, payload, admin)
 
 
 @router.post("/managed/associate", response_model=CustomDomainResponse)

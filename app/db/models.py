@@ -1163,5 +1163,40 @@ class SubscriptionCustomDomain(Base, CreatedAtUTCMixin):
     )
 
 
+class ManagedSubdomainBotBindingStatus(str, Enum):
+    pending_claim = "pending_claim"
+    claimed = "claimed"
+    revoked = "revoked"
+
+
+class ManagedSubdomainBotBinding(Base, CreatedAtUTCMixin):
+    """Pre-registered managed subdomain from Outbound Center bot (awaiting panel admin confirmation)."""
+
+    __tablename__ = "managed_subdomain_bot_bindings"
+    __table_args__ = (
+        UniqueConstraint("label", name="uq_managed_subdomain_bot_bindings_label"),
+        UniqueConstraint("idempotency_key", name="uq_managed_subdomain_bot_bindings_idempotency_key"),
+        Index("ix_managed_subdomain_bot_bindings_workspace_id", "workspace_id"),
+    )
+
+    tenant_id: Mapped[int] = fk_id_column("tenants.id", ondelete="CASCADE")
+    workspace_id: Mapped[int] = fk_id_column("workspaces.id", ondelete="CASCADE")
+    binding_admin_id: Mapped[int] = fk_id_column("admins.id", ondelete="CASCADE")
+    label: Mapped[str] = mapped_column(String(63))
+    fqdn: Mapped[str] = mapped_column(String(253))
+    oc_subdomain_id: Mapped[str] = mapped_column(String(128))
+    oc_account_id: Mapped[int] = mapped_column()
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default=ManagedSubdomainBotBindingStatus.pending_claim.value,
+        server_default="pending_claim",
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), default=None)
+    revoked_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
+    )
+
+
 # Import OC integration models so Alembic can discover them
 import app.db.models_oc  # noqa: F401

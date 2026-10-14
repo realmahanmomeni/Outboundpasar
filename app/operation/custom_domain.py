@@ -27,14 +27,27 @@ from app.models.custom_domain import (
     CustomDomainVerificationInstructions,
     ManagedSubdomainAssociate,
 )
+from app.models.managed_subdomain_integration import (
+    ManagedSubdomainSettingsResponse,
+    ManagedSubdomainSettingsUpdate,
+)
 from app.operation import BaseOperation, OperatorType
 from app.services.custom_domain.dns import dns_verification_matches
+from app.db.crud.managed_subdomain_binding import (
+    get_binding_for_claim,
+    get_claimed_binding_for_workspace,
+    get_pending_binding_for_workspace_admin,
+    mark_binding_claimed,
+)
 from app.services.custom_domain.managed_subdomain import (
     ManagedSubdomainApiUnavailable,
     ManagedSubdomainNotEligible,
     ManagedSubdomainNotOwned,
     ManagedSubdomainValidationError,
+    fqdn_for_label,
+    managed_domain_suffix,
     normalize_managed_subdomain_input,
+    normalize_managed_subdomain_label,
     reject_arbitrary_managed_hostname,
 )
 from app.services.custom_domain.oc_managed_subdomain_client import (
@@ -89,6 +102,106 @@ class CustomDomainOperation(BaseOperation):
 
     async def managed_subdomain_api_contract(self) -> dict:
         return required_oc_api_contract()
+
+    async def _binding_admin_id(self, db: AsyncSession, admin: AdminDetails) -> int:
+        binding = await resolve_telegram_binding_admin_id(db, admin, admin.is_owner)
+        return int(binding if binding is not None else admin.id)
+
+    async def get_managed_subdomain_settings(
+        self, db: AsyncSession, admin: AdminDetails
+    ) -> ManagedSubdomainSettingsResponse:
+        _, workspace_id = await self._workspace_scope(db, admin)
+        binding_admin_id = await self._binding_admin_id(db, admin)
+        pending = await get_pending_binding_for_workspace_admin(
+            db, workspace_id=workspace_id, binding_admin_id=binding_admin_id
+        )
+        domain = await get_managed_domain_for_workspace(db, workspace_id)
+        label = None
+        fqdn = None
+        state = None
+        if domain is not None:
+            label = domain.oc_subdomain_label or domain.hostname_normalized.split(".", 1)[0]
+            fqdn = domain.hostname_normalized
+            state = str(domain.state.value if hasattr(domain.state, "value") else domain.state)
+        elif pending is not None:
+            label = None
+        return ManagedSubdomainSettingsResponse(
+            domain_suffix=managed_domain_suffix(),
+            label=label,
+            fqdn=fqdn,
+            pending_claim_label=pending.label if pending else None,
+            state=state,
+        )
+
+    async def update_managed_subdomain_settings(
+        self,
+        db: AsyncSession,
+        payload: ManagedSubdomainSettingsUpdate,
+        admin: AdminDetails,
+    ) -> ManagedSubdomainSettingsResponse:
+        tenant_id, workspace_id = await self._workspace_scope(db, admin)
+        binding_admin_id = await self._binding_admin_id(db, admin)
+
+        if payload.label is None or not str(payload.label).strip():
+            domain = await get_managed_domain_for_workspace(db, workspace_id)
+            if domain is not None:
+                await set_domain_state(db, domain, SubscriptionCustomDomainState.disabled)
+                await db.commit()
+            return await self.get_managed_subdomain_settings(db, admin)
+
+        try:
+            label = normalize_managed_subdomain_label(payload.label)
+            fqdn = fqdn_for_label(label)
+        except ManagedSubdomainValidationError as exc:
+            await self.raise_error(str(exc), 422)
+
+        binding = await get_binding_for_claim(
+            db,
+            workspace_id=workspace_id,
+            binding_admin_id=binding_admin_id,
+            label=label,
+        )
+        if binding is None:
+            await self.raise_error(
+                "No Outbound Center bot claim exists for this subdomain on your workspace. "
+                "Use Connect to central panel in the Telegram bot first.",
+                400,
+            )
+
+        conflict = (
+            await db.execute(
+                select(SubscriptionCustomDomain).where(
+                    SubscriptionCustomDomain.hostname_normalized == fqdn,
+                    SubscriptionCustomDomain.workspace_id != workspace_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if conflict is not None:
+            await self.raise_error("This subdomain is already associated with another workspace", 409)
+
+        active = custom_domain_settings.ingress_public_https_ready
+        try:
+            await upsert_managed_subdomain(
+                db,
+                workspace_id=workspace_id,
+                tenant_id=tenant_id,
+                hostname_normalized=fqdn,
+                label=label,
+                oc_subdomain_id=binding.oc_subdomain_id,
+                oc_owner_account_id=binding.oc_account_id,
+                active=active,
+            )
+            await mark_binding_claimed(db, binding)
+            claimed = await get_claimed_binding_for_workspace(db, workspace_id)
+            if claimed is not None and claimed.id != binding.id and claimed.label != label:
+                from app.db.crud.managed_subdomain_binding import revoke_bot_binding
+
+                await revoke_bot_binding(db, claimed)
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            await self.raise_error("This subdomain is already registered", 409)
+        return await self.get_managed_subdomain_settings(db, admin)
 
     async def associate_managed_subdomain(
         self,

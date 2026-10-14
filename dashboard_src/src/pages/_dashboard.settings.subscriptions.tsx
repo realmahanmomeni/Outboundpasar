@@ -4,6 +4,7 @@ import { SubscriptionApplicationsSection } from '@/features/subscriptions/compon
 import { SubscriptionCustomVariablesSection } from '@/features/subscriptions/components/subscription-custom-variables-section'
 import { SubscriptionFormActions } from '@/features/subscriptions/components/subscription-form-actions'
 import { SubscriptionGeneralSettingsSection } from '@/features/subscriptions/components/subscription-general-settings-section'
+import { SubscriptionManagedSubdomainSection } from '@/features/subscriptions/components/subscription-managed-subdomain-section'
 import { SubscriptionManualFormatsSection } from '@/features/subscriptions/components/subscription-manual-formats-section'
 import { SubscriptionResponseHeadersSection } from '@/features/subscriptions/components/subscription-response-headers-section'
 import { SubscriptionRulesSection } from '@/features/subscriptions/components/subscription-rules-section'
@@ -357,6 +358,7 @@ export default function SubscriptionSettings() {
     <div className="w-full">
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit, onInvalid)} className="space-y-6 p-4 sm:space-y-8 sm:py-6 lg:space-y-10 lg:py-8">
+          <SubscriptionManagedSubdomainSection />
           <SubscriptionGeneralSettingsSection form={form} />
 
           <Separator className="my-3" />
