@@ -60,6 +60,19 @@ interface BulkActionDialogConfig {
 const compactAdminIds = (admins: AdminDetails[]): number[] => admins.map(admin => admin.id).filter((id): id is number => typeof id === 'number')
 const getAdminStatus = (admin: AdminDetails) => admin.status || (admin.is_disabled ? 'disabled' : 'active')
 
+const countAdminsFromRows = (admins: AdminDetails[]) => {
+  let active = 0
+  let disabled = 0
+  let limited = 0
+  for (const admin of admins) {
+    const status = getAdminStatus(admin)
+    if (status === 'disabled') disabled += 1
+    else if (status === 'limited') limited += 1
+    else active += 1
+  }
+  return { total: admins.length, active, disabled, limited }
+}
+
 const DeleteAlertDialog = ({ admin, isOpen, onClose, onConfirm }: { admin: AdminDetails; isOpen: boolean; onClose: () => void; onConfirm: () => void }) => {
   const { t } = useTranslation()
   const dir = useDirDetection()
@@ -261,18 +274,25 @@ export default function AdminsTable({ onEdit, onDelete, onToggleStatus, onResetU
 
   // Expose counts to parent component for statistics
   useEffect(() => {
-    if (onTotalAdminsChange) {
-      if (adminsResponse) {
-        onTotalAdminsChange({
-          total: adminsResponse.total,
-          active: adminsResponse.active,
-          disabled: adminsResponse.disabled,
-          limited: adminsResponse.limited,
-        })
-      } else {
-        onTotalAdminsChange(null)
-      }
+    if (!onTotalAdminsChange) return
+    if (!adminsResponse) {
+      onTotalAdminsChange(null)
+      return
     }
+
+    const rows = adminsResponse.admins ?? []
+    const apiTotal = adminsResponse.total ?? 0
+    if (apiTotal === 0 && rows.length > 0) {
+      onTotalAdminsChange(countAdminsFromRows(rows))
+      return
+    }
+
+    onTotalAdminsChange({
+      total: adminsResponse.total,
+      active: adminsResponse.active,
+      disabled: adminsResponse.disabled,
+      limited: adminsResponse.limited,
+    })
   }, [adminsResponse, onTotalAdminsChange])
   const disableAllActiveUsersMutation = useDisableAllActiveUsersById()
   const activateAllDisabledUsersMutation = useActivateAllDisabledUsersById()

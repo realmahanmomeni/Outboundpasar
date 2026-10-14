@@ -1,4 +1,5 @@
 import { isLegacyNativeInfraRoute, ocPanelFallbackRoute } from '@/constants/oc-product-ui'
+import { isPlatformOwner } from '@/utils/admin-session'
 import type { AdminDetails } from '@/service/api'
 
 type PermissionValue = boolean | { scope?: number | string | null } | null | undefined
@@ -41,7 +42,7 @@ export const canFilterByAdminStatistics = (admin: AdminDetails | null | undefine
 }
 
 /** Reconnect-all restarts every platform node; reserved for the platform owner. */
-export const canReconnectAllNodes = (admin: AdminDetails | null | undefined) => isOwner(admin)
+export const canReconnectAllNodes = (admin: AdminDetails | null | undefined) => isPlatformOwner(admin)
 
 /**
  * Full dashboard pages are exposed by the resource `read` permission only.

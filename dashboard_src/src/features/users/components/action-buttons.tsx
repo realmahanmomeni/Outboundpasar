@@ -316,6 +316,7 @@ const ActionButtons: FC<ActionButtonsProps> = ({ user, isModalHost = true, rende
   })
   const { data: currentAdmin } = useGetCurrentAdmin({
     query: {
+      select: data => (data.status === 200 ? data.data : null),
       staleTime: 5 * 60 * 1000,
       gcTime: 10 * 60 * 1000,
       refetchOnMount: false,
