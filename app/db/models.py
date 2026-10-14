@@ -1106,5 +1106,50 @@ class TempKey(Base):
     used_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
     used_by_ip: Mapped[str | None] = mapped_column(String(45), default=None)
 
+
+class SubscriptionCustomDomainState(str, Enum):
+    pending_verification = "pending_verification"
+    verified = "verified"
+    pending_certificate = "pending_certificate"
+    active = "active"
+    renewal_pending = "renewal_pending"
+    failed = "failed"
+    disabled = "disabled"
+
+
+class SubscriptionCustomDomain(Base, CreatedAtUTCMixin):
+    """Per-workspace custom hostname for subscription pages (Phase 3-B)."""
+
+    __tablename__ = "subscription_custom_domains"
+    __table_args__ = (
+        UniqueConstraint("hostname_normalized", name="uq_subscription_custom_domains_hostname"),
+        Index("ix_subscription_custom_domains_workspace_id", "workspace_id"),
+    )
+
+    workspace_id: Mapped[int] = fk_id_column("workspaces.id", ondelete="CASCADE")
+    tenant_id: Mapped[int] = fk_id_column("tenants.id", ondelete="CASCADE")
+    hostname_normalized: Mapped[str] = mapped_column(String(253))
+    state: Mapped[SubscriptionCustomDomainState] = mapped_column(
+        SQLEnum(
+            SubscriptionCustomDomainState,
+            name="subscriptioncustomdomainstate",
+            create_constraint=True,
+            values_callable=lambda enum: [e.value for e in enum],
+            native_enum=False,
+        ),
+        default=SubscriptionCustomDomainState.pending_verification,
+        server_default="pending_verification",
+    )
+    verification_token_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    verification_expires_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
+    verified_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
+    certificate_ref: Mapped[str | None] = mapped_column(String(64), default=None)
+    certificate_not_after: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
+    certificate_last_error: Mapped[str | None] = mapped_column(String(512), default=None)
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
+    )
+
+
 # Import OC integration models so Alembic can discover them
 import app.db.models_oc  # noqa: F401
