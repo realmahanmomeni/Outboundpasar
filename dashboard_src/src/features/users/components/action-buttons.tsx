@@ -561,15 +561,6 @@ const ActionButtons: FC<ActionButtonsProps> = ({ user, isModalHost = true, rende
     return request
   }
 
-  const prefetchCopyableConfigs = () => {
-    subscribeLinks.forEach(({ protocol, format }) => {
-      if (DOWNLOAD_ONLY_PROTOCOLS.includes(protocol)) return
-      void fetchAndCacheContent(format).catch(error => {
-        console.error('Failed to prefetch config content:', error)
-      })
-    })
-  }
-
   const handleLinksCopy = async (format: SubscriptionContentFormat, type: string) => {
     try {
       const cachedContent = configContentCacheRef.current[format]
@@ -661,11 +652,7 @@ const ActionButtons: FC<ActionButtonsProps> = ({ user, isModalHost = true, rende
               toastSuccessMessage="userSettings.subscriptionUrlCopied"
             />
             <Tooltip>
-              <DropdownMenu
-                onOpenChange={open => {
-                  if (open) prefetchCopyableConfigs()
-                }}
-              >
+              <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <TooltipTrigger asChild>
                     <Button size="icon" variant="ghost">

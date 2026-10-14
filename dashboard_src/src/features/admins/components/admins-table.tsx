@@ -12,6 +12,7 @@ import {
   useGetAdmins,
   useDisableAllActiveUsersById,
   useRemoveAllUsersById,
+  type AdminsResponse,
 } from '@/service/api'
 import { DataTable } from './data-table'
 import { setupColumns } from './columns'
@@ -59,6 +60,15 @@ interface BulkActionDialogConfig {
 
 const compactAdminIds = (admins: AdminDetails[]): number[] => admins.map(admin => admin.id).filter((id): id is number => typeof id === 'number')
 const getAdminStatus = (admin: AdminDetails) => admin.status || (admin.is_disabled ? 'disabled' : 'active')
+
+function resolveAdminsListPayload(response: unknown): AdminsResponse | null {
+  if (!response || typeof response !== 'object') return null
+  const direct = response as AdminsResponse
+  if (Array.isArray(direct.admins)) return direct
+  const wrapped = response as { status?: number; data?: AdminsResponse }
+  if (wrapped.data && Array.isArray(wrapped.data.admins)) return wrapped.data
+  return null
+}
 
 const countAdminsFromRows = (admins: AdminDetails[]) => {
   let active = 0
@@ -264,7 +274,8 @@ export default function AdminsTable({ onEdit, onDelete, onToggleStatus, onResetU
     },
   })
 
-  const adminsData = adminsResponse?.admins || []
+  const adminsPayload = resolveAdminsListPayload(adminsResponse)
+  const adminsData = adminsPayload?.admins || []
   const selectedAdmins = adminsData.filter(admin => selectedAdminUsernames.includes(admin.username))
   const selectedEnableEligibleAdmins = selectedAdmins.filter(admin => getAdminStatus(admin) === 'disabled')
   const selectedDisableEligibleAdmins = selectedAdmins.filter(admin => getAdminStatus(admin) !== 'disabled')
@@ -275,23 +286,27 @@ export default function AdminsTable({ onEdit, onDelete, onToggleStatus, onResetU
   // Expose counts to parent component for statistics
   useEffect(() => {
     if (!onTotalAdminsChange) return
-    if (!adminsResponse) {
+    const payload = resolveAdminsListPayload(adminsResponse)
+    if (!payload) {
       onTotalAdminsChange(null)
       return
     }
 
-    const rows = adminsResponse.admins ?? []
-    const apiTotal = adminsResponse.total ?? 0
-    const apiActive = adminsResponse.active ?? 0
-    const apiDisabled = adminsResponse.disabled ?? 0
-    const apiLimited = adminsResponse.limited ?? 0
+    const rows = payload.admins ?? []
+    const apiTotal = payload.total ?? 0
+    const apiActive = payload.active ?? 0
+    const apiDisabled = payload.disabled ?? 0
+    const apiLimited = payload.limited ?? 0
     const apiStatusSum = apiActive + apiDisabled + apiLimited
 
     if (rows.length > 0) {
       const fromRows = countAdminsFromRows(rows)
       const rowStatusSum = fromRows.active + fromRows.disabled + fromRows.limited
       const aggregatesUntrusted =
-        apiTotal === 0 || (apiStatusSum === 0 && rowStatusSum > 0) || (apiTotal > 0 && apiStatusSum === 0 && rowStatusSum > 0)
+        apiTotal === 0 ||
+        rowStatusSum !== apiStatusSum ||
+        (apiStatusSum === 0 && rowStatusSum > 0) ||
+        (apiTotal > 0 && apiStatusSum === 0 && rowStatusSum > 0)
 
       if (aggregatesUntrusted) {
         onTotalAdminsChange({
@@ -928,9 +943,9 @@ export default function AdminsTable({ onEdit, onDelete, onToggleStatus, onResetU
       />
       <PaginationControls
         currentPage={currentPage}
-        totalPages={Math.ceil((adminsResponse?.total || 0) / itemsPerPage)}
+        totalPages={Math.ceil((adminsPayload?.total || 0) / itemsPerPage)}
         itemsPerPage={itemsPerPage}
-        totalItems={adminsResponse?.total || 0}
+        totalItems={adminsPayload?.total || 0}
         isLoading={isPageLoading}
         onPageChange={handlePageChange}
         onItemsPerPageChange={handleItemsPerPageChange}

@@ -5,6 +5,7 @@ import { fetcher } from '@/service/http'
 import { Globe } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { getErrorStatus } from '@/utils/error-utils'
 import { toast } from 'sonner'
 
 type ManagedSubdomainSettings = {
@@ -35,8 +36,7 @@ export function SubscriptionManagedSubdomainSection() {
       setPendingClaim(data.pending_claim_label)
       setActiveFqdn(data.fqdn)
     } catch (e: unknown) {
-      const status =
-        e && typeof e === 'object' && 'status' in e ? Number((e as { status?: unknown }).status) : undefined
+      const status = getErrorStatus(e)
       if (status === 403 || status === 404) {
         return
       }

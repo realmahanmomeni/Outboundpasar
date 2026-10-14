@@ -108,7 +108,7 @@ export const canAccessRoute = (admin: AdminDetails | null | undefined, pathname:
   }
   if (pathname.startsWith('/settings')) {
     if (pathname === '/settings' || pathname.startsWith('/settings/theme')) return true
-    return hasPermission(admin, 'settings', 'read')
+    return hasPermission(admin, 'settings', 'read') || hasPermission(admin, 'settings', 'update')
   }
   if (pathname.startsWith('/bulk/create') || pathname === '/bulk') return hasPermission(admin, 'users', 'create') && canReadResourcePage(admin, 'templates')
   if (pathname.startsWith('/bulk/groups')) return hasScopeAll(admin, 'users', 'update') && hasPermission(admin, 'groups', 'read')

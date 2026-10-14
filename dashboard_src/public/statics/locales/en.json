@@ -555,6 +555,10 @@
         }
       }
     },
+    "subscriptionAppearance": {
+      "title": "Subscription appearance",
+      "description": "Branding and customer-facing subscription page templates"
+    },
     "cleanup": {
       "title": "Cleanup",
       "description": "Manage expired accounts and reset data usage for system maintenance",

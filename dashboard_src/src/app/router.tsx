@@ -58,7 +58,8 @@ const Login = lazyWithChunkRecovery(() => import('../pages/login'))
 function SettingsIndex() {
   const { admin } = useAdmin()
   const canReadSettings = hasPermission(admin, 'settings', 'read')
-  const defaultPath = ocSettingsFallbackRoute({ canReadSettings })
+  const canUpdateSettings = hasPermission(admin, 'settings', 'update')
+  const defaultPath = ocSettingsFallbackRoute({ canReadSettings: canReadSettings || canUpdateSettings })
 
   return <Navigate to={defaultPath} replace />
 }

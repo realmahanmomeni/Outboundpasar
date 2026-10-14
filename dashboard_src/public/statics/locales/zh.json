@@ -539,6 +539,10 @@
         }
       }
     },
+    "subscriptionAppearance": {
+      "title": "订阅外观",
+      "description": "品牌与客户订阅页面模板"
+    },
     "cleanup": {
       "title": "清理",
       "description": "管理过期账户和重置数据使用量以进行系统维护",

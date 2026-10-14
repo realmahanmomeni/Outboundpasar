@@ -61,14 +61,16 @@ export default function Settings() {
   const { admin } = useAdmin()
   const canUpdateSettings = hasPermission(admin, 'settings', 'update')
   const canReadSettings = hasPermission(admin, 'settings', 'read')
+  const canAccessSettingsTabs = canReadSettings || canUpdateSettings
   const tabs = filterOcSettingsTabs(allTabs, admin).filter(tab => {
     if (tab.id === 'theme') return true
-    return canReadSettings
+    return canAccessSettingsTabs
   })
 
   const pathTab = allTabs.find(tab => location.pathname === tab.url)
   const currentTab = tabs.find(tab => location.pathname === tab.url)
-  const activeTab = pathTab?.id ?? currentTab?.id ?? (canReadSettings ? 'subscriptions' : 'theme')
+  const activeTab = pathTab?.id ?? currentTab?.id ?? (canAccessSettingsTabs ? 'subscriptions' : 'theme')
+  const headerTab = pathTab ?? allTabs.find(tab => tab.id === activeTab) ?? allTabs.find(tab => tab.id === 'theme')!
 
   const queryClient = useQueryClient()
 
@@ -79,7 +81,7 @@ export default function Settings() {
     error,
   } = useGetSettings({
     query: {
-      enabled: canReadSettings,
+      enabled: canAccessSettingsTabs,
     },
   })
   const { mutateAsync: modifySettingsAsync, isPending: isSaving } = useModifySettings({
@@ -149,7 +151,7 @@ export default function Settings() {
   // Wrapper function to filter data based on active tab (only for sudo admins)
   const handleUpdateSettings = useCallback(
     async (data: any) => {
-      if (!canReadSettings) return
+      if (!canAccessSettingsTabs) return
 
       let filteredData: any = {}
 
@@ -206,19 +208,19 @@ export default function Settings() {
 
       await modifySettingsAsync(filteredData)
     },
-    [canReadSettings, activeTab, modifySettingsAsync],
+    [canAccessSettingsTabs, activeTab, modifySettingsAsync],
   )
 
   // Memoize context value to ensure stability during HMR
   const settingsContextValue: SettingsContextType = useMemo(
     () => ({
-      settings: canReadSettings ? settings || {} : {},
-      isLoading: canReadSettings ? isLoading : false,
-      error: canReadSettings ? error : null,
+      settings: canAccessSettingsTabs ? settings || {} : {},
+      isLoading: canAccessSettingsTabs ? isLoading : false,
+      error: canAccessSettingsTabs ? error : null,
       updateSettings: canUpdateSettings ? handleUpdateSettings : async () => {},
       isSaving: canUpdateSettings ? isSaving : false,
     }),
-    [canReadSettings, settings, isLoading, error, isSaving, handleUpdateSettings],
+    [canAccessSettingsTabs, settings, isLoading, error, isSaving, handleUpdateSettings],
   )
 
   // Always render the provider to ensure context is available for child routes
@@ -226,7 +228,7 @@ export default function Settings() {
   return (
     <SettingsContext.Provider value={settingsContextValue}>
       <div className="flex w-full flex-col items-start gap-0">
-        <PageHeader title={t(`settings.${activeTab}.title`)} description="manageSettings" />
+        <PageHeader title={headerTab.label} description="manageSettings" />
 
         <div className="relative w-full">
           <div className="flex">

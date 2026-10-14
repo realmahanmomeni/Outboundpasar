@@ -84,8 +84,15 @@ export function ocSettingsFallbackRoute(options: { canReadSettings: boolean }): 
   return '/settings/theme'
 }
 
-/** Managed subdomain settings API is workspace-scoped; platform owner has no workspace row. */
+/**
+ * Managed subdomain settings UI (calls GET /api/custom-domains/managed/settings).
+ * Keep false until the deployment exposes that API for tenant workspaces.
+ */
+export const OC_MANAGED_SUBDOMAIN_SETTINGS_UI_ENABLED = false
+
+/** Workspace-scoped; never for platform owner (no workspace row). */
 export function shouldShowManagedSubdomainSettingsUi(admin: AdminDetails | null | undefined): boolean {
+  if (!OC_MANAGED_SUBDOMAIN_SETTINGS_UI_ENABLED) return false
   if (!admin) return false
   if (isPlatformOwner(admin)) return false
   return admin.workspace_id != null

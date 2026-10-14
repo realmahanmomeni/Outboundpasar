@@ -48,6 +48,12 @@ const SETTINGS_SUDO_TAB_DEFS: TabDef[] = [
   { id: 'general', labelKey: 'settings.general.title', icon: SettingsIcon, url: '/settings/general' },
   { id: 'notifications', labelKey: 'settings.notifications.title', icon: Bell, url: '/settings/notifications' },
   { id: 'subscriptions', labelKey: 'settings.subscriptions.title', icon: ListTodo, url: '/settings/subscriptions' },
+  {
+    id: 'subscription-appearance',
+    labelKey: 'settings.subscriptionAppearance.title',
+    icon: ListTodo,
+    url: '/settings/subscription-appearance',
+  },
   { id: 'hwid', labelKey: 'settings.hwid.title', icon: Fingerprint, url: '/settings/hwid' },
   { id: 'telegram', labelKey: 'settings.telegram.title', icon: Send, url: '/settings/telegram' },
   { id: 'webhook', labelKey: 'settings.webhook.title', icon: Webhook, url: '/settings/webhook' },
@@ -227,7 +233,7 @@ function TemplatesTabbedFallback({ pathname }: { pathname: string }) {
 export function TabbedRouteSuspenseFallback() {
   const { pathname } = useLocation()
   const { admin } = useAdmin()
-  const canUseSettings = (hasPermission(admin, 'settings', 'read') || hasPermission(admin, 'settings', 'read_general')) && hasPermission(admin, 'settings', 'update')
+  const canUseSettings = hasPermission(admin, 'settings', 'read') || hasPermission(admin, 'settings', 'update')
   const canUseBulkAll = hasScopeAll(admin, 'users', 'update')
 
   if (pathname.startsWith('/nodes')) {
