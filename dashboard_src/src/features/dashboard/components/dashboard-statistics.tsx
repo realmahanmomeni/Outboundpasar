@@ -1,6 +1,9 @@
 import { Skeleton } from '@/components/ui/skeleton'
 import useDirDetection from '@/hooks/use-dir-detection'
+import { useAdmin } from '@/hooks/use-admin'
+import { usePanelStatisticsAvailable } from '@/hooks/use-panel-statistics-available'
 import { cn } from '@/lib/utils'
+import { isOwner } from '@/utils/rbac'
 import { SystemResourceStats, SystemUsersStats } from '@/service/api'
 import { formatBytes } from '@/utils/formatByte'
 import { formatDuration } from '@/utils/formatDuration'
@@ -12,6 +15,9 @@ import { Card, CardContent } from '@/components/ui/card'
 const DashboardStatistics = ({ resourceData, usersData }: { resourceData: SystemResourceStats | undefined; usersData: SystemUsersStats | undefined }) => {
   const { t } = useTranslation()
   const dir = useDirDetection()
+  const { admin } = useAdmin()
+  const { available: panelStatsAvailable, overview: panelOverview } = usePanelStatisticsAvailable()
+  const owner = isOwner(admin)
 
   // Show skeleton loader while data is being fetched
   if (!resourceData && !usersData) {
@@ -48,11 +54,19 @@ const DashboardStatistics = ({ resourceData, usersData }: { resourceData: System
     )
   }
 
-  const getTotalTrafficValue = () => {
+  const getSystemTotalTraffic = () => {
     if (!usersData) return 0
-
-    // For master server stats - use total traffic
     return Number(usersData.incoming_bandwidth) + Number(usersData.outgoing_bandwidth)
+  }
+
+  const getTotalTrafficValue = () => {
+    if (panelStatsAvailable && panelOverview?.traffic_used != null) {
+      return Number(panelOverview.traffic_used)
+    }
+    if (!owner && admin?.used_traffic != null) {
+      return Number(admin.used_traffic)
+    }
+    return getSystemTotalTraffic()
   }
 
   const getIncomingBandwidth = () => {

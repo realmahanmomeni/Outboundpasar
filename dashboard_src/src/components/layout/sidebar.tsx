@@ -2,7 +2,6 @@ import { Language } from '@/components/common/language'
 import Snowfall from '@/components/common/snowfall'
 import { useTheme } from '@/app/providers/theme-provider'
 import { ThemeToggle } from '@/components/common/theme-toggle'
-import { GithubStar } from '@/components/layout/github-star'
 import { GoalProgress } from '@/components/layout/goal-progress'
 import { NavMain } from '@/components/layout/nav-main'
 import { NavSecondary } from '@/components/layout/nav-secondary'
@@ -12,7 +11,7 @@ import { VersionBadge } from '@/components/layout/version-badge'
 import { Button } from '@/components/ui/button'
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail, useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { DISCUSSION_GROUP, DOCUMENTATION, DONATION_URL, REPO_URL } from '@/constants/Project'
+import { DISCUSSION_GROUP } from '@/constants/Project'
 import { useAdmin } from '@/hooks/use-admin'
 import useDirDetection from '@/hooks/use-dir-detection'
 import { useSystemVersion } from '@/hooks/use-system-version'
@@ -23,7 +22,6 @@ import { canReadResourcePage, hasPermission, hasScopeAll, isOwner } from '@/util
 import {
   ArrowUpDown,
   Bell,
-  BookOpen,
   Calendar,
   ChevronsLeft,
   ChevronsRight,
@@ -32,13 +30,11 @@ import {
   FileCode2,
   FileUser,
   Fingerprint,
-  GithubIcon,
   Group,
   Key,
   Layers,
   LayoutDashboardIcon,
   LayoutTemplate,
-  LifeBuoy,
   ListTodo,
   Lock,
   Logs,
@@ -379,31 +375,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         ],
       },
     ],
-    navSecondary: [
-      {
-        title: t('supportUs'),
-        url: DONATION_URL,
-        icon: LifeBuoy,
-        target: '_blank',
-      },
-    ],
+    navSecondary: [],
     community: [
-      {
-        title: 'documentation',
-        url: DOCUMENTATION,
-        icon: BookOpen,
-        target: '_blank',
-      },
       {
         title: 'discussionGroup',
         url: DISCUSSION_GROUP,
         icon: RssIcon,
-        target: '_blank',
-      },
-      {
-        title: 'github',
-        url: REPO_URL,
-        icon: GithubIcon,
         target: '_blank',
       },
     ],
@@ -449,7 +426,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                     asChild
                     className={cn('relative w-full justify-center !gap-0 transition-opacity duration-200 ease-in-out', showCollapseButton ? 'pointer-events-none opacity-0' : 'opacity-100')}
                   >
-                    <a href={REPO_URL} target="_blank">
+                    <Link to="/">
                       <img
                         src={resolvedTheme === 'dark' ? window.location.pathname + 'statics/favicon/logo.png' : window.location.pathname + 'statics/favicon/logo-dark.png'}
                         alt="OutboundCenter Logo"
@@ -460,7 +437,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                           <VersionBadge currentVersion={normalizedVersion} />
                         </TooltipProvider>
                       )}
-                    </a>
+                    </Link>
                   </SidebarMenuButton>
                   {/* Expand button - fades in on hover */}
                   <TooltipProvider>
@@ -488,7 +465,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               ) : state !== 'collapsed' && !isMobile ? (
                 <div className={cn('relative', isRTL ? 'pl-10' : 'pr-10')}>
                   <SidebarMenuButton size="lg" className={cn('w-full !gap-2')}>
-                    <a href={REPO_URL} target="_blank" className="flex min-w-0 flex-1 items-center gap-2">
+                    <Link to="/" className="flex min-w-0 flex-1 items-center gap-2">
                       <img
                         src={resolvedTheme === 'dark' ? window.location.pathname + 'statics/favicon/logo.png' : window.location.pathname + 'statics/favicon/logo-dark.png'}
                         alt="OutboundCenter Logo"
@@ -507,7 +484,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                           </div>
                         )}
                       </div>
-                    </a>
+                    </Link>
                   </SidebarMenuButton>
                   <TooltipProvider>
                     <Tooltip>
@@ -537,7 +514,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 </div>
               ) : (
                 <SidebarMenuButton size="lg" asChild className="!gap-2">
-                  <a href={REPO_URL} target="_blank">
+                  <Link to="/">
                     <img
                       src={resolvedTheme === 'dark' ? window.location.pathname + 'statics/favicon/logo.png' : window.location.pathname + 'statics/favicon/logo-dark.png'}
                       alt="OutboundCenter Logo"
@@ -556,7 +533,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                         </div>
                       )}
                     </div>
-                  </a>
+                  </Link>
                 </SidebarMenuButton>
               )}
             </SidebarMenuItem>
@@ -567,8 +544,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           {isOwner(admin) && <NavSecondary items={data.community} label={t('community')} />}
           <NavSecondary items={data.navSecondary} className="mt-auto" />
           <GoalProgress />
-          <div className="flex items-center justify-between px-2 [&>:first-child]:[direction:ltr]">
-            {state !== 'collapsed' && <GithubStar />}
+          <div className="flex items-center justify-end px-2 [&>:first-child]:[direction:ltr]">
             {state !== 'collapsed' && (
               <div className="flex items-start gap-2">
                 <Language />
@@ -576,14 +552,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               </div>
             )}
             {state === 'collapsed' && isMobile && (
-              <>
-                <GithubStar />
-
-                <div className="flex items-start gap-2">
-                  <Language />
-                  <ThemeToggle />
-                </div>
-              </>
+              <div className="flex items-start gap-2">
+                <Language />
+                <ThemeToggle />
+              </div>
             )}
           </div>
         </SidebarContent>
