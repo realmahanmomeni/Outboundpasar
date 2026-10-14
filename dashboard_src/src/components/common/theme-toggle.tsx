@@ -9,7 +9,8 @@ import { useTranslation } from 'react-i18next'
 
 export function ThemeToggle() {
   const { setTheme } = useTheme()
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const toggleLabel = i18n.isInitialized ? t('theme.toggle', { defaultValue: 'Toggle theme' }) : 'Toggle theme'
 
   // Safely get sidebar state, defaulting to 'expanded' if not available
   const sidebarContext = useContext(SidebarContext)
@@ -32,7 +33,7 @@ export function ThemeToggle() {
           <Button variant="outline" size="icon" className="h-8 w-8 transition-colors duration-200">
             <Sun className="transition-all duration-300 ease-in-out dark:hidden" />
             <Moon className="hidden transition-all duration-300 ease-in-out dark:block" />
-            <span className="sr-only">{t('theme.toggle', { defaultValue: 'Toggle theme' })}</span>
+            <span className="sr-only">{toggleLabel}</span>
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-48 p-2" side="right" align="start">
@@ -63,7 +64,7 @@ export function ThemeToggle() {
         <Button variant="outline" size="icon" className="transition-colors duration-200">
           <Sun className="transition-all duration-300 ease-in-out dark:hidden" />
           <Moon className="hidden transition-all duration-300 ease-in-out dark:block" />
-          <span className="sr-only">{t('theme.toggle', { defaultValue: 'Toggle theme' })}</span>
+          <span className="sr-only">{toggleLabel}</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top" className="transition-all duration-200 ease-in-out">

@@ -21,6 +21,8 @@ import {
   updateSubscriptionBranding,
   type SubscriptionBrandingPayload,
 } from '@/service/subscription-branding-api'
+import { useAdmin } from '@/hooks/use-admin'
+import { isPlatformOwner } from '@/utils/admin-session'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -56,21 +58,20 @@ const emptyBranding: SubscriptionBrandingPayload = {
 
 export default function SubscriptionAppearanceSettings() {
   const { t } = useTranslation()
+  const { admin } = useAdmin()
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<number | 'new' | null>(null)
   const [form, setForm] = useState<SubscriptionExperienceTemplatePayload>(emptyForm)
   const [previewHtml, setPreviewHtml] = useState<string>('')
   const [brandingForm, setBrandingForm] = useState<SubscriptionBrandingPayload>(emptyBranding)
 
-  const { data: brandingData, refetch: refetchBranding } = useQuery({
+  const canManageWorkspaceAppearance = Boolean(admin && !isPlatformOwner(admin))
+
+  const { data: brandingData, refetch: refetchBranding, isLoading: brandingLoading } = useQuery({
     queryKey: ['subscription-branding'],
-    queryFn: async () => {
-      try {
-        return await getSubscriptionBranding()
-      } catch {
-        return null
-      }
-    },
+    enabled: canManageWorkspaceAppearance,
+    retry: false,
+    queryFn: () => getSubscriptionBranding(),
   })
 
   useEffect(() => {
@@ -93,8 +94,10 @@ export default function SubscriptionAppearanceSettings() {
     }
   }, [brandingData])
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError: templatesError } = useQuery({
     queryKey: ['subscription-experience-templates'],
+    enabled: canManageWorkspaceAppearance,
+    retry: false,
     queryFn: () => listSubscriptionExperienceTemplates(),
   })
 
@@ -184,17 +187,37 @@ export default function SubscriptionAppearanceSettings() {
 
   const activeTemplate = templates.find((tpl) => tpl.is_active)
 
+  const pageHeader = (
+    <div>
+      <h2 className="text-lg font-semibold">{t('settings.subscriptionAppearance.title', 'Subscription appearance')}</h2>
+      <p className="text-sm text-muted-foreground">
+        {t(
+          'settings.subscriptionAppearance.description',
+          'Customize the browser subscription page for your workspace. Subscription config/token APIs stay unchanged until server feature flags are enabled.',
+        )}
+      </p>
+    </div>
+  )
+
+  if (!canManageWorkspaceAppearance) {
+    return (
+      <div className="space-y-6 p-1">
+        {pageHeader}
+        <Card>
+          <CardContent className="p-6 text-sm text-muted-foreground">
+            {t(
+              'settings.subscriptionAppearance.platformOwnerHint',
+              'Branding and experience templates apply per tenant workspace. Platform owners do not have a workspace row—sign in as a tenant administrator (for example your sales bot admin) to configure subscription appearance.',
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6 p-1">
-      <div>
-        <h2 className="text-lg font-semibold">{t('settings.subscriptionAppearance.title', 'Subscription appearance')}</h2>
-        <p className="text-sm text-muted-foreground">
-          {t(
-            'settings.subscriptionAppearance.description',
-            'Customize the browser subscription page for your workspace. Subscription config/token APIs stay unchanged until server feature flags are enabled.',
-          )}
-        </p>
-      </div>
+      {pageHeader}
 
       <Card>
         <CardHeader>
@@ -204,6 +227,9 @@ export default function SubscriptionAppearanceSettings() {
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-2">
+          {brandingLoading ? (
+            <p className="text-muted-foreground text-sm md:col-span-2">{t('common.loading', 'Loading…')}</p>
+          ) : null}
           <div>
             <Label>{t('settings.subscriptionBranding.brandName', 'Brand name')}</Label>
             <Input value={brandingForm.brand_name ?? ''} onChange={(e) => setBrandingForm({ ...brandingForm, brand_name: e.target.value })} />
@@ -316,6 +342,10 @@ export default function SubscriptionAppearanceSettings() {
         <CardContent className="flex flex-wrap gap-2">
           {isLoading ? (
             <span className="text-sm text-muted-foreground">{t('common.loading', 'Loading…')}</span>
+          ) : templatesError ? (
+            <span className="text-sm text-muted-foreground">
+              {t('settings.subscriptionAppearance.templatesUnavailable', 'Templates could not be loaded for this workspace.')}
+            </span>
           ) : (
             templates.map((tpl: SubscriptionExperienceTemplate) => (
               <Button key={tpl.id} variant={selectedId === tpl.id ? 'default' : 'outline'} size="sm" onClick={() => setSelectedId(tpl.id)}>

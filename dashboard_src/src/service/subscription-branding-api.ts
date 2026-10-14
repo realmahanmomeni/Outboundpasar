@@ -1,3 +1,4 @@
+import { FetchError } from 'ofetch'
 import { orvalFetcher } from './http'
 
 export interface SubscriptionBrandingProfile {
@@ -47,8 +48,15 @@ export type SubscriptionAppearancePreviewPayload = {
 
 const base = '/api/subscription/branding'
 
-export function getSubscriptionBranding() {
-  return orvalFetcher<SubscriptionBrandingProfile>(base)
+export async function getSubscriptionBranding(): Promise<SubscriptionBrandingProfile | null> {
+  try {
+    return await orvalFetcher<SubscriptionBrandingProfile>(base)
+  } catch (error) {
+    if (error instanceof FetchError && error.response?.status === 404) {
+      return null
+    }
+    throw error
+  }
 }
 
 export function createSubscriptionBranding(data: SubscriptionBrandingPayload) {

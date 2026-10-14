@@ -145,7 +145,12 @@ export default function StatisticsCharts({ data, usersData, isLoading, error, se
           </div>
         )}
         <div className="transform-gpu">
-          <UserCountsChart nodeId={selectedNodeId} showAdminFilter={canFilterByAdmin} nodesData={nodesData} />
+          <UserCountsChart
+            nodeId={selectedNodeId}
+            canPlatformGroupByNode={canViewNodeStats}
+            showAdminFilter={canFilterByAdmin}
+            nodesData={nodesData}
+          />
         </div>
         {actualSelectedServer === 'master' && (
           <div className="transform-gpu">

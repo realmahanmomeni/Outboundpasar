@@ -207,7 +207,7 @@ class SubscriptionBrandingSettings(EnvSettings):
 
 
 class PanelStatisticsSettings(EnvSettings):
-    enabled: bool = Field(default=False, validation_alias="PANEL_STATISTICS_DASHBOARD_ENABLED")
+    enabled: bool = Field(default=True, validation_alias="PANEL_STATISTICS_DASHBOARD_ENABLED")
 
 
 class HwidManagementSettings(EnvSettings):

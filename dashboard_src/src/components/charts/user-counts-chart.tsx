@@ -59,6 +59,8 @@ type CountPieDataPoint = {
 
 type UserCountsChartProps = {
   nodeId?: number
+  /** Platform-wide node stats (master view); enables group-by-node for online counts. */
+  canPlatformGroupByNode: boolean
   showAdminFilter: boolean
   nodesData?: NodeSimple[]
 }
@@ -179,7 +181,7 @@ function CountPieTooltip({ active, payload }: TooltipProps<number, string>) {
   )
 }
 
-export function UserCountsChart({ nodeId, showAdminFilter, nodesData = [] }: UserCountsChartProps) {
+export function UserCountsChart({ nodeId, canPlatformGroupByNode, showAdminFilter, nodesData = [] }: UserCountsChartProps) {
   const { t, i18n } = useTranslation()
   const dir = useDirDetection()
   const chartViewType = useChartViewType()
@@ -208,7 +210,7 @@ export function UserCountsChart({ nodeId, showAdminFilter, nodesData = [] }: Use
   }, [showCustomRange, customRange, selectedTime, periodOverride])
 
   const activePeriod = activeQueryRange.period
-  const canGroupByNode = isSudo && nodeId === undefined && selectedMetric === UserCountMetric.online
+  const canGroupByNode = canPlatformGroupByNode && nodeId === undefined && selectedMetric === UserCountMetric.online
   const effectiveGroupByNode = canGroupByNode && groupByNode
   const isNodeScopedCounts = nodeId !== undefined || effectiveGroupByNode
   const effectiveMetric = isNodeScopedCounts ? UserCountMetric.online : selectedMetric
