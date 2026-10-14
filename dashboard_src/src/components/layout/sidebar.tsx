@@ -223,15 +223,6 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             },
           ]
         : []),
-      ...(hasPermission(admin, 'hwids', 'read')
-        ? [
-            {
-              title: 'hwidManagement.nav',
-              url: '/hwid-management',
-              icon: Fingerprint,
-            },
-          ]
-        : []),
       ...(hasPermission(admin, 'nodes', 'stats')
         ? [
             {

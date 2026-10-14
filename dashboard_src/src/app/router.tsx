@@ -170,6 +170,10 @@ export const router = createHashRouter([
         ),
       },
       {
+        path: '/hwid-management',
+        element: <Navigate to="/users" replace />,
+      },
+      {
         path: '/statistics',
         element: (
           <Suspense fallback={<LoadingSpinner />}>
