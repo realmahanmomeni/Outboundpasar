@@ -624,6 +624,9 @@ async def enqueue_oc_user_sync(
         )
         payload = await build_oc_user_put_payload(db_session, panel_id, configs)
         payload["sync_keys"] = sorted(sync_keys)
+        payload["destination_sync_keys"] = await resolve_destination_config_ids_for_panel_tags(
+            db_session, panel_id, tags
+        )
 
         prior_rotation_payload: dict[str, Any] | None = None
         if pending_job:

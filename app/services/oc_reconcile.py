@@ -21,6 +21,38 @@ def normalize_config_set(configs: list[str] | None) -> frozenset[str]:
     return frozenset(c for c in configs if c)
 
 
+def last_synced_configs_after_successful_put(
+    payload: dict,
+    last_applied_configs: list[str],
+) -> list[str]:
+    """
+    Keys to store on the mapping after a successful OC user PUT sequence.
+
+    Requires the final PUT ``configs`` to match the job payload. ``sync_keys`` may
+    include destination fingerprints for local subscription filtering that are not
+    sent in the PUT body; catalog ids in ``sync_keys`` must match the applied set.
+    """
+    intended = normalize_config_set(payload.get("configs"))
+    applied = normalize_config_set(last_applied_configs)
+    if intended != applied:
+        raise ValueError(
+            "OC user PUT configs do not match job payload: "
+            f"payload={sorted(intended)} applied={sorted(applied)}"
+        )
+    sync_keys = payload.get("sync_keys")
+    if sync_keys is None:
+        return sorted(applied)
+    sync_set = normalize_config_set(sync_keys)
+    if (sync_set & intended) != applied:
+        return sorted(applied)
+    dest_allowed = payload.get("destination_sync_keys")
+    if dest_allowed is not None:
+        extras = sync_set & normalize_config_set(dest_allowed)
+    else:
+        extras = sync_set - intended
+    return sorted(applied | extras)
+
+
 def stored_subscription_url_valid(url: str | None) -> bool:
     """Local check aligned with process_oc_sync._subscription_url_from (no network I/O)."""
     raw = (url or "").strip()

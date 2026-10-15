@@ -89,6 +89,64 @@ def test_destination_filter_denies_catalog_host_when_synced_empty():
     )
 
 
+def test_last_synced_configs_after_put_requires_applied_match_payload():
+    from app.services.oc_reconcile import last_synced_configs_after_successful_put
+
+    with pytest.raises(ValueError, match="do not match job payload"):
+        last_synced_configs_after_successful_put(
+            {"configs": ["cfg-a"], "sync_keys": ["cfg-a"]},
+            ["cfg-b"],
+        )
+
+
+def test_last_synced_configs_after_put_persists_sync_keys_with_destination_only():
+    from app.services.oc_reconcile import last_synced_configs_after_successful_put
+
+    out = last_synced_configs_after_successful_put(
+        {"configs": [], "sync_keys": ["fp-dest"], "destination_sync_keys": ["fp-dest"]},
+        [],
+    )
+    assert out == ["fp-dest"]
+
+
+def test_last_synced_configs_after_put_rejects_unapplied_catalog_in_sync_keys():
+    from app.services.oc_reconcile import last_synced_configs_after_successful_put
+
+    out = last_synced_configs_after_successful_put(
+        {
+            "configs": ["cfg-a"],
+            "sync_keys": ["cfg-a", "cfg-b"],
+            "destination_sync_keys": [],
+        },
+        ["cfg-a"],
+    )
+    assert out == ["cfg-a"]
+
+
+def test_last_synced_configs_after_put_legacy_payload_uses_sync_minus_intended_extras():
+    from app.services.oc_reconcile import last_synced_configs_after_successful_put
+
+    out = last_synced_configs_after_successful_put(
+        {"configs": [], "sync_keys": ["fp-dest"]},
+        [],
+    )
+    assert out == ["fp-dest"]
+
+
+def test_last_synced_configs_after_put_merges_catalog_and_destination_keys():
+    from app.services.oc_reconcile import last_synced_configs_after_successful_put
+
+    out = last_synced_configs_after_successful_put(
+        {
+            "configs": ["inbound-a"],
+            "sync_keys": ["inbound-a", "fp-dest"],
+            "destination_sync_keys": ["fp-dest"],
+        },
+        ["inbound-a"],
+    )
+    assert out == ["fp-dest", "inbound-a"]
+
+
 def test_process_oc_sync_put_loop_does_not_break_after_first_success():
     """Regression guard: worker must not exit the PUT loop after the first successful body."""
     from pathlib import Path

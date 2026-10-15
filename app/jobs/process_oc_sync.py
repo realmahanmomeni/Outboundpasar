@@ -23,6 +23,7 @@ from app.services.oc_sync_identity import (
     IDENTITY_ROTATED_PAYLOAD_KEY,
     should_rotate_for_identity_blocked,
 )
+from app.services.oc_reconcile import last_synced_configs_after_successful_put
 from app.services.oc_user_mapping_state import OC_MAPPING_STATUS_DELETED
 from app.db.models import User
 from app.utils.crypto import decrypt_secret
@@ -334,6 +335,11 @@ async def process_oc_sync():
                                 continue
                             break
 
+                        persisted_configs = last_synced_configs_after_successful_put(
+                            original_payload,
+                            last_applied_configs,
+                        )
+
                         # CAS Update to protect against stale execution
                         stmt = (
                             update(OCSyncState)
@@ -353,11 +359,7 @@ async def process_oc_sync():
                             mapping.external_user_id = external_user_id
                             if rotation_payload is not None:
                                 job.payload = rotation_payload
-                        sync_keys = original_payload.get("sync_keys")
-                        if sync_keys is not None:
-                            mapping.last_synced_configs = list(sync_keys)
-                        else:
-                            mapping.last_synced_configs = last_applied_configs
+                        mapping.last_synced_configs = persisted_configs
                         mapping.status = "active"
                         mapping.last_synced_at = dt.now(UTC)
                         if subscription_url:
