@@ -34,6 +34,86 @@ from app.utils.logger import get_logger
 logger = get_logger("oc-sync")
 
 
+def legacy_panel_groups_fallback_is_allowed() -> bool:
+    """
+    Pre-aed0dcfe behavior filled empty ``desired_oc_group_ids`` with all wizard-selected
+    panel groups. Production BUG1 (09280bf) showed that pattern can widen subscriptions.
+    Re-enable only after Outbound Center documents that explicit ``configs`` are a strict
+    allowlist independent of group membership.
+    """
+    return False
+
+
+def _source_group_ids_from_group_mapping(
+    mapping: dict[str, Any] | None,
+    selected_source_groups: set[str],
+) -> set[str]:
+    mapping = mapping or {}
+    if not mapping.get("supported"):
+        return set()
+    out: set[str] = set()
+    for g_id in mapping.get("groups") or []:
+        g = str(g_id)
+        if g in selected_source_groups:
+            out.add(g)
+    return out
+
+
+async def _live_oc_group_ids_for_configs(
+    db_session: AsyncSession,
+    panel_id: int,
+    config_ids: list[str],
+    selected_source_groups: set[str],
+) -> set[str]:
+    """Refresh group_mapping from OC catalog when local rows lack group ids."""
+    if not config_ids or not selected_source_groups:
+        return set()
+    panel = (
+        await db_session.execute(
+            select(OCPanel).where(OCPanel.id == panel_id)
+        )
+    ).scalar_one_or_none()
+    if panel is None:
+        return set()
+    from sqlalchemy.orm import selectinload
+
+    if panel.integration is None:
+        panel = (
+            await db_session.execute(
+                select(OCPanel)
+                .options(selectinload(OCPanel.integration))
+                .where(OCPanel.id == panel_id)
+            )
+        ).scalar_one_or_none()
+    if panel is None or panel.integration is None:
+        return set()
+    if not await panel_has_active_connection(db_session, panel):
+        return set()
+    path = f"/v1/integration/panels/{panel.source_panel_id}/configs"
+    try:
+        from app.services.oc_connection_credentials import call_oc_panel_api
+
+        data = await call_oc_panel_api(db_session, panel, "GET", path)
+    except Exception as exc:
+        logger.info(
+            "oc_sync_live_config_groups_skipped panel_id=%s reason=%s",
+            panel_id,
+            type(exc).__name__,
+        )
+        return set()
+    want = {str(c) for c in config_ids}
+    out: set[str] = set()
+    for row in data.get("configs") or []:
+        cid = str(row.get("id") or "")
+        if cid not in want:
+            continue
+        out |= _source_group_ids_from_group_mapping(
+            row.get("group_mapping") if isinstance(row.get("group_mapping"), dict) else {},
+            selected_source_groups,
+        )
+    return out
+
+
 OC_PANEL_STATUS_INACTIVE = "inactive"
 OC_PANEL_STATUS_CONNECTION_REVOKED = "connection_revoked"
 OC_PANEL_BLOCKING_STATUSES = frozenset({OC_PANEL_STATUS_INACTIVE, OC_PANEL_STATUS_CONNECTION_REVOKED})
@@ -366,25 +446,29 @@ async def desired_oc_group_ids(
             )
         ).scalars().all()
     )
+    matched_config_rows: list[OCPanelConfig] = []
     if selected_source_groups:
-        config_rows = (
-            await db_session.execute(
-                select(OCPanelConfig).where(
-                    OCPanelConfig.panel_id == panel_id,
-                    OCPanelConfig.source_config_id.in_(config_ids),
-                    OCPanelConfig.source_missing.is_(False),
+        matched_config_rows = list(
+            (
+                await db_session.execute(
+                    select(OCPanelConfig).where(
+                        OCPanelConfig.panel_id == panel_id,
+                        OCPanelConfig.source_config_id.in_(config_ids),
+                        OCPanelConfig.source_missing.is_(False),
+                    )
                 )
-            )
-        ).scalars().all()
-        for cfg in config_rows:
+            ).scalars().all()
+        )
+        for cfg in matched_config_rows:
             payload = cfg.source_payload if isinstance(cfg.source_payload, dict) else {}
-            mapping = payload.get("group_mapping") or {}
-            if not mapping.get("supported"):
-                continue
-            for g_id in mapping.get("groups") or []:
-                g = str(g_id)
-                if g in selected_source_groups:
-                    group_ids.add(g)
+            group_ids |= _source_group_ids_from_group_mapping(
+                payload.get("group_mapping") if isinstance(payload.get("group_mapping"), dict) else {},
+                selected_source_groups,
+            )
+    if not group_ids and config_ids and matched_config_rows:
+        group_ids |= await _live_oc_group_ids_for_configs(
+            db_session, panel_id, config_ids, selected_source_groups
+        )
     return sorted(group_ids)
 
 
@@ -496,6 +580,12 @@ async def build_oc_user_put_payload(
     ``configs`` unless the user is assigned via ``groups`` first (same as discovery).
     """
     groups = await desired_oc_group_ids(db_session, panel_id, config_ids)
+    if (
+        not groups
+        and config_ids
+        and legacy_panel_groups_fallback_is_allowed()
+    ):
+        groups = await selected_oc_panel_group_ids(db_session, panel_id)
     return {"groups": groups, "configs": config_ids}
 
 
