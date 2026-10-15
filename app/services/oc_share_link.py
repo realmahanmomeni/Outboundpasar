@@ -366,42 +366,12 @@ def match_link_for_config(
         key = _normalize_key(candidate)
         if key and key in index:
             return index[key]
-    # Fuzzy: remark contains config id substring
     norm_id = _normalize_key(source_config_id)
     if norm_id:
-        for parsed in pool:
-            if norm_id in _normalize_key(parsed.remark):
-                return parsed
-    # Token overlap between config name and subscription remark (CDN, XHTTP, etc.)
-    config_tokens = _tokens(source_config_id) | _tokens(source_name)
-    if not config_tokens:
-        return None
-    best: ParsedShareLink | None = None
-    best_score = 0
-    for parsed in pool:
-        remark_tokens = _tokens(parsed.remark) | _remark_hints(parsed.remark)
-        score = len(config_tokens & remark_tokens)
-        # Common abbreviations on destination panels
-        remark_norm = _normalize_key(parsed.remark)
-        config_norm = _normalize_key(source_config_id)
-        if "xhttp" in remark_norm and "xhhtt" in config_norm:
-            score += 2
-        if "cdn" in remark_norm and ("tcp" in config_norm or "http" in config_norm):
-            score += 1
-        if "direct" in remark_norm and "shadow" in config_norm:
-            score += 2
-        if "tunnel" in remark_tokens and config_norm.startswith("out"):
-            score += 2
-        if "cdn" in remark_tokens and config_norm in ("direct", "out"):
-            score += 1
-        if "fr" in remark_tokens and config_norm.startswith("out"):
-            score += 1
-        if "nl" in remark_tokens and "direct" in config_norm:
-            score += 2
-        if score > best_score:
-            best_score = score
-            best = parsed
-    return best if best_score > 0 else None
+        substring_hits = [p for p in pool if norm_id in _normalize_key(p.remark)]
+        if len(substring_hits) == 1:
+            return substring_hits[0]
+    return None
 
 
 def match_upstream_link_for_oc_source_config(

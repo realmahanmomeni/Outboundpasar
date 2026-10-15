@@ -333,22 +333,59 @@ async def enqueue_oc_connection_revoke(db_session: AsyncSession, connection: Ten
 async def desired_oc_group_ids(
     db_session: AsyncSession, panel_id: int, config_ids: list[str]
 ) -> list[str]:
-    """Real OC group ids behind a user's configs (selected groups only)."""
+    """
+    OC source group ids required to authorize ``config_ids`` on PUT.
+
+    Prefer ``OCPanelConfig.panel_group_id`` joins. When that FK is unset (common on
+    destination-only catalogs), use each config's OC ``group_mapping`` intersected
+    with wizard-selected panel groups — never all imported groups.
+    """
     if not config_ids:
         return []
-    rows = (
-        await db_session.execute(
-            select(OCPanelGroup.source_group_id)
-            .join(OCPanelConfig, OCPanelConfig.panel_group_id == OCPanelGroup.id)
-            .where(
-                OCPanelConfig.panel_id == panel_id,
-                OCPanelConfig.source_config_id.in_(config_ids),
-                OCPanelGroup.is_selected.is_(True),
+    group_ids: set[str] = set(
+        (
+            await db_session.execute(
+                select(OCPanelGroup.source_group_id)
+                .join(OCPanelConfig, OCPanelConfig.panel_group_id == OCPanelGroup.id)
+                .where(
+                    OCPanelConfig.panel_id == panel_id,
+                    OCPanelConfig.source_config_id.in_(config_ids),
+                    OCPanelGroup.is_selected.is_(True),
+                )
+                .distinct()
             )
-            .distinct()
-        )
-    ).scalars().all()
-    return sorted(set(rows))
+        ).scalars().all()
+    )
+    selected_source_groups = set(
+        (
+            await db_session.execute(
+                select(OCPanelGroup.source_group_id).where(
+                    OCPanelGroup.panel_id == panel_id,
+                    OCPanelGroup.is_selected.is_(True),
+                )
+            )
+        ).scalars().all()
+    )
+    if selected_source_groups:
+        config_rows = (
+            await db_session.execute(
+                select(OCPanelConfig).where(
+                    OCPanelConfig.panel_id == panel_id,
+                    OCPanelConfig.source_config_id.in_(config_ids),
+                    OCPanelConfig.source_missing.is_(False),
+                )
+            )
+        ).scalars().all()
+        for cfg in config_rows:
+            payload = cfg.source_payload if isinstance(cfg.source_payload, dict) else {}
+            mapping = payload.get("group_mapping") or {}
+            if not mapping.get("supported"):
+                continue
+            for g_id in mapping.get("groups") or []:
+                g = str(g_id)
+                if g in selected_source_groups:
+                    group_ids.add(g)
+    return sorted(group_ids)
 
 
 async def selected_oc_panel_group_ids(db_session: AsyncSession, panel_id: int) -> list[str]:

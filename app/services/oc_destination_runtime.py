@@ -9,7 +9,6 @@ from app.db.models import ProxyHost
 from app.db.models_oc import OCPanel, OCPanelConfig, OCPanelDestinationHost
 from app.services.oc_share_link import (
     effective_destination_inbound_tag,
-    match_links_to_configs,
     match_upstream_link_for_oc_source_config,
     parse_destination_tag,
 )
@@ -102,30 +101,11 @@ async def source_config_ids_for_panel_tags(
                 )
             )
         ).scalars().all()
-        unmatched_discovery_links: list[str] = []
         for row in rows:
             payload = row.source_payload if isinstance(row.source_payload, dict) else {}
             sid = str(payload.get("oc_source_config_id") or "").strip()
             if sid:
                 config_ids.add(sid)
-                continue
-            raw = str(payload.get("subscription_link") or "").strip()
-            if raw:
-                unmatched_discovery_links.append(raw)
-
-        if unmatched_discovery_links:
-            catalog_configs = (
-                await db.execute(
-                    select(OCPanelConfig).where(
-                        OCPanelConfig.panel_id == panel_id,
-                        OCPanelConfig.source_missing.is_(False),
-                    )
-                )
-            ).scalars().all()
-            if catalog_configs:
-                pairs = [(c.source_config_id, c.source_name) for c in catalog_configs]
-                matched = match_links_to_configs(unmatched_discovery_links, pairs)
-                config_ids.update(matched.keys())
 
     if legacy_tags:
         legacy = (
