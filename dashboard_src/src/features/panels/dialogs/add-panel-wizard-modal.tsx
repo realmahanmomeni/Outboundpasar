@@ -13,7 +13,7 @@ import { Server, Layers, Wrench, CheckCircle2, AlertCircle, Loader2, Unplug } fr
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getAvailablePanels,
-  createTestUserViaBuyer,
+  createTestUser,
   getGroups,
   syncPanel,
   OCPanelItem,
@@ -141,7 +141,7 @@ export default function AddPanelWizardModal({
     let cancelled = false
     setTestUserSetupPhase('running')
     setErrorMsg(null)
-    createTestUserViaBuyer(activeLocalPanelId)
+    createTestUser(activeLocalPanelId)
       .then(() => {
         if (!cancelled) setTestUserSetupPhase('ready')
       })
