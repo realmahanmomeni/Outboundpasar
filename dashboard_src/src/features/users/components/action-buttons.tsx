@@ -533,7 +533,8 @@ const ActionButtons: FC<ActionButtonsProps> = ({ user, isModalHost = true, rende
     alert(`${message}\n\n${content}`)
   }
 
-  const fetchContent = (format: SubscriptionContentFormat): Promise<string> => fetchUserSubscriptionContent(user.id, format)
+  const fetchContent = (format: SubscriptionContentFormat): Promise<string> =>
+    format === 'links' ? fetchUserSubscriptionContent(user.id, format, 30000) : fetchUserSubscriptionContent(user.id, format)
 
   const fetchBlob = (url: string): Promise<Blob> => fetchSubscriptionBlobFromUrl(url)
 
