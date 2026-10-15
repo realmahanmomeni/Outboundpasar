@@ -551,6 +551,22 @@ async def enqueue_oc_user_sync(
             existing_panel_ids[panel_id] = mapping
             is_new_mapping = True
 
+        if (
+            periodic_reconcile
+            and not is_new_mapping
+            and mapping.last_synced_configs is not None
+            and mapping.last_synced_configs == []
+        ):
+            _log_reconcile_action(
+                ReconcileAction.SKIP,
+                user_id=db_user.id,
+                panel_id=panel_id,
+                mapping_id=mapping.id,
+                external_user_id=mapping.external_user_id,
+                reason="empty_last_synced_configs_deferred_for_manual_repair",
+            )
+            continue
+
         action = classify_mapping_action(
             mapping,
             DesiredPanelState(panel_id=panel_id, desired_active=True, config_ids=desired_set),

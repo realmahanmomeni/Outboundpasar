@@ -273,6 +273,7 @@ async def process_oc_sync():
                             put_bodies.append({"groups": groups, "configs": []})
                         put_bodies.append({"groups": groups, "configs": configs})
 
+                        last_applied_configs: list[str] = list(configs)
                         subscription_url = None
                         identity_rotated = False
                         rotation_payload: dict | None = None
@@ -322,6 +323,7 @@ async def process_oc_sync():
                                         subscription_url = _subscription_url_from(await resp.json())
                                     except Exception:
                                         subscription_url = None
+                                    last_applied_configs = list(body.get("configs") or [])
                                     last_put_err = None
                             else:
                                 if last_put_err:
@@ -351,11 +353,11 @@ async def process_oc_sync():
                             mapping.external_user_id = external_user_id
                             if rotation_payload is not None:
                                 job.payload = rotation_payload
-                        mapping.last_synced_configs = (
-                            original_payload.get("sync_keys")
-                            or original_payload.get("configs")
-                            or []
-                        )
+                        sync_keys = original_payload.get("sync_keys")
+                        if sync_keys is not None:
+                            mapping.last_synced_configs = list(sync_keys)
+                        else:
+                            mapping.last_synced_configs = last_applied_configs
                         mapping.status = "active"
                         mapping.last_synced_at = dt.now(UTC)
                         if subscription_url:

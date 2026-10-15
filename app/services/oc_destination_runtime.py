@@ -58,13 +58,13 @@ def destination_config_allowed_by_sync(
 ) -> bool:
     """True when a destination host tag should be included for runtime/subscription output."""
     sid = (oc_source_config_id or "").strip()
-    if not synced:
-        return not sid
-    if not sid:
-        return True
-    if sid in synced:
-        return True
     dest = (destination_config_id or "").strip()
+    if not synced:
+        return False
+    if sid:
+        if sid in synced:
+            return True
+        return bool(dest and dest in synced)
     return bool(dest and dest in synced)
 
 

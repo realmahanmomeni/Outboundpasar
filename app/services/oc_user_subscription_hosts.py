@@ -225,7 +225,7 @@ def _panel_ids_for_upstream_fetch(state: OcSubscriptionLinksState) -> set[int]:
             synced = state.synced_by_panel.get(dest_host.panel_id, set())
             payload = dest_host.source_payload if isinstance(dest_host.source_payload, dict) else {}
             oc_sid = str(payload.get("oc_source_config_id") or "").strip()
-            if synced and not destination_config_allowed_by_sync(
+            if not destination_config_allowed_by_sync(
                 oc_source_config_id=oc_sid,
                 panel_id=dest_host.panel_id,
                 destination_config_id=dest_host.destination_config_id,
@@ -283,7 +283,7 @@ async def build_oc_subscription_links_from_state(
             oc_sid = str(payload.get("oc_source_config_id") or "").strip()
             from app.services.oc_destination_runtime import destination_config_allowed_by_sync
 
-            if synced and not destination_config_allowed_by_sync(
+            if not destination_config_allowed_by_sync(
                 oc_source_config_id=oc_sid,
                 panel_id=dest_host.panel_id,
                 destination_config_id=dest_host.destination_config_id,

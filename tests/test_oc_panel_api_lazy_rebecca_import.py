@@ -66,9 +66,6 @@ async def test_call_oc_panel_api_pasarguard_does_not_require_httpx(monkeypatch: 
         "app.services.oc_panel_metadata_sync.ensure_panel_metadata_for_ops",
         new=AsyncMock(),
     ), patch(
-        "app.services.oc_panel_local_ops.maybe_local_panel_api",
-        new=AsyncMock(return_value=None),
-    ), patch(
         "app.services.oc_connection_credentials.call_oc_api",
         new=AsyncMock(return_value={"external_user_id": "pasarguard_discovery_1805"}),
     ):
