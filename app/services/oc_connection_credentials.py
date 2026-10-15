@@ -200,14 +200,6 @@ async def call_oc_panel_api(
 
     await ensure_panel_metadata_for_ops(db, panel, connection_token=token)
 
-    from app.services.oc_panel_local_ops import maybe_local_panel_api
-
-    local_result = await maybe_local_panel_api(
-        db, panel, method, path, json, connection_token=token
-    )
-    if local_result is not None:
-        return local_result
-
     try:
         return await call_oc_api(panel.integration, method, path, json, connection_token=token)
     except OcIntegrationApiError as exc:

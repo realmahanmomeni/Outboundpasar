@@ -1,4 +1,4 @@
-"""OPT 2: Panels list must not perform live subscription fetches per panel."""
+"""OPT 2: optional materialized-only count path (list endpoint uses live discovery by default)."""
 
 from __future__ import annotations
 

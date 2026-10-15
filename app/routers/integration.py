@@ -564,6 +564,37 @@ async def select_panel(
     )
 
 
+@router.post("/panels/{panel_id}/test-user/buyer", response_model=TestUserResponse)
+async def create_test_user_via_buyer_panel(
+    panel_id: int,
+    db: AsyncSession = Depends(get_db),
+    user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_admin_user_context),
+):
+    """
+    Provision discovery test user on the buyer Rebecca panel (local VPN API).
+
+    Additive wizard path: does not call remote Outbound Center ``test-user``.
+    The standard ``POST .../test-user`` endpoint behavior is unchanged.
+    """
+    identity, is_owner, admin = user_context
+    admin = _require_tenant_admin(user_context)
+
+    panel = (
+        await db.execute(
+            select(OCPanel).options(selectinload(OCPanel.integration)).where(OCPanel.id == panel_id)
+        )
+    ).scalar_one_or_none()
+    await ensure_actor_panel_access(db, panel, is_owner=is_owner, admin=admin)
+    await require_active_telegram_for_tenant_admin(db, admin, is_owner)
+
+    from app.services.oc_panel_buyer_test_user import provision_test_user_via_buyer_panel
+
+    data = await provision_test_user_via_buyer_panel(db, panel)
+    panel.test_user_id = data["external_user_id"]
+    await db.commit()
+    return TestUserResponse(test_user_id=panel.test_user_id)
+
+
 @router.post("/panels/{panel_id}/test-user", response_model=TestUserResponse)
 async def create_test_user(
     panel_id: int,

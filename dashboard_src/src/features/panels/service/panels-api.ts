@@ -126,6 +126,10 @@ export const selectPanel = (data: { source_panel_id: string; name: string }) =>
 export const createTestUser = (panelId: number) => 
   fetcher<{ test_user_id: string }>(`/api/integration/panels/${panelId}/test-user`, { method: 'POST' })
 
+/** Wizard background setup: buyer-panel discovery user (does not call remote OC test-user). */
+export const createTestUserViaBuyer = (panelId: number) =>
+  fetcher<{ test_user_id: string }>(`/api/integration/panels/${panelId}/test-user/buyer`, { method: 'POST' })
+
 export const getGroups = (panelId: number) => 
   fetcher<{ groups: { id: string; name: string }[] }>(`/api/integration/panels/${panelId}/groups`)
 

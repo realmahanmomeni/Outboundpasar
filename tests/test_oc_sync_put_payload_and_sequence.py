@@ -43,6 +43,52 @@ async def test_build_oc_user_put_payload_resolves_groups_from_config_ids():
     selected_mock.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_resolve_destination_config_ids_from_virtual_tags():
+    from app.node.oc_sync import resolve_destination_config_ids_for_panel_tags
+
+    tags = ["oc_6454_d_ac2d9f8e575107bc", "native-inbound"]
+    ids = await resolve_destination_config_ids_for_panel_tags(AsyncMock(), 6454, tags)
+    assert ids == ["ac2d9f8e575107bc"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_desired_sync_keys_merges_catalog_and_destination():
+    from app.node.oc_sync import resolve_desired_sync_keys_for_panel
+
+    with patch(
+        "app.node.oc_sync.resolve_desired_config_ids_for_panel",
+        new=AsyncMock(return_value=["inbound-a"]),
+    ), patch(
+        "app.node.oc_sync.resolve_destination_config_ids_for_panel_tags",
+        new=AsyncMock(return_value=["fp1"]),
+    ):
+        keys = await resolve_desired_sync_keys_for_panel(AsyncMock(), 1, ["oc_1_d_fp1"])
+    assert keys == ["fp1", "inbound-a"]
+
+
+def test_destination_filter_allows_fingerprint_in_synced_without_catalog_id():
+    from app.services.oc_destination_runtime import destination_config_allowed_by_sync
+
+    assert destination_config_allowed_by_sync(
+        oc_source_config_id="",
+        panel_id=6454,
+        destination_config_id="ac2d9f8e575107bc",
+        synced={"ac2d9f8e575107bc"},
+    )
+
+
+def test_destination_filter_denies_catalog_host_when_synced_empty():
+    from app.services.oc_destination_runtime import destination_config_allowed_by_sync
+
+    assert not destination_config_allowed_by_sync(
+        oc_source_config_id="inbound-1",
+        panel_id=1,
+        destination_config_id="fpabc",
+        synced=set(),
+    )
+
+
 def test_process_oc_sync_put_loop_does_not_break_after_first_success():
     """Regression guard: worker must not exit the PUT loop after the first successful body."""
     from pathlib import Path

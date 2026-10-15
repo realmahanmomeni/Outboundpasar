@@ -31,16 +31,12 @@ async def test_call_oc_panel_api_success_does_not_import_rebecca_stack():
         "app.services.oc_panel_metadata_sync.ensure_panel_metadata_for_ops",
         new=AsyncMock(),
     ), patch(
-        "app.services.oc_panel_local_ops.maybe_local_panel_api",
-        new=AsyncMock(return_value=None),
-    ) as local_mock, patch(
         "app.services.oc_connection_credentials.call_oc_api",
         new=AsyncMock(return_value={"external_user_id": "pasarguard_discovery_1805", "status": "active"}),
     ) as remote_mock:
         data = await call_oc_panel_api(None, panel, "POST", "/v1/integration/panels/1805/test-user")
 
     assert data["external_user_id"] == "pasarguard_discovery_1805"
-    local_mock.assert_awaited_once()
     remote_mock.assert_awaited_once()
 
 
