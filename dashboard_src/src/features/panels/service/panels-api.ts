@@ -17,7 +17,7 @@ export interface PanelItem {
 }
 
 export const getPanels = (): Promise<PanelItem[]> => {
-  return fetcher<PanelItem[]>('/api/panels')
+  return fetcher<PanelItem[]>('/api/panels?config_counts_source=materialized')
 }
 
 export const getPanel = (id: number | string): Promise<PanelItem> => {

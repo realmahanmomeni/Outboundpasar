@@ -1,6 +1,8 @@
 from decimal import Decimal
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload, joinedload
@@ -245,10 +247,20 @@ async def get_current_admin_user_context(
     return (admin.username, is_owner, admin)
 
 
+ConfigCountsSource = Literal["live", "materialized"]
+
+
 @router.get("", response_model=list[OCPanelResponse])
 async def list_panels(
     db: AsyncSession = Depends(get_db),
     user_context: tuple[str, bool, AdminDetails | None] = Depends(get_current_user_context),
+    config_counts_source: ConfigCountsSource = Query(
+        "live",
+        description=(
+            "How to populate configs_count: live discovery subscription decode (default), "
+            "or materialized destination hosts from the local catalog."
+        ),
+    ),
 ):
     identity, is_owner, admin = user_context
     stmt = _panel_list_stmt()
@@ -268,7 +280,11 @@ async def list_panels(
 
     result = await db.execute(stmt)
     panels = result.scalars().all()
-    available_counts = await available_config_counts_by_panel(db, panels)
+    available_counts = await available_config_counts_by_panel(
+        db,
+        panels,
+        live_subscription=config_counts_source == "live",
+    )
 
     return [
         _panel_response(p, available_configs=available_counts.get(p.id, 0))
