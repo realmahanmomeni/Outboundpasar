@@ -19,6 +19,19 @@ def test_wizard_calls_remote_test_user_not_buyer_endpoint():
     assert "/test-user/buyer" not in source
 
 
+def test_wizard_discovery_setup_effect_not_self_canceling():
+    """
+    Regression: listing testUserSetupPhase in the effect deps while setting 'running' inside
+    the effect cancelled the in-flight handler and left the spinner stuck forever.
+    """
+    source = Path("dashboard_src/src/features/panels/dialogs/add-panel-wizard-modal.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "discoverySetupAttempt" in source
+    assert "}, [isOpen, step, activeLocalPanelId, testUserSetupPhase])" not in source
+    assert "}, [isOpen, step, activeLocalPanelId, discoverySetupAttempt])" in source
+
+
 def test_panels_api_still_exposes_buyer_helper_for_non_wizard_callers():
     api = Path("dashboard_src/src/features/panels/service/panels-api.ts").read_text(encoding="utf-8")
     assert "createTestUserViaBuyer" in api

@@ -58,6 +58,8 @@ export default function AddPanelWizardModal({
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [pendingLocalPanels, setPendingLocalPanels] = useState<PanelItem[]>([])
   const [testUserSetupPhase, setTestUserSetupPhase] = useState<TestUserSetupPhase>('idle')
+  /** Bumps to re-run discovery setup without listing setup phase in the effect deps (avoids self-cancel). */
+  const [discoverySetupAttempt, setDiscoverySetupAttempt] = useState(0)
 
   const isTelegramConnected = connectionStatus === 'active'
 
@@ -82,6 +84,7 @@ export default function AddPanelWizardModal({
     setConnectCode('')
     setErrorMsg(null)
     setTestUserSetupPhase('idle')
+    setDiscoverySetupAttempt(0)
   }, [])
 
   useEffect(() => {
@@ -130,13 +133,6 @@ export default function AddPanelWizardModal({
 
   useEffect(() => {
     if (!isOpen || step !== 2 || !activeLocalPanelId) return
-    if (
-      testUserSetupPhase === 'running' ||
-      testUserSetupPhase === 'ready' ||
-      testUserSetupPhase === 'error'
-    ) {
-      return
-    }
 
     let cancelled = false
     setTestUserSetupPhase('running')
@@ -154,7 +150,7 @@ export default function AddPanelWizardModal({
     return () => {
       cancelled = true
     }
-  }, [isOpen, step, activeLocalPanelId, testUserSetupPhase])
+  }, [isOpen, step, activeLocalPanelId, discoverySetupAttempt])
 
   const beginPanelWorkflow = (imported: { panel_id: number; subscription_id: number }[], panelNames: Map<number, string>) => {
     const queue: PanelWorkItem[] = imported.map((row) => ({
@@ -166,6 +162,7 @@ export default function AddPanelWizardModal({
     setLocalPanelId(queue[0]?.panelId ?? null)
     setSelectedGroupIds([])
     setTestUserSetupPhase('idle')
+    setDiscoverySetupAttempt(0)
     setStep(2)
     setErrorMsg(null)
   }
@@ -179,6 +176,7 @@ export default function AddPanelWizardModal({
       setLocalPanelId(panelWorkQueue[nextIndex].panelId)
       setSelectedGroupIds([])
       setTestUserSetupPhase('idle')
+      setDiscoverySetupAttempt((n) => n + 1)
       setStep(2)
       setErrorMsg(null)
     } else {
@@ -495,7 +493,10 @@ export default function AddPanelWizardModal({
                   <Button
                     variant="link"
                     className="h-auto p-0"
-                    onClick={() => setTestUserSetupPhase('idle')}
+                    onClick={() => {
+                      setTestUserSetupPhase('idle')
+                      setDiscoverySetupAttempt((n) => n + 1)
+                    }}
                   >
                     retry
                   </Button>
