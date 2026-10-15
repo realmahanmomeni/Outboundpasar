@@ -26,7 +26,8 @@ def test_panels_api_still_exposes_buyer_helper_for_non_wizard_callers():
 
 
 @pytest.mark.asyncio
-async def test_create_test_user_rebecca_uses_remote_oc_panel_api():
+async def test_create_test_user_rebecca_uses_provision_wizard_test_user():
+    """Router delegates to Mahan's provision_wizard_test_user (remote OC via call_oc_panel_api)."""
     from app.db.models_oc import OCIntegration, OCPanel
     from app.routers.integration import create_test_user
 
@@ -59,7 +60,7 @@ async def test_create_test_user_rebecca_uses_remote_oc_panel_api():
         "app.routers.integration._require_tenant_admin",
         return_value=MagicMock(),
     ), patch(
-        "app.routers.integration._oc_panel_call",
+        "app.services.oc_wizard_test_user.call_oc_panel_api",
         new=AsyncMock(return_value={"external_user_id": "pasarguard_discovery_135"}),
     ) as oc_call:
         resp = await create_test_user(

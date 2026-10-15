@@ -94,6 +94,24 @@ async def test_source_config_ids_ignores_fuzzy_name_match_without_oc_source_conf
     assert ids == []
 
 
+def test_subscription_filter_keeps_single_synced_config_in_multi_config_group():
+    from app.services.oc_destination_runtime import destination_config_allowed_by_sync
+
+    synced = {"cfg-cdn-only"}
+    assert destination_config_allowed_by_sync(
+        oc_source_config_id="cfg-cdn-only",
+        panel_id=40,
+        destination_config_id="fp1",
+        synced=synced,
+    )
+    assert not destination_config_allowed_by_sync(
+        oc_source_config_id="cfg-httpup-other",
+        panel_id=40,
+        destination_config_id="fp2",
+        synced=synced,
+    )
+
+
 def test_cdn_destination_remark_does_not_fuzzy_match_httpup_catalog_name():
     """Regression: CDN remark must not map to unrelated Httpup catalog id via token heuristics."""
     link_cdn = "vless://a@1.1.1.1:443?security=reality#SE%20%E2%80%A2%20CDN"
