@@ -37,9 +37,18 @@ def test_missing_catalog_id_on_host_not_filtered():
     )
 
 
-def test_empty_synced_allows_all():
-    assert destination_config_allowed_by_sync(
+def test_empty_synced_denies_catalog_mapped_hosts():
+    assert not destination_config_allowed_by_sync(
         oc_source_config_id="inbound-1",
+        panel_id=1,
+        destination_config_id="fpabc",
+        synced=set(),
+    )
+
+
+def test_empty_synced_allows_destination_when_catalog_id_missing_on_host():
+    assert destination_config_allowed_by_sync(
+        oc_source_config_id="",
         panel_id=1,
         destination_config_id="fpabc",
         synced=set(),

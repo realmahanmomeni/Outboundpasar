@@ -102,12 +102,16 @@ async def available_config_counts_by_panel(
     panels: list[OCPanel],
     *,
     max_concurrency: int = 6,
+    live_subscription: bool = True,
 ) -> dict[int, int]:
     if not panels:
         return {}
 
-    sem = asyncio.Semaphore(max(1, max_concurrency))
     materialized = await destination_config_counts_by_panel(db, [p.id for p in panels])
+    if not live_subscription:
+        return {p.id: materialized.get(p.id, 0) for p in panels}
+
+    sem = asyncio.Semaphore(max(1, max_concurrency))
 
     async def _one(panel: OCPanel) -> tuple[int, int]:
         async with sem:

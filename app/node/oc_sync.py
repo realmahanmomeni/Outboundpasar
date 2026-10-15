@@ -364,6 +364,35 @@ async def selected_oc_panel_group_ids(db_session: AsyncSession, panel_id: int) -
     return sorted(set(rows))
 
 
+async def resolve_destination_config_ids_for_panel_tags(
+    db_session: AsyncSession, panel_id: int, tags: list[str]
+) -> list[str]:
+    """Destination host fingerprints from ``oc_<panel>_d_<id>`` virtual inbound tags."""
+    from app.services.oc_share_link import parse_destination_tag
+
+    dest_ids: set[str] = set()
+    for tag in tags:
+        parsed = parse_destination_tag(tag)
+        if parsed is None:
+            continue
+        pid, dest_id = parsed
+        if pid == panel_id and dest_id:
+            dest_ids.add(dest_id)
+    return sorted(dest_ids)
+
+
+async def resolve_desired_sync_keys_for_panel(
+    db_session: AsyncSession, panel_id: int, tags: list[str]
+) -> list[str]:
+    """
+    Keys stored in ``last_synced_configs`` for runtime filtering: catalog config ids plus
+    destination fingerprints when catalog mapping is absent (not inferred from destination).
+    """
+    catalog = await resolve_desired_config_ids_for_panel(db_session, panel_id, tags)
+    destination = await resolve_destination_config_ids_for_panel_tags(db_session, panel_id, tags)
+    return sorted(set(catalog) | set(destination))
+
+
 async def resolve_desired_config_ids_for_panel(
     db_session: AsyncSession, panel_id: int, tags: list[str]
 ) -> list[str]:
@@ -430,8 +459,6 @@ async def build_oc_user_put_payload(
     ``configs`` unless the user is assigned via ``groups`` first (same as discovery).
     """
     groups = await desired_oc_group_ids(db_session, panel_id, config_ids)
-    if not groups:
-        groups = await selected_oc_panel_group_ids(db_session, panel_id)
     return {"groups": groups, "configs": config_ids}
 
 
@@ -484,10 +511,11 @@ async def enqueue_oc_user_sync(
 
         tags = buckets.get(panel_id) or []
         configs = await resolve_desired_config_ids_for_panel(db_session, panel_id, tags)
+        sync_keys = await resolve_desired_sync_keys_for_panel(db_session, panel_id, tags)
         from app.services.oc_share_link import parse_destination_tag
 
         has_destination_host_tags = any(parse_destination_tag(t) for t in tags)
-        if not configs and not has_destination_host_tags:
+        if not sync_keys and not has_destination_host_tags:
             mapping = existing_panel_ids.get(panel_id)
             if mapping is not None:
                 action = classify_mapping_action(
@@ -508,7 +536,7 @@ async def enqueue_oc_user_sync(
             continue
 
         desired_panel_ids.add(panel_id)
-        desired_set = normalize_config_set(configs)
+        desired_set = normalize_config_set(sync_keys)
         mapping = existing_panel_ids.get(panel_id)
         is_new_mapping = False
         if not mapping:
@@ -579,6 +607,7 @@ async def enqueue_oc_user_sync(
             mapping, is_new_mapping=is_new_mapping, last_configs=last_configs
         )
         payload = await build_oc_user_put_payload(db_session, panel_id, configs)
+        payload["sync_keys"] = sorted(sync_keys)
 
         prior_rotation_payload: dict[str, Any] | None = None
         if pending_job:

@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Server, UserCheck, Layers, Wrench, CheckCircle2, AlertCircle, Loader2, Unplug } from 'lucide-react'
+import { Server, Layers, Wrench, CheckCircle2, AlertCircle, Loader2, Unplug } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getAvailablePanels,
@@ -35,6 +35,7 @@ interface AddPanelWizardModalProps {
 }
 
 type PanelWorkItem = { panelId: number; name: string }
+type TestUserSetupPhase = 'idle' | 'running' | 'ready' | 'error'
 
 export default function AddPanelWizardModal({
   isOpen,
@@ -56,6 +57,7 @@ export default function AddPanelWizardModal({
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [pendingLocalPanels, setPendingLocalPanels] = useState<PanelItem[]>([])
+  const [testUserSetupPhase, setTestUserSetupPhase] = useState<TestUserSetupPhase>('idle')
 
   const isTelegramConnected = connectionStatus === 'active'
 
@@ -79,6 +81,7 @@ export default function AddPanelWizardModal({
     setSelectedGroupIds([])
     setConnectCode('')
     setErrorMsg(null)
+    setTestUserSetupPhase('idle')
   }, [])
 
   useEffect(() => {
@@ -103,6 +106,7 @@ export default function AddPanelWizardModal({
     setPanelWorkIndex(0)
     setLocalPanelId(queue[0]?.panelId ?? null)
     setSelectedGroupIds([])
+    setTestUserSetupPhase('idle')
     setStep(2)
     setErrorMsg(null)
   }
@@ -121,8 +125,36 @@ export default function AddPanelWizardModal({
   const { data: groupsData, isLoading: isLoadingGroups, isError: isErrorGroups, refetch: refetchGroups } = useQuery({
     queryKey: ['panel-groups', activeLocalPanelId],
     queryFn: () => getGroups(activeLocalPanelId!),
-    enabled: isOpen && step === 3 && !!activeLocalPanelId,
+    enabled: isOpen && step === 2 && testUserSetupPhase === 'ready' && !!activeLocalPanelId,
   })
+
+  useEffect(() => {
+    if (!isOpen || step !== 2 || !activeLocalPanelId) return
+    if (
+      testUserSetupPhase === 'running' ||
+      testUserSetupPhase === 'ready' ||
+      testUserSetupPhase === 'error'
+    ) {
+      return
+    }
+
+    let cancelled = false
+    setTestUserSetupPhase('running')
+    setErrorMsg(null)
+    createTestUser(activeLocalPanelId)
+      .then(() => {
+        if (!cancelled) setTestUserSetupPhase('ready')
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setTestUserSetupPhase('error')
+          setErrorMsg(formatApiError(err, 'Failed to prepare panel for group discovery'))
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isOpen, step, activeLocalPanelId, testUserSetupPhase])
 
   const beginPanelWorkflow = (imported: { panel_id: number; subscription_id: number }[], panelNames: Map<number, string>) => {
     const queue: PanelWorkItem[] = imported.map((row) => ({
@@ -133,6 +165,7 @@ export default function AddPanelWizardModal({
     setPanelWorkIndex(0)
     setLocalPanelId(queue[0]?.panelId ?? null)
     setSelectedGroupIds([])
+    setTestUserSetupPhase('idle')
     setStep(2)
     setErrorMsg(null)
   }
@@ -145,10 +178,11 @@ export default function AddPanelWizardModal({
       setPanelWorkIndex(nextIndex)
       setLocalPanelId(panelWorkQueue[nextIndex].panelId)
       setSelectedGroupIds([])
+      setTestUserSetupPhase('idle')
       setStep(2)
       setErrorMsg(null)
     } else {
-      setStep(6)
+      setStep(5)
       setErrorMsg(null)
     }
   }
@@ -198,15 +232,6 @@ export default function AddPanelWizardModal({
     onError: (err: unknown) => setErrorMsg(formatApiError(err, 'Failed to disconnect Telegram')),
   })
 
-  const testUserMut = useMutation({
-    mutationFn: createTestUser,
-    onSuccess: () => {
-      setStep(3)
-      setErrorMsg(null)
-    },
-    onError: (err: unknown) => setErrorMsg(formatApiError(err, 'Failed to create test user')),
-  })
-
   const syncMut = useMutation({
     mutationFn: (data: { panelId: number; req: { selected_group_ids: string[]; group_names: Record<string, string> } }) =>
       syncPanel(data.panelId, data.req),
@@ -247,12 +272,6 @@ export default function AddPanelWizardModal({
     importPanelsMut.mutate(selectable)
   }
 
-  const handleCreateTestUser = () => {
-    if (!activeLocalPanelId) return
-    setErrorMsg(null)
-    testUserMut.mutate(activeLocalPanelId)
-  }
-
   const handleSelectAllGroups = () => {
     if (groupsData?.groups) {
       setSelectedGroupIds(groupsData.groups.map((g) => g.id))
@@ -281,7 +300,11 @@ export default function AddPanelWizardModal({
     })
   }
 
-  const workflowBusy = importPanelsMut.isPending || testUserMut.isPending || syncMut.isPending || disconnectMut.isPending
+  const workflowBusy =
+    importPanelsMut.isPending ||
+    testUserSetupPhase === 'running' ||
+    syncMut.isPending ||
+    disconnectMut.isPending
 
   return (
     <Dialog open={isOpen} onOpenChange={(val) => !workflowBusy && onOpenChange(val)}>
@@ -295,7 +318,7 @@ export default function AddPanelWizardModal({
               <DialogTitle>Add Purchased Panel</DialogTitle>
               <DialogDescription className="text-xs">
                 Integration Wizard
-                {panelsTotal > 1 && step >= 2 && step < 6 && (
+                {panelsTotal > 1 && step >= 2 && step < 5 && (
                   <span className="block text-muted-foreground mt-0.5">
                     Panel {panelWorkIndex + 1} of {panelsTotal}
                     {currentWorkItem ? `: ${currentWorkItem.name}` : ''}
@@ -325,7 +348,7 @@ export default function AddPanelWizardModal({
                   {pendingLocalPanels.length > 0 && (
                     <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
                       <p className="font-medium text-foreground">
-                        {pendingLocalPanels.length} panel(s) need setup (test user / sync).
+                        {pendingLocalPanels.length} panel(s) need setup (groups / sync).
                       </p>
                       <p className="text-muted-foreground text-xs mt-1">
                         Import created these panels but setup was not finished. Resume without re-importing.
@@ -395,7 +418,7 @@ export default function AddPanelWizardModal({
                 Select panels to import
               </h3>
               <p className="text-xs text-muted-foreground">
-                You can select multiple panels; each will be configured one after another (test user, groups, sync).
+                You can select multiple panels; each will be configured one after another (groups, sync).
               </p>
               {isLoadingPanels ? (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -456,21 +479,44 @@ export default function AddPanelWizardModal({
             <div className="space-y-3">
               <h3 className="font-semibold text-sm flex items-center gap-2">
                 <span className="flex h-5 w-5 rounded-full bg-primary text-primary-foreground items-center justify-center text-xs">2</span>
-                Create / Reuse Test User
+                Fetch Groups
               </h3>
-              <p className="text-sm text-muted-foreground">
-                We need to provision or reuse a test identity on the external panel for discovery and synchronization.
-              </p>
               {currentWorkItem && (
                 <p className="text-xs font-medium text-foreground">{currentWorkItem.name}</p>
               )}
-              <div className="flex items-center gap-3 p-3 border rounded-md bg-muted/30">
-                <UserCheck className="h-5 w-5 text-muted-foreground" />
-                <div className="flex flex-col">
-                  <span className="text-sm font-medium">Test Identity</span>
-                  <span className="text-xs text-muted-foreground">Required for reading groups and configs</span>
+              {testUserSetupPhase === 'running' && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Preparing panel for discovery…
                 </div>
-              </div>
+              )}
+              {testUserSetupPhase === 'error' && (
+                <div className="text-sm text-muted-foreground">
+                  Panel setup did not complete. Fix the error above, then{' '}
+                  <Button
+                    variant="link"
+                    className="h-auto p-0"
+                    onClick={() => setTestUserSetupPhase('idle')}
+                  >
+                    retry
+                  </Button>
+                  .
+                </div>
+              )}
+              {testUserSetupPhase === 'ready' && isLoadingGroups && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Fetching groups from panel...
+                </div>
+              )}
+              {testUserSetupPhase === 'ready' && isErrorGroups && (
+                <div className="text-sm text-destructive">
+                  Failed to fetch groups. <Button variant="link" onClick={() => refetchGroups()}>Retry</Button>
+                </div>
+              )}
+              {testUserSetupPhase === 'ready' && !isLoadingGroups && !isErrorGroups && (
+                <div className="space-y-2">
+                  <p className="text-sm text-muted-foreground">Groups fetched successfully. Proceed to select target groups.</p>
+                </div>
+              )}
             </div>
           )}
 
@@ -478,29 +524,6 @@ export default function AddPanelWizardModal({
             <div className="space-y-3">
               <h3 className="font-semibold text-sm flex items-center gap-2">
                 <span className="flex h-5 w-5 rounded-full bg-primary text-primary-foreground items-center justify-center text-xs">3</span>
-                Fetch Groups
-              </h3>
-              {isLoadingGroups ? (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Fetching groups from panel...
-                </div>
-              ) : isErrorGroups ? (
-                <div className="text-sm text-destructive">
-                  Failed to fetch groups. <Button variant="link" onClick={() => refetchGroups()}>Retry</Button>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground">Groups fetched successfully. Proceed to select target groups.</p>
-                  <Button size="sm" onClick={() => setStep(4)}>Select Groups</Button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {step === 4 && (
-            <div className="space-y-3">
-              <h3 className="font-semibold text-sm flex items-center gap-2">
-                <span className="flex h-5 w-5 rounded-full bg-primary text-primary-foreground items-center justify-center text-xs">4</span>
                 Select Groups
               </h3>
               <p className="text-sm text-muted-foreground">
@@ -541,10 +564,10 @@ export default function AddPanelWizardModal({
             </div>
           )}
 
-          {step === 5 && (
+          {step === 4 && (
             <div className="space-y-3">
               <h3 className="font-semibold text-sm flex items-center gap-2">
-                <span className="flex h-5 w-5 rounded-full bg-primary text-primary-foreground items-center justify-center text-xs">5</span>
+                <span className="flex h-5 w-5 rounded-full bg-primary text-primary-foreground items-center justify-center text-xs">4</span>
                 Sync Configs & Create Hosts
               </h3>
               <p className="text-sm text-muted-foreground">
@@ -560,7 +583,7 @@ export default function AddPanelWizardModal({
             </div>
           )}
 
-          {step === 6 && (
+          {step === 5 && (
             <div className="flex flex-col items-center justify-center py-6 space-y-3">
               <div className="h-12 w-12 bg-green-100 dark:bg-green-900/30 text-green-600 rounded-full flex items-center justify-center">
                 <CheckCircle2 className="h-6 w-6" />
@@ -576,7 +599,7 @@ export default function AddPanelWizardModal({
         </div>
 
         <DialogFooter>
-          {step > 0 && step < 6 && (
+          {step > 0 && step < 5 && (
             <Button variant="outline" onClick={() => setStep(step - 1)} disabled={workflowBusy}>
               Back
             </Button>
@@ -605,12 +628,19 @@ export default function AddPanelWizardModal({
             </Button>
           )}
           {step === 2 && (
-            <Button onClick={handleCreateTestUser} disabled={testUserMut.isPending}>
-              {testUserMut.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Create Test User
+            <Button
+              onClick={() => setStep(3)}
+              disabled={
+                testUserSetupPhase !== 'ready' ||
+                isLoadingGroups ||
+                isErrorGroups ||
+                !groupsData?.groups?.length
+              }
+            >
+              Select Groups
             </Button>
           )}
-          {step === 4 && (
+          {step === 3 && (
             <Button
               onClick={() => {
                 if (selectedGroupIds.length === 0) {
@@ -618,21 +648,21 @@ export default function AddPanelWizardModal({
                   return
                 }
                 setErrorMsg(null)
-                setStep(5)
+                setStep(4)
               }}
             >
               Continue
             </Button>
           )}
-          {step === 5 && (
+          {step === 4 && (
             <Button onClick={handleSyncConfigs} disabled={syncMut.isPending}>
               {syncMut.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {panelsRemaining > 1 ? 'Sync & next panel' : 'Sync Configs & Hosts'}
             </Button>
           )}
-          {(step === 0 || step === 6) && (
+          {(step === 0 || step === 5) && (
             <Button variant="outline" onClick={() => onOpenChange(false)}>
-              {step === 6 ? 'Done' : 'Cancel'}
+              {step === 5 ? 'Done' : 'Cancel'}
             </Button>
           )}
         </DialogFooter>

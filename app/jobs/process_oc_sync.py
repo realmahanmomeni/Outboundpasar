@@ -323,11 +323,11 @@ async def process_oc_sync():
                                     except Exception:
                                         subscription_url = None
                                     last_put_err = None
-                                    break
                             else:
                                 if last_put_err:
                                     raise last_put_err
-                                raise ValueError("OC user PUT produced no successful body")
+                                if not put_bodies:
+                                    raise ValueError("OC user PUT produced no successful body")
                             if identity_rotated and last_put_err is not None:
                                 continue
                             break
@@ -351,7 +351,11 @@ async def process_oc_sync():
                             mapping.external_user_id = external_user_id
                             if rotation_payload is not None:
                                 job.payload = rotation_payload
-                        mapping.last_synced_configs = original_payload.get("configs", [])
+                        mapping.last_synced_configs = (
+                            original_payload.get("sync_keys")
+                            or original_payload.get("configs")
+                            or []
+                        )
                         mapping.status = "active"
                         mapping.last_synced_at = dt.now(UTC)
                         if subscription_url:

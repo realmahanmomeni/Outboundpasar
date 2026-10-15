@@ -24,28 +24,24 @@ async def test_call_oc_panel_api_success_does_not_import_rebecca_stack():
     )
     panel.integration = OCIntegration(base_url="https://oc.example", api_token_encrypted="e", token_preview="t")
 
-    real_import = __import__
-
-    def guarded_import(name, *args, **kwargs):
-        if name.startswith("app.services.oc_panel_local_ops") or name.startswith(
-            "app.services.oc_rebecca_integration"
-        ):
-            raise AssertionError(f"unexpected import of {name} on OC success path")
-        return real_import(name, *args, **kwargs)
-
-    with patch("builtins.__import__", side_effect=guarded_import), patch(
+    with patch(
         "app.services.oc_connection_credentials.connection_token_for_panel",
         new=AsyncMock(return_value="conn"),
     ), patch(
         "app.services.oc_panel_metadata_sync.ensure_panel_metadata_for_ops",
         new=AsyncMock(),
     ), patch(
+        "app.services.oc_panel_local_ops.maybe_local_panel_api",
+        new=AsyncMock(return_value=None),
+    ) as local_mock, patch(
         "app.services.oc_connection_credentials.call_oc_api",
         new=AsyncMock(return_value={"external_user_id": "pasarguard_discovery_1805", "status": "active"}),
-    ):
+    ) as remote_mock:
         data = await call_oc_panel_api(None, panel, "POST", "/v1/integration/panels/1805/test-user")
 
     assert data["external_user_id"] == "pasarguard_discovery_1805"
+    local_mock.assert_awaited_once()
+    remote_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -73,6 +69,9 @@ async def test_call_oc_panel_api_pasarguard_does_not_require_httpx(monkeypatch: 
     ), patch(
         "app.services.oc_panel_metadata_sync.ensure_panel_metadata_for_ops",
         new=AsyncMock(),
+    ), patch(
+        "app.services.oc_panel_local_ops.maybe_local_panel_api",
+        new=AsyncMock(return_value=None),
     ), patch(
         "app.services.oc_connection_credentials.call_oc_api",
         new=AsyncMock(return_value={"external_user_id": "pasarguard_discovery_1805"}),

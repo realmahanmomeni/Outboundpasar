@@ -268,7 +268,9 @@ async def list_panels(
 
     result = await db.execute(stmt)
     panels = result.scalars().all()
-    available_counts = await available_config_counts_by_panel(db, panels)
+    available_counts = await available_config_counts_by_panel(
+        db, panels, live_subscription=False
+    )
 
     return [
         _panel_response(p, available_configs=available_counts.get(p.id, 0))
