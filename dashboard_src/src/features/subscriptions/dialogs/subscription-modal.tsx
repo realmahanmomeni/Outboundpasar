@@ -45,7 +45,7 @@ interface CopiedConfigState {
 }
 
 const CONFIGS_PER_PAGE = 5
-const LINKS_FETCH_TIMEOUT_MS = 8000
+const LINKS_FETCH_TIMEOUT_MS = 30000
 
 const SubscriptionModal: FC<SubscriptionModalProps> = memo(({ open, subscribeUrl, userId, username, onCloseModal }) => {
   const isOpen = open ?? subscribeUrl !== null
