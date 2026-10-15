@@ -612,13 +612,19 @@ async def create_test_user(
     await ensure_actor_panel_access(db, panel, is_owner=is_owner, admin=admin)
     await require_active_telegram_for_tenant_admin(db, admin, is_owner)
         
-    if panel.test_user_id:
-        # Verify it still exists? Or just return it. The prompt says "Reuse existing test user". 
-        # We can just call the OC API again because it is idempotent.
-        pass
-        
-    data = await _oc_panel_call(db, panel, "POST", f"/v1/integration/panels/{panel.source_panel_id}/test-user")
-    
+    from app.services.oc_wizard_test_user import provision_wizard_test_user
+
+    try:
+        data = await provision_wizard_test_user(db, panel)
+    except OcIntegrationApiError as e:
+        new_status = _PANEL_STATUS_BY_OC_CODE.get(e.code or "")
+        if new_status and panel.sync_status != new_status:
+            panel.sync_status = new_status
+            await db.commit()
+        raise http_exception_from_oc_error(e) from e
+    except OcConnectionTokenMissing as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+
     panel.test_user_id = data["external_user_id"]
     await db.commit()
     
