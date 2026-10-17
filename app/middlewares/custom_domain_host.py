@@ -1,10 +1,12 @@
 """Restrict custom subscription hostnames to subscription routes when active."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime as dt
 from time import monotonic
 
+from sqlalchemy.exc import DBAPIError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response

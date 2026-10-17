@@ -20,6 +20,26 @@ logger = get_logger("oc-usage")
 OC_API_SEM = asyncio.Semaphore(10)
 ACCOUNT_MAPPING_USAGE_SEM = asyncio.Semaphore(3)
 
+# A permanently undecryptable integration token (e.g. a placeholder/test integration that still has
+# active mappings) is skipped every cycle.  Logging that at ERROR on every 10s run floods the log and
+# hides real failures, so the first failure is an ERROR and repeats within the window are DEBUG.
+DECRYPT_FAILURE_LOG_INTERVAL_S = 900.0
+_decrypt_failure_last_logged: dict[int, float] = {}
+
+
+def _log_decrypt_failure(integration_id: int, exc: BaseException, *, now: float | None = None) -> bool:
+    """Log a token decrypt failure, rate-limited per integration. Returns True when logged at ERROR."""
+    import time
+
+    ts = time.monotonic() if now is None else now
+    last = _decrypt_failure_last_logged.get(integration_id)
+    if last is None or ts - last >= DECRYPT_FAILURE_LOG_INTERVAL_S:
+        _decrypt_failure_last_logged[integration_id] = ts
+        logger.error("Failed to decrypt API token for integration %s: %s", integration_id, exc)
+        return True
+    logger.debug("Still unable to decrypt API token for integration %s (rate-limited): %s", integration_id, exc)
+    return False
+
 
 async def fetch_oc_user_usage(
     base_url: str,
@@ -290,7 +310,7 @@ async def record_oc_user_usages(session: aiohttp.ClientSession | None = None) ->
                 decrypted = await decrypt_secret(integ.api_token_encrypted)
                 token_cache[integ.id] = decrypted
             except Exception as exc:
-                logger.error("Failed to decrypt API token for integration %s: %s", integ.id, exc)
+                _log_decrypt_failure(integ.id, exc)
                 token_cache[integ.id] = None
 
         token = token_cache.get(integ.id)

@@ -8,6 +8,7 @@ from app.services.oc_share_link import (
     is_importable_configuration_link,
     is_native_informational_display_link,
     parse_share_link,
+    replace_link_remark,
     subscription_config_links,
 )
 from app.subscription.native_info_display import build_native_informational_display_link
@@ -58,6 +59,39 @@ def test_native_info_display_link_is_not_importable_but_parsed():
     parsed = parse_share_link(link)
     assert parsed is not None
     assert "USERNAME" in parsed.remark
+
+
+def test_vmess_url_fragment_remark_does_not_break_parse():
+    import base64
+    import json
+
+    payload = {
+        "v": "2",
+        "ps": "inner",
+        "add": "vm.example",
+        "port": 8443,
+        "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "aid": 0,
+        "net": "ws",
+        "type": "none",
+        "tls": "tls",
+    }
+    raw = "vmess://" + base64.b64encode(json.dumps(payload).encode()).decode()
+    remarked = replace_link_remark(raw, "🇳🇱 Display Name")
+    assert "#" not in remarked
+    parsed = parse_share_link(remarked)
+    assert parsed is not None
+    assert parsed.protocol == "vmess"
+    assert parsed.address == "vm.example"
+    assert parsed.port == 8443
+    assert parsed.remark == "🇳🇱 Display Name"
+    assert parsed.extra.get("id") == payload["id"]
+
+    # External panels may still append ``#remark``; parsing must tolerate it.
+    legacy = f"{remarked}#{quote('legacy', safe='')}"
+    legacy_parsed = parse_share_link(legacy)
+    assert legacy_parsed is not None
+    assert legacy_parsed.remark == "legacy"
 
 
 def test_ss_leading_plaintext_subscription_still_decodes():

@@ -25,7 +25,20 @@ import UserAllIPsModal from '@/features/users/dialogs/user-all-ips-modal'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { invalidateUserMetricsQueries, removeUserFromUsersCache, upsertUserInUsersCache } from '@/utils/usersCache'
-import { buildSubscriptionFormatUrl, fetchSubscriptionBlobFromUrl, fetchUserSubscriptionContent, resolveSubscriptionPublicUrl, type SubscriptionContentFormat } from '@/utils/subscription-config'
+import {
+  downloadBlobFile,
+  downloadTextFile,
+  fetchUserSubscriptionBlob,
+  fetchUserSubscriptionContent,
+  isDownloadSubscriptionFormat,
+  isEmptyOutlineSubscriptionContent,
+  isEmptyWireGuardSubscriptionBlob,
+  resolveSubscriptionPublicUrl,
+  SUBSCRIPTION_ADMIN_FETCH_TIMEOUT_MS,
+  subscriptionDownloadExtension,
+  subscriptionDownloadMimeType,
+  type SubscriptionContentFormat,
+} from '@/utils/subscription-config'
 import { hasPermission, hasScopeAll } from '@/utils/rbac'
 
 type ActionButtonsProps = {
@@ -39,8 +52,6 @@ export interface SubscribeLink {
   format: SubscriptionContentFormat
   icon: React.ComponentType<{ className?: string }>
 }
-
-const DOWNLOAD_ONLY_PROTOCOLS = ['clash', 'clash-meta', 'sing-box', 'wireguard']
 
 type ActionButtonsModalState = {
   subscribeUrl: string
@@ -534,9 +545,7 @@ const ActionButtons: FC<ActionButtonsProps> = ({ user, isModalHost = true, rende
   }
 
   const fetchContent = (format: SubscriptionContentFormat): Promise<string> =>
-    format === 'links' ? fetchUserSubscriptionContent(user.id, format, 30000) : fetchUserSubscriptionContent(user.id, format)
-
-  const fetchBlob = (url: string): Promise<Blob> => fetchSubscriptionBlobFromUrl(url)
+    fetchUserSubscriptionContent(user.id, format, SUBSCRIPTION_ADMIN_FETCH_TIMEOUT_MS)
 
   const fetchAndCacheContent = (format: SubscriptionContentFormat): Promise<string> => {
     const cachedContent = configContentCacheRef.current[format]
@@ -563,8 +572,8 @@ const ActionButtons: FC<ActionButtonsProps> = ({ user, isModalHost = true, rende
   }
 
   const prefetchCopyableConfigs = () => {
-    subscribeLinks.forEach(({ protocol, format }) => {
-      if (DOWNLOAD_ONLY_PROTOCOLS.includes(protocol)) return
+    subscribeLinks.forEach(({ format }) => {
+      if (isDownloadSubscriptionFormat(format)) return
       void fetchAndCacheContent(format).catch(error => {
         console.error('Failed to prefetch config content:', error)
       })
@@ -575,6 +584,14 @@ const ActionButtons: FC<ActionButtonsProps> = ({ user, isModalHost = true, rende
     try {
       const cachedContent = configContentCacheRef.current[format]
       if (cachedContent !== undefined) {
+        if (format === 'outline' && isEmptyOutlineSubscriptionContent(cachedContent)) {
+          toast.info(
+            t('usersTable.emptyOutlineSubscription', {
+              defaultValue: 'Outline export is empty for this user (no mapped Outline configs).',
+            }),
+          )
+          return
+        }
         const copiedSuccessfully = await copy(cachedContent)
         if (copiedSuccessfully) {
           toast.success(`${type} ${t('usersTable.copied', { defaultValue: 'Copied to clipboard' })}`)
@@ -593,6 +610,14 @@ const ActionButtons: FC<ActionButtonsProps> = ({ user, isModalHost = true, rende
       }
 
       const content = await fetchAndCacheContent(format)
+      if (format === 'outline' && isEmptyOutlineSubscriptionContent(content)) {
+        toast.info(
+          t('usersTable.emptyOutlineSubscription', {
+            defaultValue: 'Outline export is empty for this user (no mapped Outline configs).',
+          }),
+        )
+        return
+      }
       const copiedSuccessfully = await copy(content)
       if (copiedSuccessfully) {
         toast.success(`${type} ${t('usersTable.copied', { defaultValue: 'Copied to clipboard' })}`)
@@ -600,46 +625,43 @@ const ActionButtons: FC<ActionButtonsProps> = ({ user, isModalHost = true, rende
         toast.error(t('copyFailed', { defaultValue: 'Failed to copy content' }))
       }
     } catch (error) {
+      console.error('Failed to copy subscription format:', format, error)
       toast.error(t('copyFailed', { defaultValue: 'Failed to copy content' }))
     }
   }
 
   const handleConfigDownload = async (format: SubscriptionContentFormat, type: string) => {
     try {
-      const link = buildSubscriptionFormatUrl(user.subscription_url, format)
-      if (isIOS()) {
-        // iOS: open in new tab or show content
-        const newWindow = window.open(link, '_blank')
-        if (!newWindow) {
-          const content = await fetchContent(format)
-          showManualCopyAlert(content, 'url')
-        } else {
-          toast.success(t('downloadSuccess', { defaultValue: 'Configuration opened in new tab' }))
+      const ext = subscriptionDownloadExtension(format)
+      const fileName = `${user.username}.${ext}`
+
+      if (format === 'wireguard') {
+        const blob = await fetchUserSubscriptionBlob(user.id, format, SUBSCRIPTION_ADMIN_FETCH_TIMEOUT_MS)
+        if (await isEmptyWireGuardSubscriptionBlob(blob)) {
+          toast.info(
+            t('usersTable.emptyWireGuardArchive', {
+              defaultValue: 'WireGuard archive has no configs for this user.',
+            }),
+          )
+          return
         }
+        downloadBlobFile(blob, fileName)
       } else {
-        // Non-iOS: regular download
-        const blob = await fetchBlob(link)
-        const url = window.URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        const ext = type === 'wireguard' ? 'zip' : 'yaml'
-        a.download = `${user.username}.${ext}`
-        document.body.appendChild(a)
-        a.click()
-        window.URL.revokeObjectURL(url)
-        document.body.removeChild(a)
-        toast.success(t('usersTable.downloadStarted', { defaultValue: 'Download started' }))
+        const content = await fetchContent(format)
+        downloadTextFile(content, fileName, subscriptionDownloadMimeType(format))
       }
+      toast.success(t('usersTable.downloadStarted', { defaultValue: 'Download started' }))
     } catch (error) {
+      console.error('Failed to download subscription format:', format, error)
       toast.error(t('downloadFailed', { defaultValue: 'Failed to download config' }))
     }
   }
 
   const handleCopyOrDownload = (format: SubscriptionContentFormat, type: string) => {
-    if (DOWNLOAD_ONLY_PROTOCOLS.includes(type)) {
-      handleConfigDownload(format, type)
+    if (isDownloadSubscriptionFormat(format)) {
+      void handleConfigDownload(format, type)
     } else {
-      handleLinksCopy(format, type)
+      void handleLinksCopy(format, type)
     }
   }
 
@@ -676,7 +698,11 @@ const ActionButtons: FC<ActionButtonsProps> = ({ user, isModalHost = true, rende
                 </DropdownMenuTrigger>
                 <DropdownMenuContent>
                   {subscribeLinks.map((item, index) => (
-                    <DropdownMenuItem dir="ltr" key={index} onClick={() => handleCopyOrDownload(item.format, item.protocol)}>
+                    <DropdownMenuItem
+                      dir="ltr"
+                      key={item.format}
+                      onSelect={() => handleCopyOrDownload(item.format, item.protocol)}
+                    >
                       <item.icon className="mr-2 h-4 w-4" />
                       {item.protocol}
                     </DropdownMenuItem>

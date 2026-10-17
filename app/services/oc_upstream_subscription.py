@@ -175,7 +175,9 @@ async def fetch_upstream_subscription_body(
 def _split_share_links(text: str) -> list[str]:
     lines = []
     for line in text.replace("\r\n", "\n").split("\n"):
-        stripped = line.strip()
+        # A BOM / zero-width mark in front of a scheme would make the link unparseable and the
+        # client would silently lose that config.
+        stripped = line.strip().lstrip("\ufeff\u200b\u200c\u200d\u200e\u200f").strip()
         if stripped:
             lines.append(stripped)
     return lines
@@ -202,17 +204,33 @@ def _body_has_leading_plaintext_share_links(text: str) -> bool:
     return False
 
 
+def _b64decode_links(value: str) -> str | None:
+    """Decode a base64 links body: standard or URL-safe alphabet, padded or not, whitespace tolerant."""
+    import re
+
+    cleaned = re.sub(r"\s+", "", value or "")
+    if not cleaned or not re.fullmatch(r"[A-Za-z0-9+/_\-]+={0,2}", cleaned):
+        return None
+    cleaned = cleaned.rstrip("=").replace("-", "+").replace("_", "/")
+    cleaned += "=" * (-len(cleaned) % 4)
+    try:
+        return base64.b64decode(cleaned, validate=True).decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+
 def _decode_links_payload(text: str) -> list[str]:
-    stripped = text.strip()
+    stripped = (text or "").lstrip("\ufeff").strip()
     if not stripped:
         return []
     if _body_has_leading_plaintext_share_links(stripped):
         return _split_share_links(stripped)
-    try:
-        decoded = base64.b64decode(stripped, validate=False).decode("utf-8", errors="replace")
-        return _split_share_links(decoded)
-    except Exception:
-        return _split_share_links(stripped)
+    decoded = _b64decode_links(stripped)
+    if decoded is not None:
+        decoded_lines = _split_share_links(decoded)
+        if any(line.lower().startswith(_PLAINTEXT_LINK_PREFIXES) for line in decoded_lines):
+            return decoded_lines
+    return _split_share_links(stripped)
 
 
 def _encode_links_base64(links: list[str]) -> str:
@@ -229,6 +247,324 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
         seen.add(item)
         out.append(item)
     return out
+
+
+@dataclass(frozen=True)
+class _VlessEndpointCredential:
+    """Stable vless identity: user id + host + port (not remark-based)."""
+
+    user_id: str
+    host: str
+    port: int
+
+
+def _allowed_vless_credentials(allowed_links: list[str]) -> frozenset[_VlessEndpointCredential]:
+    from urllib.parse import unquote, urlparse
+
+    from app.services.oc_share_link import parse_share_link
+
+    creds: set[_VlessEndpointCredential] = set()
+    for link in allowed_links:
+        raw = (link or "").strip()
+        if not raw:
+            continue
+        parsed = parse_share_link(raw)
+        if parsed is None or parsed.protocol != "vless" or not parsed.address or parsed.port is None:
+            parsed_uri = urlparse(raw.split("#", 1)[0])
+            if parsed_uri.scheme != "vless" or not parsed_uri.hostname or parsed_uri.port is None:
+                continue
+            user_id = unquote(parsed_uri.username or "")
+            host = parsed_uri.hostname.lower()
+            port = int(parsed_uri.port)
+        else:
+            parsed_uri = urlparse(raw.split("#", 1)[0])
+            user_id = unquote(parsed_uri.username or "")
+            host = parsed.address.lower()
+            port = int(parsed.port)
+        if user_id and host and port > 0:
+            creds.add(_VlessEndpointCredential(user_id=user_id, host=host, port=port))
+    return frozenset(creds)
+
+
+def _allowed_link_config_bases(allowed_links: list[str]) -> frozenset[str]:
+    from app.services.oc_share_link import share_link_config_base
+
+    return frozenset(
+        share_link_config_base(link)
+        for link in allowed_links
+        if (link or "").strip()
+    )
+
+
+def _vless_cred_from_clash_proxy(proxy: dict) -> _VlessEndpointCredential | None:
+    if not isinstance(proxy, dict) or str(proxy.get("type") or "").lower() != "vless":
+        return None
+    user_id = str(proxy.get("uuid") or "").strip()
+    host = str(proxy.get("server") or "").strip().lower()
+    port = proxy.get("port")
+    if not user_id or not host or port is None:
+        return None
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError):
+        return None
+    return _VlessEndpointCredential(user_id=user_id, host=host, port=port_i)
+
+
+def _vless_cred_from_xray_item(item: dict) -> _VlessEndpointCredential | None:
+    if not isinstance(item, dict):
+        return None
+    if str(item.get("protocol") or item.get("type") or "").lower() != "vless":
+        return None
+    user_id = str(item.get("id") or item.get("uuid") or "").strip()
+    host = str(item.get("add") or item.get("address") or "").strip().lower()
+    port = item.get("port")
+    if not user_id or not host or port is None:
+        return None
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError):
+        return None
+    return _VlessEndpointCredential(user_id=user_id, host=host, port=port_i)
+
+
+def _vless_cred_from_singbox_outbound(outbound: dict) -> _VlessEndpointCredential | None:
+    if not isinstance(outbound, dict):
+        return None
+    if str(outbound.get("type") or "").lower() != "vless":
+        return None
+    user_id = str(outbound.get("uuid") or outbound.get("id") or "").strip()
+    host = str(outbound.get("server") or outbound.get("address") or "").strip().lower()
+    port = outbound.get("server_port") or outbound.get("port")
+    if not user_id or not host or port is None:
+        return None
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError):
+        return None
+    return _VlessEndpointCredential(user_id=user_id, host=host, port=port_i)
+
+
+def _clash_proxy_share_link_for_filter(proxy: dict) -> str | None:
+    """Build a share link (no remark) when clash fields are sufficient for exact config-base matching."""
+    if not isinstance(proxy, dict):
+        return None
+    proxy_type = str(proxy.get("type") or "").lower()
+    server = proxy.get("server")
+    port = proxy.get("port")
+    if not server or port is None:
+        return None
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError):
+        return None
+    from urllib.parse import quote
+
+    if proxy_type == "vless":
+        user_id = str(proxy.get("uuid") or "").strip()
+        if not user_id:
+            return None
+        return f"vless://{quote(user_id, safe='')}@{server}:{port_i}?encryption=none#"
+    if proxy_type == "trojan":
+        password = proxy.get("password")
+        if password is None or str(password) == "":
+            return None
+        return f"trojan://{quote(str(password), safe='')}@{server}:{port_i}#"
+    if proxy_type == "ss":
+        cipher = proxy.get("cipher")
+        password = proxy.get("password")
+        if not cipher or password is None:
+            return None
+        userinfo = base64.urlsafe_b64encode(f"{cipher}:{password}".encode()).decode().rstrip("=")
+        return f"ss://{userinfo}@{server}:{port_i}#"
+    return None
+
+
+def _proxy_dict_allowed(
+    proxy: dict,
+    allowed_vless: frozenset[_VlessEndpointCredential],
+    allowed_bases: frozenset[str],
+) -> bool:
+    from app.services.oc_share_link import share_link_config_base
+
+    cred = _vless_cred_from_clash_proxy(proxy)
+    if cred is not None and cred in allowed_vless:
+        return True
+    synthesized = _clash_proxy_share_link_for_filter(proxy)
+    if synthesized and share_link_config_base(synthesized) in allowed_bases:
+        return True
+    return False
+
+
+def _xray_item_allowed(
+    item: Any,
+    allowed_vless: frozenset[_VlessEndpointCredential],
+    allowed_bases: frozenset[str],
+) -> bool:
+    from app.services.oc_share_link import share_link_config_base
+
+    if not isinstance(item, dict):
+        return False
+    cred = _vless_cred_from_xray_item(item)
+    if cred is not None and cred in allowed_vless:
+        return True
+    protocol = str(item.get("protocol") or item.get("type") or "").lower()
+    server = item.get("add") or item.get("address")
+    port = item.get("port")
+    if not server or port is None:
+        return False
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError):
+        return False
+    from urllib.parse import quote
+
+    if protocol == "trojan":
+        password = item.get("password")
+        if password is None or str(password) == "":
+            return False
+        link = f"trojan://{quote(str(password), safe='')}@{server}:{port_i}#"
+        return share_link_config_base(link) in allowed_bases
+    if protocol in ("shadowsocks", "ss"):
+        method = item.get("method")
+        password = item.get("password")
+        if not method or password is None:
+            return False
+        userinfo = base64.urlsafe_b64encode(f"{method}:{password}".encode()).decode().rstrip("=")
+        link = f"ss://{userinfo}@{server}:{port_i}#"
+        return share_link_config_base(link) in allowed_bases
+    return False
+
+
+def _singbox_outbound_allowed(
+    outbound: Any,
+    allowed_vless: frozenset[_VlessEndpointCredential],
+    allowed_bases: frozenset[str],
+) -> bool:
+    from app.services.oc_share_link import share_link_config_base
+
+    if not isinstance(outbound, dict):
+        return False
+    cred = _vless_cred_from_singbox_outbound(outbound)
+    if cred is not None and cred in allowed_vless:
+        return True
+    outbound_type = str(outbound.get("type") or "").lower()
+    server = outbound.get("server") or outbound.get("address")
+    port = outbound.get("server_port") or outbound.get("port")
+    if not server or port is None:
+        return False
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError):
+        return False
+    from urllib.parse import quote
+
+    if outbound_type == "trojan":
+        password = outbound.get("password")
+        if password is None or str(password) == "":
+            return False
+        link = f"trojan://{quote(str(password), safe='')}@{server}:{port_i}#"
+        return share_link_config_base(link) in allowed_bases
+    if outbound_type in ("shadowsocks", "ss"):
+        method = outbound.get("method")
+        password = outbound.get("password")
+        if not method or password is None:
+            return False
+        userinfo = base64.urlsafe_b64encode(f"{method}:{password}".encode()).decode().rstrip("=")
+        link = f"ss://{userinfo}@{server}:{port_i}#"
+        return share_link_config_base(link) in allowed_bases
+    return False
+
+
+def filter_upstream_subscription_body(
+    body: str | bytes,
+    config_format: str,
+    allowed_links: list[str],
+) -> str | bytes:
+    """
+    Drop upstream subscription entries that are not part of the user's group-selected OC hosts.
+
+    When ``allowed_links`` is empty, returns an empty payload for the format (never pass-through).
+    """
+    if config_format == "wireguard":
+        # Panel WireGuard archives cannot be mapped to group-selected share links; never pass through.
+        return b""
+    if not allowed_links:
+        if config_format in ("links", "links_base64"):
+            return ""
+        if config_format in ("clash", "clash_meta"):
+            return "proxies: []\n"
+        if config_format == "xray":
+            return "[]"
+        if config_format == "sing_box":
+            return json.dumps({"outbounds": [], "endpoints": []}, ensure_ascii=False, separators=(",", ":"))
+        if config_format == "outline":
+            return "{}"
+        if config_format == "wireguard":
+            return b""
+        return ""
+
+    allowed_bases = _allowed_link_config_bases(allowed_links)
+    allowed_vless = _allowed_vless_credentials(allowed_links)
+    text = body if isinstance(body, str) else body.decode("utf-8", errors="replace")
+
+    if config_format in ("links", "links_base64"):
+        from app.services.oc_share_link import share_link_config_base
+
+        decoded = _decode_links_payload(text)
+        kept = [link for link in decoded if share_link_config_base(link) in allowed_bases]
+        if config_format == "links_base64":
+            return _encode_links_base64(kept)
+        return "\n".join(kept)
+
+    if config_format in ("clash", "clash_meta"):
+        try:
+            doc = yaml.safe_load(text) or {}
+        except yaml.YAMLError:
+            doc = {}
+        if not isinstance(doc, dict):
+            doc = {}
+        proxies = doc.get("proxies") or []
+        if isinstance(proxies, list):
+            doc["proxies"] = [
+                p for p in proxies if _proxy_dict_allowed(p, allowed_vless, allowed_bases)
+            ]
+        return yaml.safe_dump(doc, allow_unicode=True, sort_keys=False)
+
+    if config_format == "xray":
+        try:
+            data = json.loads(text) if text.strip() else []
+        except json.JSONDecodeError:
+            data = []
+        if isinstance(data, list):
+            filtered = [item for item in data if _xray_item_allowed(item, allowed_vless, allowed_bases)]
+            return json.dumps(filtered, ensure_ascii=False, separators=(",", ":"))
+        return "[]"
+
+    if config_format == "sing_box":
+        try:
+            doc = json.loads(text) if text.strip() else {}
+        except json.JSONDecodeError:
+            doc = {}
+        if not isinstance(doc, dict):
+            doc = {}
+        outbounds = doc.get("outbounds") or []
+        endpoints = doc.get("endpoints") or []
+        if isinstance(outbounds, list):
+            doc["outbounds"] = [
+                o for o in outbounds if _singbox_outbound_allowed(o, allowed_vless, allowed_bases)
+            ]
+        if isinstance(endpoints, list):
+            doc["endpoints"] = [
+                e for e in endpoints if _singbox_outbound_allowed(e, allowed_vless, allowed_bases)
+            ]
+        return json.dumps(doc, ensure_ascii=False, separators=(",", ":"))
+
+    if config_format == "outline":
+        # Outline seller payloads cannot be mapped to group-selected share links; never merge unfiltered.
+        return "{}"
+
+    return b"" if isinstance(body, bytes) else ""
 
 
 def merge_subscription_payloads(
@@ -400,7 +736,17 @@ async def append_oc_upstream_subscriptions(
     *,
     as_base64: bool,
     user_agent: str = "",
+    oc_inbound_tags: list[str] | None = None,
+    format_variables: dict | None = None,
 ) -> str | bytes:
+    """
+    Legacy seller-body merge (unrestricted users only).
+
+    Users with runtime-active OC panels are served exclusively from their authorized share links,
+    converted through the shared serializers inside ``process_inbounds_and_tags``.  Seller
+    structured bodies are never fetched or merged for them: they could only contribute entries
+    outside the user's group selection (or, after filtering, duplicates of the authorized set).
+    """
     from app.db import GetDB
 
     if config_format not in _SUPPORTED_FORMATS:
@@ -408,6 +754,9 @@ async def append_oc_upstream_subscriptions(
 
     async with GetDB() as db:
         tenant_id = await resolve_user_tenant_id(db, user_id, admin_id)
+        allowed_panels, _ = await load_runtime_oc_subscription_state(db, user_id, tenant_id)
+        if allowed_panels:
+            return native
         _, sources = await load_oc_upstream_sources(db, user_id, tenant_id)
 
     if not sources:

@@ -185,6 +185,12 @@ class OCUserMapping(Base, CreatedAtUTCMixin):
     status: Mapped[str] = mapped_column(String(64), default="active")
     # Subscription URL of the provisioned user as reported by the OC/underlying panel.
     external_subscription_url: Mapped[str | None] = mapped_column(String(2048), nullable=True, default=None)
+    # Source seller group ids last applied to the seller account by a successful PUT (taken from the panel
+    # import selection). NULL = unknown (account predates tracking); drift against the import selection is
+    # detected and retried by the periodic reconcile.
+    last_synced_group_ids: Mapped[list[str] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None
+    )
     updated_at: Mapped[dt] = mapped_column(
         DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
     )
@@ -210,6 +216,11 @@ class UserPanelBinding(Base, CreatedAtUTCMixin):
         String(32), nullable=False, default=UserPanelBindingSource.explicit.value
     )
     desired_config_ids: Mapped[list[str] | None] = mapped_column(JSON(none_as_null=True), nullable=True, default=None)
+    # DEPRECATED: per-user seller group choice (shipped earlier, kept for API/schema compatibility). It no longer
+    # influences provisioning: seller groups come from the panel import selection (OCPanelGroup.is_selected).
+    desired_source_group_ids: Mapped[list[str] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None
+    )
     updated_at: Mapped[dt] = mapped_column(
         DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
     )

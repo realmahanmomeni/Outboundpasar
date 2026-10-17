@@ -393,17 +393,25 @@ async def get_available_panels(
     imported = await _imported_panels_by_source_id(
         db, integration.id, tenant_id, connection.oc_account_id, workspace_id=workspace_id
     )
-    items = [
-        PanelItem(
-            id=int(row["subscription_id"]),
-            panel_type=str(row["panel_type"]),
-            name=str(row["name"]),
-            status=str(row["status"]),
-            already_imported=str(int(row["subscription_id"])) in imported,
-            imported_panel_id=imported.get(str(int(row["subscription_id"]))),
+    items: list[PanelItem] = []
+    for row in raw_items:
+        if not isinstance(row, dict):
+            continue
+        try:
+            sub_id = int(row.get("subscription_id") or row.get("id"))
+        except (TypeError, ValueError):
+            logger.warning("oc_available_panels_skip_row missing subscription_id")
+            continue
+        items.append(
+            PanelItem(
+                id=sub_id,
+                panel_type=str(row.get("panel_type") or "UNKNOWN"),
+                name=str(row.get("name") or f"OC Panel {sub_id}"),
+                status=str(row.get("status") or "UNKNOWN"),
+                already_imported=str(sub_id) in imported,
+                imported_panel_id=imported.get(str(sub_id)),
+            )
         )
-        for row in raw_items
-    ]
     return AvailablePanelsResponse(items=items)
 
 
@@ -673,7 +681,16 @@ async def sync_configs_and_hosts(
     ).scalar_one_or_none()
     await ensure_actor_panel_access(db, panel, is_owner=is_owner, admin=admin)
     await require_active_telegram_for_tenant_admin(db, admin, is_owner)
-        
+
+    # The import selection decides the seller groups of every user on this panel, so it is mandatory
+    # server-side (the wizard also enforces it, but a client can bypass the UI). Checked after the access
+    # checks and before anything is read from OC or written.
+    if not any(str(g).strip() for g in req.selected_group_ids):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one seller group must be selected for the panel import.",
+        )
+
     # 1. Update groups. OC is the source of truth for which groups exist and their names;
     # the client only chooses which of OC's groups are selected.
     oc_groups = await _oc_panel_call(
@@ -754,6 +771,20 @@ async def sync_configs_and_hosts(
             warnings.append(f"Discovery subscription sync failed: {type(exc).__name__}")
     else:
         warnings.append("No test user on panel; destination hosts were not refreshed from subscription.")
+
+    # The import selection is the source of the seller groups of every user on this panel. Seller accounts
+    # whose applied groups are unknown are flagged so the periodic reconcile queues one group update each
+    # (accounts with tracked groups are detected as drift on their own). Nothing is sent from this request.
+    from app.services.oc_seller_groups import mark_panel_group_assignments_stale
+
+    if req.selected_group_ids:
+        await mark_panel_group_assignments_stale(db, panel.id)
+    else:
+        logger.warning(
+            "oc_panel_import_selection_empty panel_id=%s: no seller group is selected; users of this panel "
+            "are not provisioned/updated until a group is selected",
+            panel.id,
+        )
 
     await db.commit()
 

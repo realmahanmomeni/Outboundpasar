@@ -54,6 +54,7 @@ routers = [
     panel.router,
     integration.router,
     user_panel_binding.router,
+    user_panel_binding.options_router,
     custom_domain.router,
     integration_managed_subdomain.router,
     panel_statistics.router,

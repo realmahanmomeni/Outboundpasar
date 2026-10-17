@@ -28,6 +28,13 @@ from app.services.oc_user_mapping_state import (
     mapping_needs_subscription_url_repair,
     resolve_oc_sync_operation,
 )
+from app.services.oc_seller_groups import (
+    GroupDecision,
+    decide_import_groups,
+    group_drift,
+    import_group_payload,
+    load_panel_group_inventory,
+)
 from app.services.oc_sync_identity import merge_identity_rotation_payload
 from app.utils.logger import get_logger
 
@@ -571,14 +578,25 @@ def _log_reconcile_action(
 
 
 async def build_oc_user_put_payload(
-    db_session: AsyncSession, panel_id: int, config_ids: list[str]
+    db_session: AsyncSession,
+    panel_id: int,
+    config_ids: list[str],
+    *,
+    import_group_ids: list[str] | None = None,
 ) -> dict[str, list[str]]:
     """
     Payload for OC user PUT.
 
     When catalog config ids are destination inbound tags, OC often rejects explicit
     ``configs`` unless the user is assigned via ``groups`` first (same as discovery).
+
+    ``import_group_ids`` is the panel's import selection (see ``resolve_oc_user_group_payload``). When it
+    is given the groups are exactly that selection: nothing is derived from the user's configs, so the
+    user's host/config choice can never widen or narrow seller group membership. Without it the behaviour
+    is unchanged (config-derived groups only; the legacy "all selected groups" fallback stays disabled).
     """
+    if import_group_ids is not None:
+        return {"groups": sorted({str(g) for g in import_group_ids}), "configs": config_ids}
     groups = await desired_oc_group_ids(db_session, panel_id, config_ids)
     if (
         not groups
@@ -589,8 +607,69 @@ async def build_oc_user_put_payload(
     return {"groups": groups, "configs": config_ids}
 
 
+async def resolve_oc_user_group_payload(
+    db_session: AsyncSession,
+    *,
+    user_id: int,
+    panel_id: int,
+    config_ids: list[str],
+) -> tuple[dict[str, Any], GroupDecision]:
+    """
+    Seller PUT payload (groups/configs) for one user on one panel plus the safety decision.
+
+    The groups are the panel's import selection (``OCPanelGroup.is_selected``), verbatim. They do not
+    depend on the user (``user_id`` is only kept for call-site compatibility), on the user's configs, or
+    on any per-user list. If groups were imported but none is selected the decision is *blocked* and the
+    caller must not create/update the seller account; a panel without imported groups keeps the legacy
+    payload.
+    """
+    inventory = await load_panel_group_inventory(db_session, panel_id)
+    decision = decide_import_groups(inventory)
+    if decision.blocked:
+        return {"groups": [], "configs": list(config_ids)}, decision
+
+    if not decision.groups:
+        # No imported group rows at all (legacy panel): nothing to apply, unchanged legacy payload.
+        return await build_oc_user_put_payload(db_session, panel_id, config_ids), decision
+
+    payload = await build_oc_user_put_payload(
+        db_session, panel_id, config_ids, import_group_ids=list(decision.groups)
+    )
+    payload = dict(payload)
+    payload["group_selection"] = import_group_payload(decision)
+    return payload, decision
+
+
+_GROUP_BLOCK_LOG_INTERVAL_SECONDS = 900.0
+_group_block_last_logged: dict[tuple[int, str], float] = {}
+
+
+def _log_group_selection_blocked(user_id: int, panel_id: int, decision: GroupDecision) -> None:
+    """Rate-limited per panel+issue (the 5-minute reconcile tick would otherwise repeat this per user)."""
+    import time
+
+    key = (panel_id, decision.issue or "")
+    now = time.monotonic()
+    last = _group_block_last_logged.get(key)
+    if last is not None and now - last < _GROUP_BLOCK_LOG_INTERVAL_SECONDS:
+        return
+    _group_block_last_logged[key] = now
+    logger.warning(
+        "oc_seller_group_selection_blocked panel_id=%s issue=%s first_user_id=%s detail=%s "
+        "(no seller account was created/updated for users of this panel)",
+        panel_id,
+        decision.issue,
+        user_id,
+        decision.message,
+    )
+
+
 async def enqueue_oc_user_sync(
-    db_session: AsyncSession, db_user: User, *, periodic_reconcile: bool = False
+    db_session: AsyncSession,
+    db_user: User,
+    *,
+    periodic_reconcile: bool = False,
+    force_panel_ids: set[int] | None = None,
 ) -> None:
     """
     Enqueue synchronization events (Create, Update, Delete) to Outbound Center
@@ -666,6 +745,16 @@ async def enqueue_oc_user_sync(
         desired_set = normalize_config_set(sync_keys)
         mapping = existing_panel_ids.get(panel_id)
         is_new_mapping = False
+        forced = bool(force_panel_ids and panel_id in force_panel_ids)
+        resolved_payload: dict[str, Any] | None = None
+        if mapping is None:
+            # A brand-new seller account must never be created before its groups are known.
+            resolved_payload, group_decision = await resolve_oc_user_group_payload(
+                db_session, user_id=db_user.id, panel_id=panel_id, config_ids=configs
+            )
+            if group_decision.blocked:
+                _log_group_selection_blocked(db_user.id, panel_id, group_decision)
+                continue
         if not mapping:
             mapping = OCUserMapping(
                 user_id=db_user.id,
@@ -694,11 +783,25 @@ async def enqueue_oc_user_sync(
             )
             continue
 
+        # The panel's import selection changed (or a previous group update failed) since the groups were
+        # last applied to this seller account: queue the update even though the configs are unchanged.
+        # Accounts whose applied groups are unknown (NULL) are not treated as drift (no surprise bulk resync).
+        group_drift_detected = False
+        if not is_new_mapping and mapping.last_synced_group_ids is not None:
+            drift_payload, drift_decision = await resolve_oc_user_group_payload(
+                db_session, user_id=db_user.id, panel_id=panel_id, config_ids=configs
+            )
+            if drift_decision.blocked:
+                _log_group_selection_blocked(db_user.id, panel_id, drift_decision)
+            elif group_drift(mapping.last_synced_group_ids, drift_decision.groups):
+                group_drift_detected = True
+                resolved_payload = drift_payload
+
         action = classify_mapping_action(
             mapping,
             DesiredPanelState(panel_id=panel_id, desired_active=True, config_ids=desired_set),
         )
-        if action == ReconcileAction.NOOP:
+        if action == ReconcileAction.NOOP and not forced and not group_drift_detected:
             continue
 
         last_configs = mapping.last_synced_configs
@@ -711,9 +814,20 @@ async def enqueue_oc_user_sync(
             or mapping.status != OC_MAPPING_STATUS_ACTIVE
             or normalize_config_set(last_configs) != desired_set
             or mapping_needs_subscription_url_repair(mapping, desired_set)
+            or forced
+            or group_drift_detected
         )
         if not needs_sync:
             continue
+
+        if resolved_payload is None:
+            resolved_payload, group_decision = await resolve_oc_user_group_payload(
+                db_session, user_id=db_user.id, panel_id=panel_id, config_ids=configs
+            )
+            if group_decision.blocked:
+                # Existing account keeps its current state; nothing is queued or mutated.
+                _log_group_selection_blocked(db_user.id, panel_id, group_decision)
+                continue
 
         log_action = (
             ReconcileAction.CREATE
@@ -749,7 +863,7 @@ async def enqueue_oc_user_sync(
         operation = resolve_oc_sync_operation(
             mapping, is_new_mapping=is_new_mapping, last_configs=last_configs
         )
-        payload = await build_oc_user_put_payload(db_session, panel_id, configs)
+        payload = resolved_payload
         payload["sync_keys"] = sorted(sync_keys)
         payload["destination_sync_keys"] = await resolve_destination_config_ids_for_panel_tags(
             db_session, panel_id, tags
@@ -839,11 +953,12 @@ async def sync_panel_from_outbound_center(db_session: AsyncSession, panel_id: in
     OC is the source of truth for: panel status, groups (id/name) and configs
     (id/name/protocol/network/group mapping). PasarGuard only adds local selection state.
     """
+    from datetime import UTC, datetime as dt
+
     from sqlalchemy.orm import selectinload
 
     from app.services.oc_connection_credentials import connection_token_for_panel
     from app.services.oc_integration_client import OcIntegrationApiError, call_oc_api
-    from datetime import UTC, datetime as dt
 
     panel = (await db_session.execute(
         select(OCPanel)

@@ -21,6 +21,19 @@ from test_oc_scoped_integration import (  # noqa: E402
 
 
 @pytest.mark.asyncio
+async def test_available_panels_tolerates_missing_panel_type(env_fixture):
+    await _add_connection(env_fixture)
+    env_fixture.fake.account_panel_items = [
+        {"subscription_id": 77, "name": "Legacy row", "status": "ACTIVE"},
+    ]
+    async with env_fixture.factory() as db:
+        out = await integ.get_available_panels(db=db, user_context=env_fixture.ctx)
+    assert len(out.items) == 1
+    assert out.items[0].id == 77
+    assert out.items[0].panel_type == "UNKNOWN"
+
+
+@pytest.mark.asyncio
 async def test_available_panels_marks_already_imported(env_fixture):
     await _add_connection(env_fixture)
     pid = await _add_panel(env_fixture, source="11")

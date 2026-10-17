@@ -2,16 +2,36 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import uuid
 from unittest.mock import AsyncMock, patch
 from urllib.parse import unquote
 
+import pytest
+import pytest_asyncio
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
+import app.db.base as db_base
+import app.db.models  # noqa: F401
+import app.db.models_oc  # noqa: F401
 from app.db import GetDB
-from app.db.models import Admin, Group, ProxyHost, ProxyInbound, User, UserStatus
+from app.db.base import Base
+from app.db.crud.workspace import create_workspace_for_administrator
+from app.db.models import (
+    Admin,
+    AdminRole,
+    Group,
+    ProxyInbound,
+    Settings,
+    Tenant,
+    TenantStatus,
+    User,
+    UserStatus,
+)
 from app.db.models_oc import OCIntegration, OCPanel, OCPanelConfig, OCPanelDestinationHost
+
+pytestmark = pytest.mark.asyncio(loop_scope="function")
 from app.services.oc_host_display import DEFAULT_OC_HOST_DISPLAY_TEMPLATE, resolve_oc_subscription_remark_source
 from app.services.oc_panel_destination_hosts import reconcile_panel_destination_hosts
 from app.services.oc_share_link import replace_link_remark
@@ -22,6 +42,21 @@ def _customer_link(uuid_val: str, remark: str, host: str = "customer.example") -
     return f"vless://{uuid_val}@{host}:8443?encryption=none&security=tls#{remark}"
 
 
+def _last_synced_configs_for_destinations(dest_rows) -> list[str]:
+    """
+    Build mapping ``last_synced_configs`` the way runtime subscription expects.
+
+    When discovery catalog matching did not set ``oc_source_config_id``, the sync gate
+    accepts the stable destination fingerprint (see ``destination_config_allowed_by_sync``).
+    """
+    synced: list[str] = []
+    for row in dest_rows:
+        payload = row.source_payload if isinstance(row.source_payload, dict) else {}
+        sid = str(payload.get("oc_source_config_id") or "").strip()
+        synced.append(sid or row.destination_config_id)
+    return synced
+
+
 def _presentation_status() -> str:
     return "vless://disc@x:1?encryption=none#📡Status|✅|📆(∞ day)|(0 B-∞)📊"
 
@@ -30,13 +65,95 @@ def _presentation_user() -> str:
     return "vless://disc@x:1?encryption=none#👤v1.7|pg"
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _isolated_sqlite_for_display_names():
+    """Private in-memory DB; avoids shared PostgreSQL and asyncio loop cross-talk."""
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    patcher = patch.object(db_base, "SessionLocal", factory)
+    patcher.start()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with factory() as session:
+        role = (
+            await session.execute(select(AdminRole).where(AdminRole.name == "administrator"))
+        ).scalar_one_or_none()
+        if role is None:
+            session.add(
+                AdminRole(
+                    name="administrator",
+                    is_owner=False,
+                    permissions={},
+                    limits={},
+                    features={},
+                    access={},
+                    hwid={},
+                )
+            )
+        global_settings = (
+            await session.execute(select(Settings).where(Settings.workspace_id.is_(None)).limit(1))
+        ).scalar_one_or_none()
+        if global_settings is None:
+            session.add(
+                Settings(
+                    telegram={},
+                    webhook={},
+                    notification_settings={},
+                    notification_enable={},
+                    subscription={"rules": []},
+                    hwid={},
+                    general={},
+                    tenant_id=None,
+                    workspace_id=None,
+                )
+            )
+        await session.commit()
+    try:
+        yield factory
+    finally:
+        patcher.stop()
+        from tests.pytest_db_guard import assert_safe_to_dispose_engine
+
+        assert_safe_to_dispose_engine(engine.url)
+        await engine.dispose()
+
+
+async def _admin_for_tests(db) -> Admin:
+    tenant = Tenant(name=f"dn_{uuid.uuid4().hex[:8]}", status=TenantStatus.active)
+    db.add(tenant)
+    await db.flush()
+    role = (await db.execute(select(AdminRole).where(AdminRole.name == "administrator"))).scalar_one()
+    admin = Admin(
+        username=f"dn_{uuid.uuid4().hex[:6]}",
+        hashed_password="x",
+        role_id=role.id,
+        tenant_id=tenant.id,
+    )
+    db.add(admin)
+    await db.flush()
+    await create_workspace_for_administrator(db, admin)
+    await db.refresh(admin)
+    return admin
+
+
+def _active_panel_connection():
+    return patch(
+        "app.services.oc_subscription_runtime.panel_has_active_connection",
+        new=AsyncMock(return_value=True),
+    )
+
+
 async def test_host_display_name_overrides_default_template():
     customer = _customer_link("cust-uuid", "🇸🇪|CDN")
     upstream = [customer]
     catalog_id = "HTTP-UP"
 
     async with GetDB() as db:
-        admin = (await db.execute(select(Admin).limit(1))).scalar_one()
+        admin = await _admin_for_tests(db)
         intg = OCIntegration(base_url="https://oc.example", api_token_encrypted="e", token_preview="t")
         db.add(intg)
         await db.flush()
@@ -83,17 +200,17 @@ async def test_host_display_name_overrides_default_template():
                 panel_id=panel.id,
                 external_user_id="ext",
                 status="active",
-                last_synced_configs=[catalog_id],
-                external_subscription_url="https://1.1.1.1/sub/x",
+                last_synced_configs=_last_synced_configs_for_destinations([dest]),
+                external_subscription_url="https://203.0.113.10/sub/synthetic",
             )
         )
         await db.commit()
         uid = user.id
 
     body = "\n".join([_presentation_status(), _presentation_user(), customer])
-    with patch(
-        "app.services.oc_user_subscription_hosts.fetch_upstream_subscription_body",
-        new=AsyncMock(return_value=body),
+    with _active_panel_connection(), patch(
+        "app.services.oc_user_subscription_hosts._fetch_user_links",
+        new=AsyncMock(return_value=body.split("\n")),
     ):
         async with GetDB() as db:
             links = await collect_oc_subscription_links_for_user(
@@ -139,7 +256,7 @@ async def test_three_configs_by_source_id_not_order():
     upstream_for_fetch = [_presentation_status(), _presentation_user(), *customer_links]
 
     async with GetDB() as db:
-        admin = (await db.execute(select(Admin).limit(1))).scalar_one()
+        admin = await _admin_for_tests(db)
         intg = OCIntegration(base_url="https://oc.example", api_token_encrypted="e", token_preview="t")
         db.add(intg)
         await db.flush()
@@ -163,15 +280,16 @@ async def test_three_configs_by_source_id_not_order():
         dest_rows = (
             await db.execute(select(OCPanelDestinationHost).where(OCPanelDestinationHost.panel_id == panel.id))
         ).scalars().all()
-        by_sid = {}
         tags = []
         for row in dest_rows:
-            sid = (row.source_payload or {}).get("oc_source_config_id")
-            by_sid[sid] = row
-            for cid, display, _u, _r in specs:
-                if cid == sid:
+            payload = row.source_payload if isinstance(row.source_payload, dict) else {}
+            sid = payload.get("oc_source_config_id")
+            raw = str(payload.get("subscription_link") or "")
+            for cid, display, uuid_val, _r in specs:
+                if cid == sid or uuid_val in raw:
                     row.display_name = display
-                    tags.append(row.virtual_inbound_tag)
+                    break
+            tags.append(row.virtual_inbound_tag)
         inbounds = []
         for t in tags:
             inbounds.append((await db.execute(select(ProxyInbound).where(ProxyInbound.tag == t))).scalar_one())
@@ -195,17 +313,17 @@ async def test_three_configs_by_source_id_not_order():
                 panel_id=panel.id,
                 external_user_id="ext",
                 status="active",
-                last_synced_configs=[s[0] for s in specs],
-                external_subscription_url="https://1.1.1.1/sub/x",
+                last_synced_configs=_last_synced_configs_for_destinations(dest_rows),
+                external_subscription_url="https://203.0.113.11/sub/synthetic",
             )
         )
         await db.commit()
         uid = user.id
 
     body = "\n".join(upstream_for_fetch)
-    with patch(
-        "app.services.oc_user_subscription_hosts.fetch_upstream_subscription_body",
-        new=AsyncMock(return_value=body),
+    with _active_panel_connection(), patch(
+        "app.services.oc_user_subscription_hosts._fetch_user_links",
+        new=AsyncMock(return_value=body.split("\n")),
     ):
         async with GetDB() as db:
             links = await collect_oc_subscription_links_for_user(db, uid, tags, {}, user_tenant_id=None)

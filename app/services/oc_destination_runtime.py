@@ -232,8 +232,34 @@ async def load_destination_hosts_for_tags(
         for p in (await db.execute(select(OCPanel).where(OCPanel.id.in_(panel_ids)))).scalars().all()
     }
 
-    out: list[tuple[OCPanelDestinationHost, ProxyHost | None]] = []
+    # One query for every candidate host (was one query per destination row).  Scope rules mirror
+    # ``_scope_proxy_host_stmt``; rows nobody matches still fall back to the per-row resolver.
+    candidate_tags: set[str] = set()
     for dest in dest_rows:
+        if dest.virtual_inbound_tag:
+            candidate_tags.add(dest.virtual_inbound_tag)
+        key = (dest.panel_id, dest.destination_config_id)
+        if key in desired_by_key:
+            candidate_tags.add(desired_by_key[key])
+    hosts_by_tag: dict[str, list[ProxyHost]] = {}
+    if candidate_tags:
+        host_rows = (
+            await db.execute(
+                select(ProxyHost).where(ProxyHost.inbound_tag.in_(candidate_tags)).order_by(ProxyHost.id.asc())
+            )
+        ).scalars().all()
+        for host in host_rows:
+            hosts_by_tag.setdefault(host.inbound_tag, []).append(host)
+
+    def _in_scope(host: ProxyHost, panel: OCPanel) -> bool:
+        if panel.tenant_id is not None and host.tenant_id != panel.tenant_id:
+            return False
+        if panel.workspace_id is not None and host.workspace_id != panel.workspace_id:
+            return False
+        return True
+
+    out: list[tuple[OCPanelDestinationHost, ProxyHost | None]] = []
+    for dest in sorted(dest_rows, key=lambda row: (row.panel_id, row.id)):
         panel = panels.get(dest.panel_id)
         if panel is None:
             continue
@@ -241,6 +267,16 @@ async def load_destination_hosts_for_tags(
         if key not in desired_by_key:
             continue
         effective_tag = desired_by_key[key]
-        proxy = await _proxy_host_for_destination(db, panel, dest, effective_tag)
+        proxy: ProxyHost | None = None
+        for tag in (dest.virtual_inbound_tag, effective_tag):
+            if not tag:
+                continue
+            proxy = next((h for h in hosts_by_tag.get(tag, []) if _in_scope(h, panel)), None)
+            if proxy is not None:
+                break
+        if proxy is None:
+            proxy = await _proxy_host_for_destination(db, panel, dest, effective_tag)
         out.append((dest, proxy))
+    # Deterministic output order independent of DB heap order: host priority, then stable ids.
+    out.sort(key=lambda pair: (pair[1].priority if pair[1] is not None else 0, pair[0].panel_id, pair[0].id))
     return out

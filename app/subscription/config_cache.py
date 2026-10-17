@@ -7,6 +7,8 @@ Uvicorn worker has its own cache (same model as the sub-update buffer).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from collections import OrderedDict
 from typing import Any
@@ -15,6 +17,21 @@ SUB_CONFIG_CACHE_TTL_S = 15
 SUB_CONFIG_CACHE_MAX = 4096
 
 _cache: OrderedDict[tuple, tuple[float, str | bytes]] = OrderedDict()
+
+
+def _proxy_settings_digest(user: Any) -> str:
+    """Short digest of the user's protocol credentials so a credential reset is never served stale."""
+    settings = getattr(user, "proxy_settings", None)
+    if settings is None:
+        return ""
+    try:
+        # exclude_unset: the model fills unset protocols with *random* default credentials on every
+        # instantiation; hashing those would give every request a new key and defeat the cache.
+        dumped = settings.model_dump(mode="json", exclude_unset=True) if hasattr(settings, "model_dump") else settings
+        raw = json.dumps(dumped, sort_keys=True, default=str)
+    except Exception:
+        return ""
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def make_sub_config_key(
@@ -39,6 +56,7 @@ def make_sub_config_key(
         expire_key,
         tuple(inbounds),
         runtime_oc_fingerprint,
+        _proxy_settings_digest(user),
     )
 
 

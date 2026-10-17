@@ -41,10 +41,11 @@ test.db
 .AGENT
 graphify-out
 
-dashboard_src
+dashboard_src/node_modules
+dashboard_src/build
+dashboard_src/.vite
 dashboard/*
 !dashboard/__init__.py
-!dashboard/build
 
 test_*.py
 *.log

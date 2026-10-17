@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.db import AsyncSession, get_db
 from app.models.admin import AdminDetails
@@ -7,6 +7,7 @@ from app.models.user_panel_binding import (
     UserPanelBindingListResponse,
     UserPanelBindingResponse,
     UserPanelBindingUpdate,
+    UserSellerGroupsResponse,
 )
 from app.operation import OperatorType
 from app.operation.user_panel_binding import UserPanelBindingOperation
@@ -29,6 +30,20 @@ async def list_user_panel_bindings(
     admin: AdminDetails = Depends(require_permission("users", "read")),
 ):
     return await binding_operator.list_bindings(db, user_id=user_id, admin=admin)
+
+
+@router.get(
+    "/{user_id}/oc-seller-groups",
+    response_model=UserSellerGroupsResponse,
+    responses={403: responses._403, 404: responses._404},
+)
+async def list_user_oc_seller_groups(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(require_permission("users", "read")),
+):
+    """Imported seller groups per OC panel reachable by this user, with the explicit selection (read-only)."""
+    return await binding_operator.list_seller_groups(db, user_id=user_id, admin=admin)
 
 
 @router.post(
@@ -75,3 +90,24 @@ async def delete_user_panel_binding(
     admin: AdminDetails = Depends(require_permission("users", "update")),
 ):
     await binding_operator.delete_binding(db, user_id=user_id, binding_id=binding_id, admin=admin)
+
+
+options_router = APIRouter(tags=["User Panel Bindings"], prefix="/api/oc-seller-groups", responses={401: responses._401})
+
+
+@options_router.get(
+    "",
+    response_model=UserSellerGroupsResponse,
+    responses={403: responses._403},
+)
+async def list_oc_seller_group_options(
+    group_ids: list[int] = Query(default_factory=list, description="Local group ids selected in the user form"),
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(require_permission("users", "read")),
+):
+    """
+    Read-only: imported seller groups of the OC panels reachable through the given local groups.
+
+    Used by the user create form, before the user (and therefore a panel binding) exists.
+    """
+    return await binding_operator.seller_group_options_for_local_groups(db, group_ids=group_ids, admin=admin)

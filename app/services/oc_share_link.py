@@ -14,6 +14,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 from app.services.oc_upstream_subscription import _decode_links_payload
 
 
+def _b64decode_lenient(value: str) -> bytes:
+    """Standard or URL-safe base64, padded or not.  ``b64decode(validate=False)`` alone silently
+    discards ``-``/``_`` and corrupts URL-safe payloads, so normalise first."""
+    cleaned = re.sub(r"\s+", "", value or "").replace("-", "+").replace("_", "/").rstrip("=")
+    cleaned += "=" * (-len(cleaned) % 4)
+    return base64.b64decode(cleaned, validate=False)
+
+
 @dataclass
 class ParsedShareLink:
     raw: str
@@ -258,9 +266,16 @@ def _parse_vless_trojan(raw: str, protocol: str) -> ParsedShareLink | None:
 
 def _parse_vmess(raw: str) -> ParsedShareLink | None:
     try:
+        # VMess share links may carry a ``#display-remark`` fragment (OC templating uses the same
+        # mechanism as vless/trojan). The payload is only the base64 blob before ``#``.
         payload_b64 = raw[len("vmess://") :]
-        data = json.loads(base64.b64decode(payload_b64 + "==", validate=False).decode("utf-8", errors="replace"))
-        remark = str(data.get("ps") or data.get("remark") or "")
+        fragment_remark = ""
+        if "#" in payload_b64:
+            payload_b64, frag = payload_b64.split("#", 1)
+            fragment_remark = unquote(frag)
+        payload_b64 = payload_b64.strip()
+        data = json.loads(_b64decode_lenient(payload_b64).decode("utf-8", errors="replace"))
+        remark = fragment_remark or str(data.get("ps") or data.get("remark") or "")
         return ParsedShareLink(
             raw=raw,
             protocol="vmess",
@@ -478,7 +493,7 @@ def share_link_structural_key(link: str) -> str | None:
     lower = base.lower()
     try:
         if lower.startswith("vmess://"):
-            data = json.loads(base64.b64decode(base[len("vmess://") :] + "==", validate=False).decode("utf-8", "replace"))
+            data = json.loads(_b64decode_lenient(base[len("vmess://") :]).decode("utf-8", "replace"))
             if not isinstance(data, dict):
                 return None
             data = {k: v for k, v in data.items() if k not in ("id", "ps", "remark")}
@@ -508,5 +523,19 @@ def share_link_structural_key(link: str) -> str | None:
 def replace_link_remark(link: str, remark: str) -> str:
     from urllib.parse import quote
 
+    raw = (link or "").strip()
+    if raw.lower().startswith("vmess://"):
+        # v2rayN and several clients decode the entire post-scheme segment as base64 and do not
+        # strip a ``#remark`` suffix. Keep the display name inside the VMess JSON ``ps`` field only.
+        base = share_link_config_base(raw)
+        payload_b64 = base[len("vmess://") :].strip()
+        try:
+            data = json.loads(_b64decode_lenient(payload_b64).decode("utf-8", errors="replace"))
+            if isinstance(data, dict):
+                data["ps"] = remark
+                encoded = base64.b64encode(json.dumps(data, ensure_ascii=False).encode()).decode()
+                return f"vmess://{encoded}"
+        except Exception:
+            pass
     base = share_link_config_base(link)
     return f"{base}#{quote(remark)}"

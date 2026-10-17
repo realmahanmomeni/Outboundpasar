@@ -28,13 +28,18 @@ from app.services.oc_share_link import (
     share_link_structural_key,
 )
 from app.services.oc_subscription_runtime import load_runtime_oc_subscription_state
+from app.services.oc_upstream_links_cache import (
+    UpstreamLinksResult,
+    get_user_links,
+    make_key as make_upstream_links_key,
+)
 from app.services.oc_upstream_subscription import fetch_upstream_subscription_body, validate_upstream_subscription_url
 from app.services.oc_user_mapping_state import oc_user_mapping_runtime_active_criteria
 from app.utils.logger import get_logger
 
 logger = get_logger("oc-user-sub-hosts")
 
-PANEL_UPSTREAM_FETCH_CONCURRENCY = 3
+PANEL_UPSTREAM_FETCH_CONCURRENCY = 8
 
 
 @dataclass
@@ -51,49 +56,55 @@ class OcSubscriptionLinksState:
     legacy_config_rows: list[tuple[OCPanelConfig, ProxyHost]]
 
 
-async def _fetch_user_links(mapping: OCUserMapping) -> list[str] | None:
+_LINK_SCHEMES = ("vless://", "vmess://", "trojan://", "ss://", "hysteria2://", "hy2://", "wireguard://")
+
+
+async def _fetch_user_links(mapping: OCUserMapping) -> list[str]:
+    """
+    The customer's complete upstream link list (possibly empty).
+
+    Raises on any failure (missing/invalid URL, HTTP/timeout/transport error, unparsable body).
+    An empty list means the seller really returned no importable links.  Callers must not treat
+    an exception as "no links".
+    """
     url = (mapping.external_subscription_url or "").strip()
     if not url:
-        return None
-    try:
-        validate_upstream_subscription_url(url)
-    except ValueError:
-        return None
-    try:
-        body = await fetch_upstream_subscription_body(url, "links")
-    except Exception as exc:
-        logger.warning(
-            "oc_user_sub_fetch_failed user=%s panel=%s error=%s",
-            mapping.user_id,
-            mapping.panel_id,
-            type(exc).__name__,
-        )
-        return None
-    raw_links = decode_subscription_links(body if isinstance(body, str) else body.decode())
-    return [
-        link
-        for link in raw_links
-        if link.startswith(("vless://", "vmess://", "trojan://", "ss://", "hysteria2://", "wireguard://"))
-    ]
+        raise ValueError("mapping has no upstream subscription url")
+    validate_upstream_subscription_url(url)
+    body = await fetch_upstream_subscription_body(url, "links")
+    text = body if isinstance(body, str) else body.decode("utf-8", errors="replace")
+    raw_links = decode_subscription_links(text)
+    if not raw_links and text.strip():
+        # A non-empty body that yields zero importable links is a malformed/unsupported response
+        # (HTML error page, truncated payload...), not a genuinely empty account.
+        raise ValueError("upstream body contained no importable share links")
+    return [link for link in raw_links if link.lower().startswith(_LINK_SCHEMES)]
 
 
 async def _fetch_upstream_links_by_panel(
     mappings: dict[int, OCUserMapping],
     panel_ids: set[int],
-) -> dict[int, list[str]]:
+    synced_by_panel: dict[int, set[str]] | None = None,
+) -> dict[int, UpstreamLinksResult]:
     sem = asyncio.Semaphore(PANEL_UPSTREAM_FETCH_CONCURRENCY)
-    out: dict[int, list[str]] = {}
+    out: dict[int, UpstreamLinksResult] = {}
 
     async def _one(panel_id: int) -> None:
         mapping = mappings.get(panel_id)
         if mapping is None:
+            out[panel_id] = UpstreamLinksResult(links=[], status="failed", error="NoMapping")
             return
+        key = make_upstream_links_key(
+            mapping.user_id,
+            panel_id,
+            mapping.external_subscription_url,
+            (synced_by_panel or {}).get(panel_id, set()),
+        )
         async with sem:
-            fetched = await _fetch_user_links(mapping)
-        out[panel_id] = fetched or []
+            out[panel_id] = await get_user_links(key, lambda m=mapping: _fetch_user_links(m))
 
     if panel_ids:
-        await asyncio.gather(*(_one(panel_id) for panel_id in panel_ids))
+        await asyncio.gather(*(_one(panel_id) for panel_id in sorted(panel_ids)))
     return out
 
 
@@ -191,6 +202,8 @@ async def load_oc_subscription_links_state(
             ).all()
         )
 
+    legacy_config_rows.sort(key=lambda pair: (pair[1].priority, pair[0].panel_id, pair[1].id))
+
     return OcSubscriptionLinksState(
         user_id=user_id,
         oc_tags=oc_tags,
@@ -250,15 +263,44 @@ def _panel_ids_for_upstream_fetch(state: OcSubscriptionLinksState) -> set[int]:
 async def build_oc_subscription_links_from_state(
     state: OcSubscriptionLinksState,
     format_variables: dict,
+    *,
+    diagnostics: dict | None = None,
 ) -> list[str]:
+    """
+    Authorized share links for the user's selected OC hosts, in deterministic order.
+
+    Every returned link comes from the *user's own* upstream pool (or its bounded stale copy).  A
+    destination whose pool is unavailable or has no matching entry is omitted: the discovery/test
+    user's stored link is never substituted, because it carries another identity's credential.
+
+    ``diagnostics`` (optional) receives ``degraded`` (a required pool failed), ``all_failed``,
+    ``failed_panels`` and ``stale_panels`` so callers can avoid caching/serving misleading bodies.
+    """
     out: list[str] = []
     seen: set[str] = set()
     stages: Counter[str] = Counter()
     stages["selected_tags"] = len(state.oc_tags)
 
     panel_ids = _panel_ids_for_upstream_fetch(state)
-    links_by_panel = await _fetch_upstream_links_by_panel(state.mappings, panel_ids)
+    pool_results = await _fetch_upstream_links_by_panel(state.mappings, panel_ids, state.synced_by_panel)
+    links_by_panel = {pid: result.links for pid, result in pool_results.items() if result.ok}
+    failed_panels = sorted(pid for pid, result in pool_results.items() if not result.ok)
+    stale_panels = sorted(pid for pid, result in pool_results.items() if result.status == "stale")
     structural_by_panel = {pid: _structural_index(links) for pid, links in links_by_panel.items()}
+    if diagnostics is not None:
+        diagnostics["failed_panels"] = failed_panels
+        diagnostics["stale_panels"] = stale_panels
+        diagnostics["degraded"] = bool(failed_panels)
+        diagnostics["all_failed"] = bool(panel_ids) and len(failed_panels) == len(panel_ids)
+    if failed_panels:
+        logger.warning(
+            "oc_user_sub_upstream_unavailable user=%s failed_panels=%s errors=%s",
+            state.user_id,
+            failed_panels,
+            {pid: pool_results[pid].error for pid in failed_panels},
+        )
+    if stale_panels:
+        logger.warning("oc_user_sub_upstream_stale user=%s panels=%s", state.user_id, stale_panels)
 
     if state.dest_tags:
         desired_by_key = {
@@ -291,25 +333,29 @@ async def build_oc_subscription_links_from_state(
             ):
                 stages["rejected_not_in_synced_configs"] += 1
                 continue
-            panel_links = links_by_panel.get(dest_host.panel_id, [])
+            if dest_host.panel_id not in links_by_panel:
+                stages["rejected_upstream_unavailable"] += 1
+                continue
+            panel_links = links_by_panel[dest_host.panel_id]
             if not panel_links:
                 stages["rejected_no_user_links"] += 1
+                continue
             raw: str | None = None
             stored_discovery = str(payload.get("subscription_link") or "").strip()
-            if panel_links and stored_discovery:
+            if stored_discovery:
                 raw = match_user_link_by_endpoint(structural_by_panel.get(dest_host.panel_id, {}), stored_discovery)
                 if raw:
                     stages["matched_by_endpoint"] += 1
             if raw:
                 pass
-            elif oc_sid and panel_links:
+            elif oc_sid:
                 source_name = state.catalog_names.get((dest_host.panel_id, oc_sid), oc_sid)
                 raw = match_upstream_link_for_destination(
                     panel_links,
                     oc_sid,
                     source_name=source_name,
                 )
-            elif panel_links:
+            else:
                 index = index_subscription_links(panel_links)
                 parsed_match = match_link_for_config(
                     index,
@@ -328,8 +374,7 @@ async def build_oc_subscription_links_from_state(
                         )
                         raw = parsed_match.raw if parsed_match else None
             if not raw:
-                if panel_links:
-                    stages["rejected_no_matching_user_link"] += 1
+                stages["rejected_no_matching_user_link"] += 1
                 continue
             remark_source = resolve_oc_subscription_remark_source(
                 display_name=dest_host.display_name,
@@ -362,7 +407,10 @@ async def build_oc_subscription_links_from_state(
             mapping = state.mappings.get(config.panel_id)
             if mapping is None:
                 continue
-            user_links = links_by_panel.get(config.panel_id, [])
+            if config.panel_id not in links_by_panel:
+                stages["rejected_upstream_unavailable"] += 1
+                continue
+            user_links = links_by_panel[config.panel_id]
             if not user_links:
                 continue
             parsed = match_link_for_config(

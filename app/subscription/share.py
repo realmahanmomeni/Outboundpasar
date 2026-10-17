@@ -18,6 +18,7 @@ from app.services.subscription_scope import (
     subscription_settings_for_user,
     subscription_xray_templates_for_workspace,
 )
+from app.services.oc_upstream_links_cache import OcUpstreamUnavailableError
 from app.subscription.config_cache import get_sub_config, make_sub_config_key, put_sub_config
 from app.utils.system import readable_size
 
@@ -30,6 +31,18 @@ from . import (
     WireGuardConfiguration,
     XrayConfiguration,
 )
+
+OC_UPSTREAM_RETRY_AFTER_S = 30
+
+
+def oc_upstream_fail_closed() -> bool:
+    """503 (instead of an empty body) when every required seller pool failed and nothing else can be served.
+
+    Kill switch: ``OC_SUB_UPSTREAM_FAIL_CLOSED=0`` restores the old "serve whatever is left" behaviour.
+    """
+    import os
+
+    return os.environ.get("OC_SUB_UPSTREAM_FAIL_CLOSED", "1").strip().lower() not in ("0", "false", "no", "off")
 
 SERVER_IP = "127.0.0.1"
 SERVER_IPV6 = "[::1]"
@@ -118,32 +131,36 @@ async def generate_subscription(
     custom_variables = get_effective_custom_variables(user, sub_settings.custom_variables)
     format_variables = setup_format_variables(user, sub_settings.custom_variables)
 
-    config = await process_inbounds_and_tags(
-        user,
-        format_variables,
-        conf,
-        client_templates,
-        xray_template_overrides=xray_template_overrides,
-        randomize_order=randomize_order,
-        custom_variables=custom_variables,
-    )
-
-    if config_format not in ("links", "links_base64"):
-        from app.services.oc_upstream_subscription import append_oc_upstream_subscriptions
-
-        config = await append_oc_upstream_subscriptions(
-            config,
-            user.id,
-            getattr(user, "admin_id", None),
-            config_format,
-            as_base64=as_base64,
-            user_agent=user_agent,
+    diagnostics: dict = {}
+    try:
+        config = await process_inbounds_and_tags(
+            user,
+            format_variables,
+            conf,
+            client_templates,
+            xray_template_overrides=xray_template_overrides,
+            randomize_order=randomize_order,
+            custom_variables=custom_variables,
+            diagnostics=diagnostics,
         )
+    except OcUpstreamUnavailableError as exc:
+        # Transient seller failure with nothing else to serve.  A 503 lets clients keep their
+        # previous configs; an empty/partial 200 body would make them drop everything.
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=503,
+            detail="Subscription source temporarily unavailable",
+            headers={"Retry-After": str(OC_UPSTREAM_RETRY_AFTER_S), "Cache-Control": "no-store"},
+        ) from exc
 
     if as_base64 and not isinstance(config, bytes):
         config = base64.b64encode(config.encode()).decode()
 
-    put_sub_config(cache_key, config)
+    # A degraded body (some OC upstream pool unavailable) is served but never cached, so the very
+    # next request retries the seller instead of replaying the partial set for the cache TTL.
+    if not diagnostics.get("oc_upstream_degraded"):
+        put_sub_config(cache_key, config)
     return config
 
 
@@ -622,6 +639,7 @@ async def process_inbounds_and_tags(
     xray_template_overrides: dict[int, str] | None = None,
     randomize_order: bool = False,
     custom_variables: list | tuple | None = None,
+    diagnostics: dict | None = None,
 ) -> str | bytes:
     proxy_settings = user.proxy_settings.dict()
     proxy_settings["_user_id"] = user.id
@@ -632,6 +650,7 @@ async def process_inbounds_and_tags(
     oc_raw_links: list[str] = []
     native_allowed_host_ids: set[int] = set()
     user_tenant_id: int | None = None
+    oc_link_diagnostics: dict = {}
 
     if native_inbound_tags or desired_oc_tags:
         from app.db import GetDB
@@ -656,7 +675,10 @@ async def process_inbounds_and_tags(
                     tenant_id=user_tenant_id,
                     workspace_id=user_workspace_id,
                 )
-            if desired_oc_tags:
+            # Outline/WireGuard output has no OC representation; skip the seller round-trip for them.
+            if desired_oc_tags and isinstance(
+                conf, (StandardLinks, XrayConfiguration, SingBoxConfiguration, ClashConfiguration)
+            ):
                 oc_tags = await filter_oc_inbound_tags_for_runtime_subscription(
                     db, user.id, desired_oc_tags, user_tenant_id
                 )
@@ -668,7 +690,9 @@ async def process_inbounds_and_tags(
                         user_tenant_id=user_tenant_id,
                     )
         if oc_collection_state is not None:
-            oc_raw_links = await build_oc_subscription_links_from_state(oc_collection_state, format_variables)
+            oc_raw_links = await build_oc_subscription_links_from_state(
+                oc_collection_state, format_variables, diagnostics=oc_link_diagnostics
+            )
 
     cached_hosts = await host_manager.get_hosts()
     host_entries = [
@@ -750,12 +774,34 @@ async def process_inbounds_and_tags(
                 settings=settings,
             )
 
-    from app.subscription.links import StandardLinks
-
-    if isinstance(conf, StandardLinks) and oc_raw_links:
+    if isinstance(conf, StandardLinks):
         for link in oc_raw_links:
             conf.add_link(link)
-    elif desired_oc_tags and isinstance(conf, StandardLinks):
+    elif oc_raw_links and not isinstance(conf, (OutlineConfiguration, WireGuardConfiguration)):
+        # Structured formats: convert the authorized links through the same serializers as native
+        # hosts, before render, so they are part of proxy-groups / selector / urltest.
+        from app.services.oc_subscription_format_materialize import add_authoritative_oc_links_to_conf
+        from app.utils.logger import get_logger
+
+        report = add_authoritative_oc_links_to_conf(conf, oc_raw_links)
+        _oc_log = get_logger("oc-subscription")
+        if report.represented_count < report.input_link_count:
+            _oc_log.warning(
+                "oc_structured_incomplete user=%s format=%s represented=%s input_links=%s reasons=%s",
+                user.id,
+                type(conf).__name__,
+                report.represented_count,
+                report.input_link_count,
+                report.skip_reasons,
+            )
+        else:
+            _oc_log.info(
+                "oc_structured_merge user=%s format=%s represented=%s",
+                user.id,
+                type(conf).__name__,
+                report.represented_count,
+            )
+    elif desired_oc_tags:
         from app.utils.logger import get_logger
 
         get_logger("oc-subscription").info(
@@ -765,6 +811,17 @@ async def process_inbounds_and_tags(
             len(oc_tags),
             len(native_inbound_tags),
         )
+
+    if oc_link_diagnostics.get("degraded"):
+        if diagnostics is not None:
+            diagnostics["oc_upstream_degraded"] = True
+        if oc_link_diagnostics.get("all_failed"):
+            from app.services.oc_subscription_format_materialize import conf_proxy_count
+
+            if conf_proxy_count(conf) == 0 and oc_upstream_fail_closed():
+                raise OcUpstreamUnavailableError(
+                    f"all upstream pools unavailable panels={oc_link_diagnostics.get('failed_panels')}"
+                )
 
     return conf.render()
 

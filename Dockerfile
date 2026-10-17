@@ -1,4 +1,18 @@
 ARG PYTHON_VERSION=3.14
+ARG BUN_VERSION=1.2.21
+
+FROM oven/bun:${BUN_VERSION} AS dashboard-builder
+
+WORKDIR /src
+
+COPY dashboard_src/package.json dashboard_src/bun.lock ./
+RUN bun install --frozen-lockfile
+
+COPY dashboard_src/ ./
+
+ENV VITE_BASE_API=/
+RUN bun run build \
+    && cp build/index.html build/404.html
 
 FROM ghcr.io/astral-sh/uv:python$PYTHON_VERSION-bookworm-slim AS builder
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
@@ -18,12 +32,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
 ADD . /build
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev \
+    && rm -rf /build/dashboard_src
 
 
 FROM python:$PYTHON_VERSION-slim-bookworm
 
 COPY --from=builder /build /code
+COPY --from=dashboard-builder /src/build /code/dashboard/build
 WORKDIR /code
 
 ENV PATH="/code/.venv/bin:$PATH"

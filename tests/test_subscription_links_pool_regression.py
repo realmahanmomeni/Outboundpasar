@@ -5,6 +5,8 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy.exc import DBAPIError
 
 from app.db.models import SubscriptionCustomDomainState
 from app.db.models_oc import OCUserMapping
@@ -75,7 +77,7 @@ async def test_panel_upstream_fetch_concurrency_bounded():
 async def test_panel_fetch_failure_does_not_block_other_panels():
     async def _fetch(mapping: OCUserMapping):
         if mapping.panel_id == 2:
-            return None
+            raise TimeoutError("synthetic seller timeout")
         return ["vless://11111111-1111-1111-1111-111111111111@1.1.1.1:443?encryption=none#x"]
 
     mappings = {
@@ -85,9 +87,10 @@ async def test_panel_fetch_failure_does_not_block_other_panels():
     }
     with patch("app.services.oc_user_subscription_hosts._fetch_user_links", side_effect=_fetch):
         links = await _fetch_upstream_links_by_panel(mappings, {1, 2, 3})
-    assert links[1]
-    assert links[2] == []
-    assert links[3]
+    assert links[1].ok and links[1].links
+    # A failed pool is reported as failed (not as an empty success) and never poisons the others.
+    assert links[2].status == "failed" and links[2].links == []
+    assert links[3].ok and links[3].links
 
 
 @pytest.mark.asyncio

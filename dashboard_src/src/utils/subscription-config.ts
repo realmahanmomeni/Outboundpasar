@@ -2,6 +2,60 @@ import { $fetch } from '@/service/http'
 
 export type SubscriptionContentFormat = 'links' | 'links_base64' | 'xray' | 'wireguard' | 'sing_box' | 'clash' | 'clash_meta' | 'outline'
 
+/** Admin API fetch timeout (OC subscriptions can exceed the default 8s). */
+export const SUBSCRIPTION_ADMIN_FETCH_TIMEOUT_MS = 30_000
+
+const DOWNLOAD_SUBSCRIPTION_FORMATS = new Set<SubscriptionContentFormat>(['clash', 'clash_meta', 'sing_box', 'wireguard'])
+
+export const isDownloadSubscriptionFormat = (format: SubscriptionContentFormat) => DOWNLOAD_SUBSCRIPTION_FORMATS.has(format)
+
+export const subscriptionDownloadExtension = (format: SubscriptionContentFormat) => {
+  if (format === 'wireguard') return 'zip'
+  if (format === 'sing_box' || format === 'xray' || format === 'outline') return 'json'
+  return 'yaml'
+}
+
+export const subscriptionDownloadMimeType = (format: SubscriptionContentFormat) => {
+  if (format === 'wireguard') return 'application/zip'
+  if (format === 'sing_box' || format === 'xray' || format === 'outline') return 'application/json'
+  return 'text/yaml;charset=utf-8'
+}
+
+/** Parse ZIP end-of-central-directory entry count (0 = empty archive). */
+export const countZipArchiveEntries = (bytes: Uint8Array): number | null => {
+  if (bytes.length < 22) return null
+  for (let index = bytes.length - 22; index >= 0; index -= 1) {
+    if (bytes[index] === 0x50 && bytes[index + 1] === 0x4b && bytes[index + 2] === 0x05 && bytes[index + 3] === 0x06) {
+      return bytes[index + 10] | (bytes[index + 11] << 8)
+    }
+  }
+  return null
+}
+
+export const isEmptyWireGuardSubscriptionArchive = (bytes: Uint8Array): boolean => countZipArchiveEntries(bytes) === 0
+
+/** OC outline subscriptions return `{}` when seller payloads cannot be mapped safely. */
+export const isEmptyOutlineSubscriptionContent = (content: string): boolean => {
+  const trimmed = content.trim()
+  if (!trimmed) return true
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) && Object.keys(parsed).length === 0
+  } catch {
+    return false
+  }
+}
+
+export const readBlobAsUint8Array = async (blob: Blob) => new Uint8Array(await blob.arrayBuffer())
+
+export const isEmptyWireGuardSubscriptionBlob = async (blob: Blob) => {
+  const bytes = await readBlobAsUint8Array(blob)
+  if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
+    return isEmptyWireGuardSubscriptionArchive(bytes)
+  }
+  return false
+}
+
 const WIREGUARD_PROTOCOL = 'wireguard://'
 const TEXT_FILE_MIME_TYPE = 'text/plain;charset=utf-8'
 const WIREGUARD_CONFIG_MIME_TYPE = 'application/octet-stream'
@@ -127,6 +181,10 @@ export const resolveSubscriptionPanelBaseUrl = (subscribeUrl: string | null | un
     return normalizeSubscriptionPath(`${window.location.origin}${value}`)
   }
 
+  if (/^https?:\/\//i.test(value)) {
+    return normalizeSubscriptionPath(value)
+  }
+
   try {
     const parsed = new URL(value, window.location.origin)
     return normalizeSubscriptionPath(`${window.location.origin}${parsed.pathname}${parsed.search}${parsed.hash}`)
@@ -174,11 +232,36 @@ export const fetchSubscriptionBlobFromUrl = (url: string, timeoutMs = 8000) => f
 export const fetchSubscriptionContent = (subscribeUrl: string, format: SubscriptionContentFormat, timeoutMs = 8000) =>
   fetchSubscriptionContentFromUrl(buildSubscriptionFormatUrl(subscribeUrl, format), timeoutMs)
 
-export const fetchUserSubscriptionContent = (userId: number, format: SubscriptionContentFormat, timeoutMs = 8000) =>
+export const fetchUserSubscriptionContent = (
+  userId: number,
+  format: SubscriptionContentFormat,
+  timeoutMs = SUBSCRIPTION_ADMIN_FETCH_TIMEOUT_MS,
+) =>
   $fetch<string, 'text'>(`/api/user/${userId}/subscription/${format}`, {
     responseType: 'text',
     timeout: timeoutMs,
   })
+
+export const fetchUserSubscriptionBlob = (
+  userId: number,
+  format: SubscriptionContentFormat,
+  timeoutMs = SUBSCRIPTION_ADMIN_FETCH_TIMEOUT_MS,
+) =>
+  $fetch<Blob, 'blob'>(`/api/user/${userId}/subscription/${format}`, {
+    responseType: 'blob',
+    timeout: timeoutMs,
+  })
+
+export const downloadBlobFile = (blob: Blob, fileName: string) => {
+  const downloadUrl = window.URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = downloadUrl
+  anchor.download = fileName
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  window.URL.revokeObjectURL(downloadUrl)
+}
 
 export const extractNameFromConfigUrl = (url: string): string | null => {
   const trimmedUrl = url.trim()

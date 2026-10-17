@@ -24,6 +24,7 @@ from app.services.oc_sync_identity import (
     should_rotate_for_identity_blocked,
 )
 from app.services.oc_reconcile import last_synced_configs_after_successful_put
+from app.services.oc_seller_groups import OcSellerGroupSelectionError, assert_job_groups_still_eligible
 from app.services.oc_user_mapping_state import OC_MAPPING_STATUS_DELETED
 from app.db.models import User
 from app.utils.crypto import decrypt_secret
@@ -74,6 +75,19 @@ def _oc_headers(token: str, connection_token: str | None) -> dict[str, str]:
     if connection_token:
         headers["X-OC-Connection-Token"] = connection_token
     return headers
+
+
+def build_oc_user_put_bodies(groups: list[str], configs: list[str]) -> list[dict]:
+    """
+    Ordered OC user PUT bodies: groups first (authorises the configs), then groups + configs.
+
+    ``groups`` are sent verbatim; they are never widened here.
+    """
+    bodies: list[dict] = []
+    if groups:
+        bodies.append({"groups": list(groups), "configs": []})
+    bodies.append({"groups": list(groups), "configs": list(configs)})
+    return bodies
 
 
 def _subscription_url_from(payload) -> str | None:
@@ -269,10 +283,10 @@ async def process_oc_sync():
                         external_user_id = mapping.external_user_id
                         groups = list(original_payload.get("groups") or [])
                         configs = list(original_payload.get("configs") or [])
-                        put_bodies: list[dict] = []
-                        if groups:
-                            put_bodies.append({"groups": groups, "configs": []})
-                        put_bodies.append({"groups": groups, "configs": configs})
+                        if original_payload.get("group_selection") is not None:
+                            # Import selection may have shrunk since queueing: fail before any seller request.
+                            await assert_job_groups_still_eligible(db, panel_id, groups)
+                        put_bodies = build_oc_user_put_bodies(groups, configs)
 
                         last_applied_configs: list[str] = list(configs)
                         subscription_url = None
@@ -360,6 +374,10 @@ async def process_oc_sync():
                             if rotation_payload is not None:
                                 job.payload = rotation_payload
                         mapping.last_synced_configs = persisted_configs
+                        if original_payload.get("group_selection") is not None:
+                            # Only reached after every PUT succeeded: record what the seller account now has,
+                            # so a later import-selection change is detected as drift (and retried if it fails).
+                            mapping.last_synced_group_ids = sorted({str(g) for g in groups})
                         mapping.status = "active"
                         mapping.last_synced_at = dt.now(UTC)
                         if subscription_url:
@@ -446,7 +464,7 @@ async def process_oc_sync():
                     logger.error(f"Failed to process OCSyncState {job.id}: {e}")
                     job.attempts += 1
                     job.last_error = str(e)[:2000]
-                    permanent = isinstance(e, OcConnectionTokenMissing) or (
+                    permanent = isinstance(e, (OcConnectionTokenMissing, OcSellerGroupSelectionError)) or (
                         isinstance(e, OcIntegrationApiError)
                         and (e.code in _PERMANENT_OC_CODES)
                     )
