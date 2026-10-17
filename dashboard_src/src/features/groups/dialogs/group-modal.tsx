@@ -1,0 +1,213 @@
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import { LoaderButton } from '@/components/ui/loader-button'
+import { useTranslation } from 'react-i18next'
+import { UseFormReturn } from 'react-hook-form'
+import { useCreateGroup, useModifyGroup } from '@/service/api'
+import { useGroupHostOptions } from '@/features/groups/service/group-host-options'
+import { toast } from 'sonner'
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '@/components/ui/command'
+import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Pencil, X, Group } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { queryClient } from '@/utils/query-client'
+import useDynamicErrorHandler from '@/hooks/use-dynamic-errors.ts'
+import type { GroupFormValues } from '@/features/groups/forms/group-form'
+
+interface GroupModalProps {
+  isDialogOpen: boolean
+  onOpenChange: (open: boolean) => void
+  form: UseFormReturn<GroupFormValues>
+  editingGroup: boolean
+  editingGroupId?: number
+}
+
+export default function GroupModal({ isDialogOpen, onOpenChange, form, editingGroup, editingGroupId }: GroupModalProps) {
+  const { t } = useTranslation()
+  const handleError = useDynamicErrorHandler()
+  const addGroupMutation = useCreateGroup()
+  const modifyGroupMutation = useModifyGroup()
+  const { data: hostOptions, isLoading: isLoadingHosts } = useGroupHostOptions(isDialogOpen)
+
+  const onSubmit = async (values: GroupFormValues) => {
+    try {
+      if (editingGroup && editingGroupId) {
+        await modifyGroupMutation.mutateAsync({
+          groupId: editingGroupId,
+          data: values,
+        })
+        toast.success(
+          t('group.editSuccess', {
+            name: values.name,
+          }),
+        )
+      } else {
+        await addGroupMutation.mutateAsync({
+          data: values,
+        })
+        toast.success(
+          t('group.createSuccess', {
+            name: values.name,
+          }),
+        )
+      }
+      // Invalidate groups queries after successful action
+      queryClient.invalidateQueries({ queryKey: ['/api/groups'] })
+      onOpenChange(false)
+      form.reset()
+    } catch (error: any) {
+      const fields = ['name', 'inbound_tags']
+      handleError({ error, fields, form, contextKey: 'groups' })
+    }
+  }
+
+  return (
+    <Dialog open={isDialogOpen} onOpenChange={onOpenChange}>
+      <DialogContent onOpenAutoFocus={e => e.preventDefault()}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            {editingGroup ? <Pencil className="h-5 w-5" /> : <Group className="h-5 w-5" />}
+            <span>{editingGroup ? t('editGroup', { defaultValue: 'Edit Group' }) : t('createGroup')}</span>
+          </DialogTitle>
+          <DialogDescription className="sr-only">Modify the group settings below</DialogDescription>
+        </DialogHeader>
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <div className="-mr-4 max-h-[75dvh] space-y-4 overflow-y-auto px-2 pr-4 sm:max-h-[70dvh]">
+              <FormField
+                control={form.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('name')}</FormLabel>
+                    <FormControl>
+                      <Input isError={!!form.formState.errors.name} {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="inbound_tags"
+                render={({ field }) => {
+                  const currentTags = field.value || []
+                  const allTags = hostOptions?.map(o => o.inbound_tag) || []
+                  const availableTagSet = new Set(hostOptions?.map(o => o.inbound_tag) || [])
+                  const labelFor = (tag: string) =>
+                    hostOptions?.find(o => o.inbound_tag === tag)?.display_name || tag
+                  const unresolvedTags = currentTags.filter(tag => !availableTagSet.has(tag))
+                  const allSelected =
+                    allTags.length > 0 && allTags.every(tag => currentTags.includes(tag))
+                  const handleSelectAll = () => {
+                    if (allSelected) {
+                      field.onChange([])
+                    } else {
+                      field.onChange(allTags)
+                    }
+                  }
+                  return (
+                    <FormItem>
+                      <FormLabel>{t('hosts', { defaultValue: 'Hosts' })}</FormLabel>
+                      <p className="text-muted-foreground text-xs">
+                        {t('group.hostPickerHint', {
+                          defaultValue:
+                            'Select destination subscription hosts (imported OC configs). This is not a list of inbounds.',
+                        })}
+                      </p>
+                      {unresolvedTags.length > 0 && (
+                        <p className="text-amber-600 dark:text-amber-500 text-xs">
+                          {t('group.unresolvedHostTags', {
+                            count: unresolvedTags.length,
+                            defaultValue:
+                              '{{count}} saved host(s) are not in the current picker list (they remain selected until you remove them).',
+                          })}
+                        </p>
+                      )}
+                      <div className="space-y-2">
+                        {allTags.length > 0 && (
+                          <div className="mb-2 flex justify-end">
+                            <Button type="button" variant="ghost" size="sm" onClick={handleSelectAll} className="h-7 text-xs" disabled={isLoadingHosts}>
+                              {allSelected ? t('deselectAll') : t('selectAll')}
+                            </Button>
+                          </div>
+                        )}
+                        <Command className="mb-3 rounded-md border">
+                          <CommandInput placeholder={t('searchHosts', { defaultValue: 'Search hosts…' })} disabled={isLoadingHosts} />
+                          {!isLoadingHosts && <CommandEmpty>{t('noHostsFound', { defaultValue: 'No hosts found' })}</CommandEmpty>}
+                          <CommandGroup dir="ltr" className="max-h-40 overflow-auto">
+                            {isLoadingHosts ? (
+                              <div className="space-y-2 px-2 py-3">
+                                {Array.from({ length: 4 }).map((_, index) => (
+                                  <div key={index} className="flex items-center gap-2">
+                                    <Skeleton className="h-4 w-4 rounded-sm" />
+                                    <Skeleton className="h-4 w-full max-w-[220px]" />
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              hostOptions?.map(option => (
+                                <CommandItem
+                                  key={option.inbound_tag}
+                                  onSelect={() => {
+                                    const tag = option.inbound_tag
+                                    const newTags = currentTags.includes(tag)
+                                      ? currentTags.filter(t => t !== tag)
+                                      : [...currentTags, tag]
+                                    field.onChange(newTags)
+                                  }}
+                                >
+                                  <div
+                                    className={cn(
+                                      'mr-2 h-4 w-4 rounded-sm border',
+                                      currentTags.includes(option.inbound_tag) ? 'border-primary bg-primary' : 'border-muted',
+                                    )}
+                                  />
+                                  {option.display_name}
+                                </CommandItem>
+                              ))
+                            )}
+                          </CommandGroup>
+                        </Command>
+                        <div className="flex flex-wrap gap-2">
+                          {currentTags.map(tag => (
+                            <Badge key={tag} variant="secondary" className="flex items-center gap-1">
+                              {labelFor(tag)}
+                              <X
+                                className="h-3 w-3 cursor-pointer"
+                                onClick={() => {
+                                  field.onChange(currentTags.filter(t => t !== tag))
+                                }}
+                              />
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                      <FormMessage />
+                    </FormItem>
+                  )
+                }}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                {t('cancel')}
+              </Button>
+              <LoaderButton
+                type="submit"
+                isLoading={addGroupMutation.isPending || modifyGroupMutation.isPending}
+                loadingText={editingGroup ? t('modifying') : t('creating')}
+                className="bg-primary hover:bg-primary/90"
+              >
+                {editingGroup ? t('edit') : t('create')}
+              </LoaderButton>
+            </div>
+          </form>
+        </Form>
+      </DialogContent>
+    </Dialog>
+  )
+}

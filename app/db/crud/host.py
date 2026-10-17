@@ -74,18 +74,26 @@ async def get_or_create_inbound(db: AsyncSession, inbound_tag: str) -> ProxyInbo
     return result[inbound_tag]
 
 
-async def get_inbounds_not_in_tags(db: AsyncSession, excluded_tags: list[str]) -> list[ProxyInbound]:
+async def get_inbounds_not_in_tags(
+    db: AsyncSession,
+    excluded_tags: list[str],
+    *,
+    protected_tags: set[str] | frozenset[str] | None = None,
+) -> list[ProxyInbound]:
     """
     Get all inbounds where the tag is not in the provided list of tags.
 
     Args:
         db: Database session
         excluded_tags: List of tags to exclude
+        protected_tags: Additional tags that must never be returned (e.g. OC virtual inbounds
+            that are owned by panel rows rather than the core config)
 
     Returns:
         List of ProxyInbound objects not matching any tag in the list
     """
-    stmt = select(ProxyInbound).where(ProxyInbound.tag.not_in(excluded_tags))
+    keep = set(excluded_tags) | set(protected_tags or ())
+    stmt = select(ProxyInbound).where(ProxyInbound.tag.not_in(keep))
     result = await db.execute(stmt)
     return result.scalars().all()
 
@@ -105,7 +113,12 @@ async def remove_inbounds(db: AsyncSession, inbounds: list[ProxyInbound]) -> Non
     await db.commit()
 
 
-async def get_hosts(db: AsyncSession, query: HostListQuery | None = None) -> list[ProxyHost]:
+async def get_hosts(
+    db: AsyncSession,
+    query: HostListQuery | None = None,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
+) -> list[ProxyHost]:
     """
     Retrieves hosts sorted by priority (ascending) by default.
 
@@ -123,6 +136,10 @@ async def get_hosts(db: AsyncSession, query: HostListQuery | None = None) -> lis
 
     if query.ids:
         stmt = stmt.where(ProxyHost.id.in_(query.ids))
+    if tenant_id is not None:
+        stmt = stmt.where(ProxyHost.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(ProxyHost.workspace_id == workspace_id)
     if query.offset:
         stmt = stmt.offset(query.offset)
     if query.limit:
@@ -132,7 +149,12 @@ async def get_hosts(db: AsyncSession, query: HostListQuery | None = None) -> lis
     return list(result.scalars().all())
 
 
-async def get_host_by_id(db: AsyncSession, id: int) -> ProxyHost:
+async def get_host_by_id(
+    db: AsyncSession,
+    id: int,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
+) -> ProxyHost:
     """
     Retrieves host by id.
 
@@ -144,11 +166,20 @@ async def get_host_by_id(db: AsyncSession, id: int) -> ProxyHost:
         ProxyHost: The host if found.
     """
     stmt = select(ProxyHost).where(ProxyHost.id == id)
+    if tenant_id is not None:
+        stmt = stmt.where(ProxyHost.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(ProxyHost.workspace_id == workspace_id)
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
 
-async def create_host(db: AsyncSession, new_host: CreateHost) -> ProxyHost:
+async def create_host(
+    db: AsyncSession,
+    new_host: CreateHost,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
+) -> ProxyHost:
     """
     Creates a proxy Host based on the host.
 
@@ -159,7 +190,9 @@ async def create_host(db: AsyncSession, new_host: CreateHost) -> ProxyHost:
     Returns:
         ProxyHost: The retrieved or newly created proxy host.
     """
-    db_host = ProxyHost(**new_host.model_dump(exclude={"inbound_tag", "id"}))
+    db_host = ProxyHost(**new_host.model_dump(exclude={"inbound_tag", "id", "is_oc_destination_host"}))
+    db_host.tenant_id = tenant_id
+    db_host.workspace_id = workspace_id
     db_host.inbound = await get_or_create_inbound(db, new_host.inbound_tag)
 
     db.add(db_host)
@@ -169,7 +202,7 @@ async def create_host(db: AsyncSession, new_host: CreateHost) -> ProxyHost:
 
 
 async def modify_host(db: AsyncSession, db_host: ProxyHost, modified_host: CreateHost) -> ProxyHost:
-    host_data = modified_host.model_dump(exclude={"id", "inbound_tag"})
+    host_data = modified_host.model_dump(exclude={"id", "inbound_tag", "is_oc_destination_host"})
 
     for key, value in host_data.items():
         setattr(db_host, key, value)

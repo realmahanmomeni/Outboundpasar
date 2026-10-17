@@ -21,6 +21,7 @@ from app.db.models import (
     NodeUserUsage,
     ReminderType,
     User,
+    Workspace,
 )
 from app.models.admin import (
     AdminCreate,
@@ -82,6 +83,8 @@ def build_admin_details(
     return AdminDetails(
         id=db_admin.id,
         username=db_admin.username,
+        tenant_id=db_admin.tenant_id,
+        workspace_id=db_admin.workspace_id,
         total_users=int(total_users or 0),
         used_traffic=used_traffic,
         data_limit=db_admin.data_limit,
@@ -156,7 +159,12 @@ async def get_admin(
     return admin
 
 
-async def create_admin(db: AsyncSession, admin: AdminCreate) -> Admin:
+async def create_admin(
+    db: AsyncSession,
+    admin: AdminCreate,
+    *,
+    commit: bool = True,
+) -> Admin:
     """
     Creates a new admin in the database.
 
@@ -169,8 +177,11 @@ async def create_admin(db: AsyncSession, admin: AdminCreate) -> Admin:
     """
     db_admin = Admin(**admin.model_dump(exclude={"password"}), hashed_password=await hash_password(admin.password))
     db.add(db_admin)
-    await db.commit()
-    await db.refresh(db_admin)
+    if commit:
+        await db.commit()
+        await db.refresh(db_admin)
+    else:
+        await db.flush()
     await load_admin_attrs(db_admin)
     return db_admin
 
@@ -243,6 +254,7 @@ async def remove_admin(db: AsyncSession, dbadmin: Admin) -> None:
         db (AsyncSession): Database session.
         dbadmin (Admin): The admin object to be removed.
     """
+    await db.execute(delete(Workspace).where(Workspace.owner_admin_id == dbadmin.id))
     await db.execute(delete(APIKey).where(APIKey.admin_id == dbadmin.id))
     await db.delete(dbadmin)
     await db.commit()
@@ -310,6 +322,8 @@ async def get_admins(
     compact: bool = False,
     include_owner: bool = True,
     load_role: bool = True,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> list[Admin] | tuple[list[Admin], int, int, int, int]:
     """
     Retrieves a list of admins with optional filters and pagination.
@@ -343,6 +357,10 @@ async def get_admins(
             counts_stmt = counts_stmt.where(Admin.username.ilike(f"%{params.username}%"))
         if not include_owner:
             counts_stmt = counts_stmt.where(Admin.role.has(AdminRole.is_owner.is_(False)))
+        if tenant_id is not None:
+            counts_stmt = counts_stmt.where(Admin.tenant_id == tenant_id)
+        if workspace_id is not None:
+            counts_stmt = counts_stmt.where(Admin.workspace_id == workspace_id)
 
         result = await db.execute(counts_stmt)
         row = result.one()
@@ -355,8 +373,10 @@ async def get_admins(
         users_count_subq = (
             select(User.admin_id.label("admin_id"), func.count(User.id).label("total_users"))
             .group_by(User.admin_id)
-            .subquery()
         )
+        if workspace_id is not None:
+            users_count_subq = users_count_subq.where(User.workspace_id == workspace_id)
+        users_count_subq = users_count_subq.subquery()
         reset_usage_subq = (
             select(
                 AdminUsageLogs.admin_id.label("admin_id"),
@@ -395,6 +415,10 @@ async def get_admins(
         stmt = stmt.where(Admin.username.ilike(f"%{params.username}%"))
     if not include_owner:
         stmt = stmt.where(Admin.role.has(AdminRole.is_owner.is_(False)))
+    if tenant_id is not None:
+        stmt = stmt.where(Admin.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(Admin.workspace_id == workspace_id)
 
     # Apply sorting
     if params.sort:
@@ -424,6 +448,8 @@ async def get_admins_simple(
     db: AsyncSession,
     query: AdminSimpleListQuery,
     include_owner: bool = True,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> tuple[list[tuple[int, str]], int]:
     """
     Retrieves lightweight admin data with only id and username.
@@ -445,6 +471,10 @@ async def get_admins_simple(
         stmt = stmt.where(Admin.username.ilike(f"%{query.search}%"))
     if not include_owner:
         stmt = stmt.where(Admin.role.has(AdminRole.is_owner.is_(False)))
+    if tenant_id is not None:
+        stmt = stmt.where(Admin.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(Admin.workspace_id == workspace_id)
 
     if query.sort:
         stmt = stmt.order_by(*[_build_admin_simple_sort_clause(sort_option) for sort_option in query.sort])
@@ -700,6 +730,7 @@ async def get_admin_usages(
     period: Period,
     node_id: int | None = None,
     group_by_node: bool = False,
+    workspace_id: int | None = None,
 ) -> UserUsageStatsList:
     """
     Retrieves aggregated usage data for an admin's users within a specified time range,
@@ -730,6 +761,8 @@ async def get_admin_usages(
 
     if admin_id is not None:
         conditions.append(User.admin_id == admin_id)
+    if workspace_id is not None:
+        conditions.append(User.workspace_id == workspace_id)
 
     if node_id is not None:
         conditions.append(NodeUserUsage.node_id == node_id)
@@ -843,6 +876,7 @@ async def remove_admins(db: AsyncSession, admin_ids: list[int]) -> None:
     if not admin_ids:
         return
 
+    await db.execute(delete(Workspace).where(Workspace.owner_admin_id.in_(admin_ids)))
     await db.execute(update(User).where(User.admin_id.in_(admin_ids)).values(admin_id=None))
     await db.execute(delete(APIKey).where(APIKey.admin_id.in_(admin_ids)))
     await db.execute(delete(AdminUsageLogs).where(AdminUsageLogs.admin_id.in_(admin_ids)))

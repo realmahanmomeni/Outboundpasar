@@ -600,6 +600,7 @@ class BaseHost(BaseModel):
     remark: str
     address: set[str] = Field(default_factory=set)
     inbound_tag: str | None = Field(default=None)
+    is_oc_destination_host: bool = Field(default=False)
     port: int | None = Field(default=None)
     sni: set[str] | None = Field(default_factory=set)
     host: set[str] | None = Field(default_factory=set)
@@ -628,6 +629,14 @@ class BaseHost(BaseModel):
     cipher_suites: str | None = Field(None)
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def _set_oc_destination_flag(self) -> BaseHost:
+        from app.services.oc_share_link import is_oc_destination_inbound_tag
+
+        if is_oc_destination_inbound_tag(self.inbound_tag):
+            object.__setattr__(self, "is_oc_destination_host", True)
+        return self
 
     @property
     def address_str(self) -> str:

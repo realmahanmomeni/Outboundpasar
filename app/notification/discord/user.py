@@ -1,8 +1,12 @@
-from app.models.settings import NotificationSettings
 from app.models.user import UserNotificationResponse
 from app.notification.client import send_discord_webhook
-from app.notification.helpers import get_discord_webhook, should_send_admin_notification
-from app.settings import notification_settings
+from app.notification.helpers import (
+    admin_dm_queue_scope,
+    get_discord_webhook,
+    should_send_admin_notification,
+    user_event_queue_scope,
+)
+from app.notification.delivery_scope import notification_settings_for_delivery
 from app.utils.system import readable_size
 
 from . import colors, messages
@@ -26,7 +30,7 @@ _status_color = {
 }
 
 
-async def user_status_change(user: UserNotificationResponse, by: str):
+async def user_status_change(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_md_user(user, by)
     message = {**messages.USER_STATUS_CHANGE, "footer": dict(messages.USER_STATUS_CHANGE["footer"])}
     message["title"] = message["title"].format(status=_status[user.status.value])
@@ -37,15 +41,21 @@ async def user_status_change(user: UserNotificationResponse, by: str):
         "embeds": [message],
     }
     data["embeds"][0]["color"] = _status_color[user.status.value]
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_discord:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_discord:
         webhook = get_discord_webhook(settings, ENTITY)
-        await send_discord_webhook(data, webhook)
+        await send_discord_webhook(data, webhook, delivery_workspace_id=delivery_workspace_id, **user_event_queue_scope(user))
     if user.admin and user.admin.discord_webhook and should_send_admin_notification(user.admin, "status_change"):
-        await send_discord_webhook(data, user.admin.discord_webhook)
+        await send_discord_webhook(
+            data,
+            user.admin.discord_webhook,
+            delivery_workspace_id=delivery_workspace_id,
+            **user_event_queue_scope(user),
+            **admin_dm_queue_scope(user.admin.id),
+        )
 
 
-async def create_user(user: UserNotificationResponse, by: str):
+async def create_user(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_md_user(user, by)
     message = {**messages.CREATE_USER, "footer": dict(messages.CREATE_USER["footer"])}
     message["description"] = message["description"].format(
@@ -62,15 +72,21 @@ async def create_user(user: UserNotificationResponse, by: str):
         "embeds": [message],
     }
     data["embeds"][0]["color"] = colors.GREEN
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_discord:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_discord:
         webhook = get_discord_webhook(settings, ENTITY)
-        await send_discord_webhook(data, webhook)
+        await send_discord_webhook(data, webhook, delivery_workspace_id=delivery_workspace_id, **user_event_queue_scope(user))
     if user.admin and user.admin.discord_webhook and should_send_admin_notification(user.admin, "create"):
-        await send_discord_webhook(data, user.admin.discord_webhook)
+        await send_discord_webhook(
+            data,
+            user.admin.discord_webhook,
+            delivery_workspace_id=delivery_workspace_id,
+            **user_event_queue_scope(user),
+            **admin_dm_queue_scope(user.admin.id),
+        )
 
 
-async def modify_user(user: UserNotificationResponse, by: str):
+async def modify_user(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_md_user(user, by)
     message = {**messages.MODIFY_USER, "footer": dict(messages.MODIFY_USER["footer"])}
     message["description"] = message["description"].format(
@@ -87,15 +103,21 @@ async def modify_user(user: UserNotificationResponse, by: str):
         "embeds": [message],
     }
     data["embeds"][0]["color"] = colors.YELLOW
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_discord:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_discord:
         webhook = get_discord_webhook(settings, ENTITY)
-        await send_discord_webhook(data, webhook)
+        await send_discord_webhook(data, webhook, delivery_workspace_id=delivery_workspace_id, **user_event_queue_scope(user))
     if user.admin and user.admin.discord_webhook and should_send_admin_notification(user.admin, "modify"):
-        await send_discord_webhook(data, user.admin.discord_webhook)
+        await send_discord_webhook(
+            data,
+            user.admin.discord_webhook,
+            delivery_workspace_id=delivery_workspace_id,
+            **user_event_queue_scope(user),
+            **admin_dm_queue_scope(user.admin.id),
+        )
 
 
-async def remove_user(user: UserNotificationResponse, by: str):
+async def remove_user(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_md_user(user, by)
     message = {**messages.REMOVE_USER, "footer": dict(messages.REMOVE_USER["footer"])}
     message["description"] = message["description"].format(username=username)
@@ -105,15 +127,21 @@ async def remove_user(user: UserNotificationResponse, by: str):
         "embeds": [message],
     }
     data["embeds"][0]["color"] = colors.RED
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_discord:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_discord:
         webhook = get_discord_webhook(settings, ENTITY)
-        await send_discord_webhook(data, webhook)
+        await send_discord_webhook(data, webhook, delivery_workspace_id=delivery_workspace_id, **user_event_queue_scope(user))
     if user.admin and user.admin.discord_webhook and should_send_admin_notification(user.admin, "delete"):
-        await send_discord_webhook(data, user.admin.discord_webhook)
+        await send_discord_webhook(
+            data,
+            user.admin.discord_webhook,
+            delivery_workspace_id=delivery_workspace_id,
+            **user_event_queue_scope(user),
+            **admin_dm_queue_scope(user.admin.id),
+        )
 
 
-async def reset_user_data_usage(user: UserNotificationResponse, by: str):
+async def reset_user_data_usage(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_md_user(user, by)
     message = {**messages.RESET_USER_DATA_USAGE, "footer": dict(messages.RESET_USER_DATA_USAGE["footer"])}
     message["description"] = message["description"].format(
@@ -126,15 +154,21 @@ async def reset_user_data_usage(user: UserNotificationResponse, by: str):
         "embeds": [message],
     }
     data["embeds"][0]["color"] = colors.CYAN
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_discord:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_discord:
         webhook = get_discord_webhook(settings, ENTITY)
-        await send_discord_webhook(data, webhook)
+        await send_discord_webhook(data, webhook, delivery_workspace_id=delivery_workspace_id, **user_event_queue_scope(user))
     if user.admin and user.admin.discord_webhook and should_send_admin_notification(user.admin, "reset_data_usage"):
-        await send_discord_webhook(data, user.admin.discord_webhook)
+        await send_discord_webhook(
+            data,
+            user.admin.discord_webhook,
+            delivery_workspace_id=delivery_workspace_id,
+            **user_event_queue_scope(user),
+            **admin_dm_queue_scope(user.admin.id),
+        )
 
 
-async def user_data_reset_by_next(user: UserNotificationResponse, by: str):
+async def user_data_reset_by_next(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_md_user(user, by)
     message = {**messages.USER_DATA_RESET_BY_NEXT, "footer": dict(messages.USER_DATA_RESET_BY_NEXT["footer"])}
     message["description"] = message["description"].format(
@@ -148,15 +182,21 @@ async def user_data_reset_by_next(user: UserNotificationResponse, by: str):
         "embeds": [message],
     }
     data["embeds"][0]["color"] = colors.CYAN
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_discord:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_discord:
         webhook = get_discord_webhook(settings, ENTITY)
-        await send_discord_webhook(data, webhook)
+        await send_discord_webhook(data, webhook, delivery_workspace_id=delivery_workspace_id, **user_event_queue_scope(user))
     if user.admin and user.admin.discord_webhook and should_send_admin_notification(user.admin, "data_reset_by_next"):
-        await send_discord_webhook(data, user.admin.discord_webhook)
+        await send_discord_webhook(
+            data,
+            user.admin.discord_webhook,
+            delivery_workspace_id=delivery_workspace_id,
+            **user_event_queue_scope(user),
+            **admin_dm_queue_scope(user.admin.id),
+        )
 
 
-async def user_subscription_revoked(user: UserNotificationResponse, by: str):
+async def user_subscription_revoked(user: UserNotificationResponse, by: str, *, delivery_workspace_id: int | None = None):
     username, admin_username, by = escape_md_user(user, by)
     message = {**messages.USER_SUBSCRIPTION_REVOKED, "footer": dict(messages.USER_SUBSCRIPTION_REVOKED["footer"])}
     message["description"] = message["description"].format(username=username)
@@ -166,9 +206,15 @@ async def user_subscription_revoked(user: UserNotificationResponse, by: str):
         "embeds": [message],
     }
     data["embeds"][0]["color"] = colors.RED
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_discord:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_discord:
         webhook = get_discord_webhook(settings, ENTITY)
-        await send_discord_webhook(data, webhook)
+        await send_discord_webhook(data, webhook, delivery_workspace_id=delivery_workspace_id, **user_event_queue_scope(user))
     if user.admin and user.admin.discord_webhook and should_send_admin_notification(user.admin, "subscription_revoked"):
-        await send_discord_webhook(data, user.admin.discord_webhook)
+        await send_discord_webhook(
+            data,
+            user.admin.discord_webhook,
+            delivery_workspace_id=delivery_workspace_id,
+            **user_event_queue_scope(user),
+            **admin_dm_queue_scope(user.admin.id),
+        )

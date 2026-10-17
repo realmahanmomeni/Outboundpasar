@@ -16,24 +16,24 @@ router = APIRouter(tags=["Host"], prefix="/api/host", responses={401: responses.
 
 @router.get("/{host_id}", response_model=BaseHost)
 async def get_host(
-    host_id: int, db: AsyncSession = Depends(get_db), _: AdminDetails = Depends(require_permission("hosts", "read"))
+    host_id: int, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(require_permission("hosts", "read"))
 ):
     """
     get host by **id**
     """
-    return await host_operator.get_validated_host(db=db, host_id=host_id)
+    return await host_operator.get_validated_host(db=db, host_id=host_id, admin=admin)
 
 
 @router.get("s", response_model=list[BaseHost])
 async def get_hosts(
     query=Depends(get_host_list_query),
     db: AsyncSession = Depends(get_db),
-    _: AdminDetails = Depends(require_permission("hosts", "read")),
+    admin: AdminDetails = Depends(require_permission("hosts", "read")),
 ):
     """
     Get proxy hosts.
     """
-    return await host_operator.get_hosts(db=db, query=query)
+    return await host_operator.get_hosts(db=db, query=query, admin=admin)
 
 
 @router.post("/", response_model=BaseHost, status_code=status.HTTP_201_CREATED)

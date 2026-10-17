@@ -12,8 +12,13 @@ from app.db.models import UserStatus
 from app.models.status_emojis import STATUS_EMOJIS
 from app.models.subscription import SubscriptionInboundData
 from app.models.user import UsersResponseWithInbounds
-from app.settings import subscription_settings
-from app.subscription.client_templates import subscription_client_templates, subscription_xray_templates
+from app.services.subscription_scope import (
+    resolve_user_workspace_id,
+    subscription_client_templates_for_workspace,
+    subscription_settings_for_user,
+    subscription_xray_templates_for_workspace,
+)
+from app.services.oc_upstream_links_cache import OcUpstreamUnavailableError
 from app.subscription.config_cache import get_sub_config, make_sub_config_key, put_sub_config
 from app.utils.system import readable_size
 
@@ -26,6 +31,18 @@ from . import (
     WireGuardConfiguration,
     XrayConfiguration,
 )
+
+OC_UPSTREAM_RETRY_AFTER_S = 30
+
+
+def oc_upstream_fail_closed() -> bool:
+    """503 (instead of an empty body) when every required seller pool failed and nothing else can be served.
+
+    Kill switch: ``OC_SUB_UPSTREAM_FAIL_CLOSED=0`` restores the old "serve whatever is left" behaviour.
+    """
+    import os
+
+    return os.environ.get("OC_SUB_UPSTREAM_FAIL_CLOSED", "1").strip().lower() not in ("0", "false", "no", "off")
 
 SERVER_IP = "127.0.0.1"
 SERVER_IPV6 = "[::1]"
@@ -83,36 +100,67 @@ async def generate_subscription(
     config_format: str,
     as_base64: bool,
     randomize_order: bool = False,
+    user_agent: str = "",
 ) -> str | bytes:
-    cache_key = make_sub_config_key(user, config_format, as_base64, randomize_order)
+    from app.db import GetDB
+    from app.services.oc_subscription_runtime import (
+        resolve_user_tenant_id,
+        runtime_oc_subscription_cache_fingerprint,
+    )
+
+    runtime_oc_fingerprint: tuple = ()
+    workspace_id: int | None = None
+    async with GetDB() as db:
+        user_tenant_id = await resolve_user_tenant_id(db, user.id, getattr(user, "admin_id", None))
+        runtime_oc_fingerprint = await runtime_oc_subscription_cache_fingerprint(db, user.id, user_tenant_id)
+        workspace_id = resolve_user_workspace_id(user)
+        client_templates = await subscription_client_templates_for_workspace(db, workspace_id)
+        xray_template_overrides = (
+            await subscription_xray_templates_for_workspace(db, workspace_id) if config_format == "xray" else None
+        )
+        sub_settings = await subscription_settings_for_user(db, user)
+
+    cache_key = make_sub_config_key(user, config_format, as_base64, randomize_order, runtime_oc_fingerprint)
     cached = get_sub_config(cache_key)
     if cached is not None:
         return cached
 
-    client_templates = await subscription_client_templates()
-    xray_template_overrides = await subscription_xray_templates() if config_format == "xray" else None
     conf = _build_subscription_config(config_format, client_templates)
     if conf is None:
         raise ValueError(f'Unsupported format "{config_format}"')
-
-    sub_settings = await subscription_settings()
     custom_variables = get_effective_custom_variables(user, sub_settings.custom_variables)
     format_variables = setup_format_variables(user, sub_settings.custom_variables)
 
-    config = await process_inbounds_and_tags(
-        user,
-        format_variables,
-        conf,
-        client_templates,
-        xray_template_overrides=xray_template_overrides,
-        randomize_order=randomize_order,
-        custom_variables=custom_variables,
-    )
+    diagnostics: dict = {}
+    try:
+        config = await process_inbounds_and_tags(
+            user,
+            format_variables,
+            conf,
+            client_templates,
+            xray_template_overrides=xray_template_overrides,
+            randomize_order=randomize_order,
+            custom_variables=custom_variables,
+            diagnostics=diagnostics,
+        )
+    except OcUpstreamUnavailableError as exc:
+        # Transient seller failure with nothing else to serve.  A 503 lets clients keep their
+        # previous configs; an empty/partial 200 body would make them drop everything.
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=503,
+            detail="Subscription source temporarily unavailable",
+            headers={"Retry-After": str(OC_UPSTREAM_RETRY_AFTER_S), "Cache-Control": "no-store"},
+        ) from exc
 
     if as_base64 and not isinstance(config, bytes):
         config = base64.b64encode(config.encode()).decode()
 
-    put_sub_config(cache_key, config)
+    # A degraded body (some OC upstream pool unavailable) is served but never cached, so the very
+    # next request retries the seller instead of replaying the partial set for the cache TTL.
+    if not diagnostics.get("oc_upstream_degraded"):
+        put_sub_config(cache_key, config)
     return config
 
 
@@ -172,7 +220,7 @@ def apply_custom_format_variables(format_variables: dict, custom_variables: list
             continue
         try:
             format_variables[key] = raw_value.format_map(base_variables)
-        except ValueError, KeyError:
+        except (ValueError, KeyError):
             format_variables[key] = raw_value
 
     return format_variables
@@ -182,7 +230,7 @@ def _format_dynamic_value(value, format_variables: dict):
     if isinstance(value, str):
         try:
             return value.format_map(format_variables)
-        except ValueError, KeyError:
+        except (ValueError, KeyError):
             return value
     if isinstance(value, list):
         return [_format_dynamic_value(item, format_variables) for item in value]
@@ -272,6 +320,176 @@ def setup_format_variables(user: UsersResponseWithInbounds, custom_variables: li
 
 async def filter_hosts(hosts: list[SubscriptionInboundData], user_status: UserStatus) -> list[SubscriptionInboundData]:
     return [host for host in hosts if not host.status or user_status in host.status]
+
+
+def native_host_skips_connectable_subscription(host: SubscriptionInboundData) -> bool:
+    """
+    User-account template hosts (``{USERNAME}``, ``{DATA_LEFT}``, etc.) are informational.
+
+    They belong on a dedicated inbound or OC destination templates; they must not be turned into
+    native Shadowsocks/VLESS share links. See ``remark_looks_like_user_template``.
+    """
+    from app.services.oc_host_display import remark_looks_like_user_template
+
+    return remark_looks_like_user_template(host.remark)
+
+
+def format_native_informational_remark(
+    host: SubscriptionInboundData,
+    format_variables: dict,
+) -> str | None:
+    """Format a scoped native Info Host remark for plaintext subscription metadata lines."""
+    remark = (host.remark or "").strip()
+    if not remark:
+        return None
+    return remark.format_map(format_variables)
+
+
+def add_scoped_native_informational_host(
+    conf: StandardLinks
+    | XrayConfiguration
+    | SingBoxConfiguration
+    | ClashConfiguration
+    | ClashMetaConfiguration
+    | OutlineConfiguration
+    | WireGuardConfiguration,
+    host: SubscriptionInboundData,
+    format_variables: dict,
+) -> None:
+    """
+    Emit allowlisted informational native hosts without connectable proxy serialization.
+
+    ``links`` / ``links_base64`` use reserved non-importable display URIs (see
+    ``native_info_display``) so each informational Host is a distinct subscription line with a
+    formatted remark fragment, without entering connectable proxy serialization.
+    """
+    formatted = format_native_informational_remark(host, format_variables)
+    if not formatted:
+        return
+    conf.add_informational_remark(formatted)
+
+
+async def native_subscription_host_ids(
+    db,
+    native_inbound_tags: list[str],
+    *,
+    tenant_id: int | None,
+    workspace_id: int | None,
+) -> set[int]:
+    """
+    ProxyHost ids eligible for native subscription output for this user.
+
+    Tenant and workspace must both be resolved; otherwise returns an empty set (fail closed).
+    When resolved, only hosts in that tenant and workspace may be serialized for the user's
+    native inbound tags.
+    """
+    if not native_inbound_tags:
+        return set()
+
+    if tenant_id is None or workspace_id is None:
+        return set()
+
+    from sqlalchemy import or_, select
+
+    from app.db.models import ProxyHost
+
+    stmt = select(ProxyHost.id).where(
+        ProxyHost.inbound_tag.in_(native_inbound_tags),
+        ProxyHost.tenant_id == tenant_id,
+        ProxyHost.workspace_id == workspace_id,
+        or_(ProxyHost.is_disabled.is_(False), ProxyHost.is_disabled.is_(None)),
+    )
+    return set((await db.scalars(stmt)).all())
+
+
+async def supplement_native_allowlisted_host_entries(
+    host_entries: list[tuple[int, SubscriptionInboundData]],
+    native_allowed_host_ids: set[int],
+    user_status: UserStatus,
+    proxy_settings: dict,
+) -> list[tuple[int, SubscriptionInboundData]]:
+    """
+    Include authorized native Host rows missing from ``host_manager`` (e.g. panel-only cores).
+
+    Only IDs already returned by ``native_subscription_host_ids`` are loaded; scope is not expanded.
+    """
+    if not native_allowed_host_ids:
+        return host_entries
+
+    present = {host_id for host_id, _ in host_entries}
+    missing = native_allowed_host_ids - present
+    if not missing:
+        return host_entries
+
+    from app.core.hosts import _prepare_subscription_inbound_data
+    from app.db import GetDB
+    from app.db.crud.host import get_host_by_id
+    from app.models.host import BaseHost
+
+    supplemented = list(host_entries)
+    async with GetDB() as db:
+        for host_id in sorted(missing):
+            row = await get_host_by_id(db, host_id)
+            if row is None or row.is_disabled:
+                continue
+            if row.status and user_status not in row.status:
+                continue
+            base = BaseHost.model_validate(row)
+            try:
+                data = await _prepare_subscription_inbound_data(base, proxies=proxy_settings)
+            except Exception:
+                continue
+            if data.status and user_status not in data.status:
+                continue
+            supplemented.append((host_id, data))
+    return supplemented
+
+
+async def resolve_oc_virtual_hosts(
+    oc_tags: list[str],
+    user_status: UserStatus,
+    proxies: dict,
+) -> list[SubscriptionInboundData]:
+    """
+    Resolve OC virtual inbounds from the database for the given authorized tags.
+    Respects source_missing, locally_hidden, and host is_disabled flags.
+    """
+    if not oc_tags:
+        return []
+
+    from app.db import GetDB
+    from app.db.models import ProxyHost
+    from app.db.models_oc import OCPanelConfig
+    from app.models.host import BaseHost
+    from app.core.hosts import _prepare_subscription_inbound_data
+    from sqlalchemy import or_, select
+
+    oc_hosts: list[SubscriptionInboundData] = []
+    async with GetDB() as db:
+        stmt = (
+            select(ProxyHost, OCPanelConfig)
+            .join(OCPanelConfig, ProxyHost.inbound_tag == OCPanelConfig.virtual_inbound_tag)
+            .where(
+                OCPanelConfig.virtual_inbound_tag.in_(oc_tags),
+                OCPanelConfig.source_missing.is_(False),
+                OCPanelConfig.locally_hidden.is_(False),
+                or_(ProxyHost.is_disabled.is_(False), ProxyHost.is_disabled.is_(None)),
+            )
+            .order_by(ProxyHost.priority.asc(), ProxyHost.id.asc())
+        )
+        result = await db.execute(stmt)
+        rows = result.all()
+
+        for host, config in rows:
+            if host.status and user_status not in host.status:
+                continue
+
+            host_base = BaseHost.model_validate(host)
+            sub_data = await _prepare_subscription_inbound_data(host_base, oc_config=config, proxies=proxies)
+            if sub_data:
+                oc_hosts.append(sub_data)
+
+    return oc_hosts
 
 
 async def process_host(
@@ -421,12 +639,76 @@ async def process_inbounds_and_tags(
     xray_template_overrides: dict[int, str] | None = None,
     randomize_order: bool = False,
     custom_variables: list | tuple | None = None,
+    diagnostics: dict | None = None,
 ) -> str | bytes:
     proxy_settings = user.proxy_settings.dict()
     proxy_settings["_user_id"] = user.id
-    hosts = await filter_hosts(list((await host_manager.get_hosts()).values()), user.status)
-    if randomize_order and len(hosts) > 1:
-        random.shuffle(hosts)
+    user_inbounds = list(user.inbounds or [])
+    native_inbound_tags = [t for t in user_inbounds if not (t or "").startswith("oc_")]
+    desired_oc_tags = [t for t in user_inbounds if (t or "").startswith("oc_")]
+    oc_tags = desired_oc_tags
+    oc_raw_links: list[str] = []
+    native_allowed_host_ids: set[int] = set()
+    user_tenant_id: int | None = None
+    oc_link_diagnostics: dict = {}
+
+    if native_inbound_tags or desired_oc_tags:
+        from app.db import GetDB
+        from app.services.oc_subscription_runtime import (
+            filter_oc_inbound_tags_for_runtime_subscription,
+            resolve_user_tenant_id,
+        )
+        from app.services.oc_user_subscription_hosts import (
+            build_oc_subscription_links_from_state,
+            load_oc_subscription_links_state,
+        )
+        from app.services.subscription_scope import resolve_subscription_native_workspace_id
+
+        oc_collection_state = None
+        async with GetDB() as db:
+            user_tenant_id = await resolve_user_tenant_id(db, user.id, getattr(user, "admin_id", None))
+            user_workspace_id = await resolve_subscription_native_workspace_id(db, user)
+            if native_inbound_tags:
+                native_allowed_host_ids = await native_subscription_host_ids(
+                    db,
+                    native_inbound_tags,
+                    tenant_id=user_tenant_id,
+                    workspace_id=user_workspace_id,
+                )
+            # Outline/WireGuard output has no OC representation; skip the seller round-trip for them.
+            if desired_oc_tags and isinstance(
+                conf, (StandardLinks, XrayConfiguration, SingBoxConfiguration, ClashConfiguration)
+            ):
+                oc_tags = await filter_oc_inbound_tags_for_runtime_subscription(
+                    db, user.id, desired_oc_tags, user_tenant_id
+                )
+                if oc_tags:
+                    oc_collection_state = await load_oc_subscription_links_state(
+                        db,
+                        user.id,
+                        oc_tags,
+                        user_tenant_id=user_tenant_id,
+                    )
+        if oc_collection_state is not None:
+            oc_raw_links = await build_oc_subscription_links_from_state(
+                oc_collection_state, format_variables, diagnostics=oc_link_diagnostics
+            )
+
+    cached_hosts = await host_manager.get_hosts()
+    host_entries = [
+        (host_id, host_data)
+        for host_id, host_data in cached_hosts.items()
+        if not host_data.status or user.status in host_data.status
+    ]
+    if native_allowed_host_ids:
+        host_entries = await supplement_native_allowlisted_host_entries(
+            host_entries,
+            native_allowed_host_ids,
+            user.status,
+            proxy_settings,
+        )
+    if randomize_order and len(host_entries) > 1:
+        random.shuffle(host_entries)
 
     def _resolve_host_xray_template_content(inbound: SubscriptionInboundData) -> str | None:
         if xray_template_overrides is None:
@@ -438,8 +720,16 @@ async def process_inbounds_and_tags(
             return None
         return xray_template_overrides.get(template_id)
 
-    for host_data in hosts:
-        result = await process_host(host_data, format_variables, user.inbounds, proxy_settings, custom_variables)
+    for host_id, host_data in host_entries:
+        if (host_data.inbound_tag or "").startswith("oc_"):
+            continue
+        if native_inbound_tags and host_id not in native_allowed_host_ids:
+            continue
+        if native_host_skips_connectable_subscription(host_data):
+            if native_inbound_tags and host_id in native_allowed_host_ids:
+                add_scoped_native_informational_host(conf, host_data, format_variables)
+            continue
+        result = await process_host(host_data, format_variables, native_inbound_tags, proxy_settings, custom_variables)
         if not result:
             continue
 
@@ -456,7 +746,7 @@ async def process_inbounds_and_tags(
                 processed_download_settings = await _prepare_download_settings(
                     download_settings,
                     format_variables,
-                    user.inbounds,
+                    native_inbound_tags,
                     proxy_settings,
                     client_templates,
                     custom_variables,
@@ -483,6 +773,55 @@ async def process_inbounds_and_tags(
                 inbound=inbound_copy,
                 settings=settings,
             )
+
+    if isinstance(conf, StandardLinks):
+        for link in oc_raw_links:
+            conf.add_link(link)
+    elif oc_raw_links and not isinstance(conf, (OutlineConfiguration, WireGuardConfiguration)):
+        # Structured formats: convert the authorized links through the same serializers as native
+        # hosts, before render, so they are part of proxy-groups / selector / urltest.
+        from app.services.oc_subscription_format_materialize import add_authoritative_oc_links_to_conf
+        from app.utils.logger import get_logger
+
+        report = add_authoritative_oc_links_to_conf(conf, oc_raw_links)
+        _oc_log = get_logger("oc-subscription")
+        if report.represented_count < report.input_link_count:
+            _oc_log.warning(
+                "oc_structured_incomplete user=%s format=%s represented=%s input_links=%s reasons=%s",
+                user.id,
+                type(conf).__name__,
+                report.represented_count,
+                report.input_link_count,
+                report.skip_reasons,
+            )
+        else:
+            _oc_log.info(
+                "oc_structured_merge user=%s format=%s represented=%s",
+                user.id,
+                type(conf).__name__,
+                report.represented_count,
+            )
+    elif desired_oc_tags:
+        from app.utils.logger import get_logger
+
+        get_logger("oc-subscription").info(
+            "oc_sub_empty_output user=%s desired_oc_tags=%s filtered_oc_tags=%s native_hosts=%s",
+            user.id,
+            len(desired_oc_tags),
+            len(oc_tags),
+            len(native_inbound_tags),
+        )
+
+    if oc_link_diagnostics.get("degraded"):
+        if diagnostics is not None:
+            diagnostics["oc_upstream_degraded"] = True
+        if oc_link_diagnostics.get("all_failed"):
+            from app.services.oc_subscription_format_materialize import conf_proxy_count
+
+            if conf_proxy_count(conf) == 0 and oc_upstream_fail_closed():
+                raise OcUpstreamUnavailableError(
+                    f"all upstream pools unavailable panels={oc_link_diagnostics.get('failed_panels')}"
+                )
 
     return conf.render()
 

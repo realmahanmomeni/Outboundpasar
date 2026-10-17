@@ -596,7 +596,7 @@ async def create_user_from_template_choose(
         username = "".join(random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", k=5))
 
     template_id = await state.get_value("template_id")
-    template = await user_templates.get_validated_user_template(db, template_id)
+    template = await user_templates.get_validated_user_template(db, template_id, admin=admin)
 
     try:
         actual_username = username

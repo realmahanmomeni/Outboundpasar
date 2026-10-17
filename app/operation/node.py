@@ -68,6 +68,7 @@ from app.node import core_users, node_manager
 from app.node.manager_sync import publish_node_sync
 from app.node.nats_memory import clear_bridge_memory_for_node
 from app.operation import BaseOperation, OperatorType
+from app.operation.user import _actor_workspace_id
 from app.utils.logger import get_logger
 from config import runtime_settings
 
@@ -586,8 +587,10 @@ class NodeOperation(BaseOperation):
         self,
         db: AsyncSession,
         query: NodeUsageQuery,
+        admin: AdminDetails,
     ) -> NodeUsageStatsList:
         start, end = await self.validate_dates(query.start, query.end, True)
+        workspace_id = await _actor_workspace_id(db, admin)
         return await get_nodes_usage(
             db,
             start,
@@ -595,6 +598,7 @@ class NodeOperation(BaseOperation):
             period=query.period,
             node_id=query.node_id,
             group_by_node=query.group_by_node,
+            workspace_id=workspace_id,
         )
 
     async def get_user_count_metric(
@@ -602,6 +606,7 @@ class NodeOperation(BaseOperation):
         db: AsyncSession,
         metric: UserCountMetric,
         query: NodeUsageQuery,
+        admin: AdminDetails,
     ) -> UserCountMetricStatsList:
         start, end = await self.validate_dates(query.start, query.end, True)
         try:
@@ -609,6 +614,7 @@ class NodeOperation(BaseOperation):
         except ValueError as exc:
             await self.raise_error(message=str(exc), code=400)
 
+        workspace_id = await _actor_workspace_id(db, admin)
         return await get_user_count_metric_stats(
             db,
             admins=None,
@@ -618,6 +624,7 @@ class NodeOperation(BaseOperation):
             metric=metric,
             node_id=query.node_id,
             group_by_node=query.group_by_node,
+            workspace_id=workspace_id,
         )
 
     async def get_logs(self, node_id: int) -> Callable[[], AsyncIterator[asyncio.Queue]]:
@@ -649,13 +656,25 @@ class NodeOperation(BaseOperation):
             logger.error(f"Error getting system stats for node {node_id}: {e}")
             return None
 
-    async def get_user_online_stats_by_node(self, db: AsyncSession, node_id: int, user_id: int) -> dict[int, int]:
+    async def get_user_online_stats_by_node(
+        self, db: AsyncSession, node_id: int, user_id: int, admin: AdminDetails | None = None
+    ) -> dict[int, int]:
+        if admin is not None:
+            await self.get_validated_user_by_id(db, user_id, admin)
         return await self._get_user_online_stats_impl(db, node_id, user_id)
 
-    async def get_user_ip_list_by_node(self, db: AsyncSession, node_id: int, user_id: int) -> UserIPList:
+    async def get_user_ip_list_by_node(
+        self, db: AsyncSession, node_id: int, user_id: int, admin: AdminDetails | None = None
+    ) -> UserIPList:
+        if admin is not None:
+            await self.get_validated_user_by_id(db, user_id, admin)
         return await self._get_user_ip_list_impl(db, node_id, user_id)
 
-    async def get_user_ip_list_all_nodes(self, db: AsyncSession, user_id: int) -> UserIPListAll:
+    async def get_user_ip_list_all_nodes(
+        self, db: AsyncSession, user_id: int, admin: AdminDetails | None = None
+    ) -> UserIPListAll:
+        if admin is not None:
+            await self.get_validated_user_by_id(db, user_id, admin)
         return await self._get_user_ip_list_all_impl(db, user_id)
 
     async def _get_node_user_ip_list_safe(self, node_id: int, email: str) -> dict[str, int] | None:

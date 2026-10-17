@@ -1,7 +1,7 @@
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import NextPlan, UserTemplate, template_group_association
+from app.db.models import Group, NextPlan, UserTemplate, template_group_association
 from app.models.user_template import (
     UserTemplateCreate,
     UserTemplateListQuery,
@@ -27,7 +27,14 @@ async def load_user_template_attrs(template: UserTemplate):
     await template.awaitable_attrs.groups
 
 
-async def create_user_template(db: AsyncSession, user_template: UserTemplateCreate) -> UserTemplate:
+async def create_user_template(
+    db: AsyncSession,
+    user_template: UserTemplateCreate,
+    *,
+    groups: list[Group] | None = None,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
+) -> UserTemplate:
     """
     Creates a new user template in the database.
 
@@ -41,12 +48,29 @@ async def create_user_template(db: AsyncSession, user_template: UserTemplateCrea
 
     db_user_template = UserTemplate(
         name=user_template.name,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
         data_limit=user_template.data_limit,
         hwid_limit=user_template.hwid_limit,
         expire_duration=user_template.expire_duration,
         username_prefix=user_template.username_prefix,
         username_suffix=user_template.username_suffix,
-        groups=await get_groups_by_ids(db, user_template.group_ids) if user_template.group_ids else None,
+        groups=(
+            groups
+            if groups is not None
+            else (
+                await get_groups_by_ids(
+                    db,
+                    list(user_template.group_ids),
+                    load_users=False,
+                    load_inbounds=True,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                )
+                if user_template.group_ids
+                else None
+            )
+        ),
         extra_settings=user_template.extra_settings.dict() if user_template.extra_settings else None,
         status=user_template.status,
         reset_usages=user_template.reset_usages,
@@ -63,7 +87,13 @@ async def create_user_template(db: AsyncSession, user_template: UserTemplateCrea
 
 
 async def modify_user_template(
-    db: AsyncSession, db_user_template: UserTemplate, modified_user_template: UserTemplateModify
+    db: AsyncSession,
+    db_user_template: UserTemplate,
+    modified_user_template: UserTemplateModify,
+    *,
+    groups: list[Group] | None = None,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> UserTemplate:
     """
     Updates a user template's details.
@@ -88,8 +118,19 @@ async def modify_user_template(
         db_user_template.username_prefix = modified_user_template.username_prefix
     if modified_user_template.username_suffix is not None:
         db_user_template.username_suffix = modified_user_template.username_suffix
-    if modified_user_template.group_ids:
-        db_user_template.groups = await get_groups_by_ids(db, modified_user_template.group_ids)
+    if modified_user_template.group_ids is not None:
+        db_user_template.groups = (
+            groups
+            if groups is not None
+            else await get_groups_by_ids(
+                db,
+                list(modified_user_template.group_ids),
+                load_users=False,
+                load_inbounds=True,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+        )
     if modified_user_template.extra_settings is not None:
         db_user_template.extra_settings = modified_user_template.extra_settings.dict()
     if modified_user_template.status is not None:
@@ -121,7 +162,13 @@ async def remove_user_template(db: AsyncSession, db_user_template: UserTemplate)
     await db.commit()
 
 
-async def get_user_template(db: AsyncSession, user_template_id: int) -> UserTemplate:
+async def get_user_template(
+    db: AsyncSession,
+    user_template_id: int,
+    *,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
+) -> UserTemplate:
     """
     Retrieves a user template by its ID.
 
@@ -132,17 +179,24 @@ async def get_user_template(db: AsyncSession, user_template_id: int) -> UserTemp
     Returns:
         UserTemplate: The user template object.
     """
-    user_template = (
-        (await db.execute(select(UserTemplate).where(UserTemplate.id == user_template_id)))
-        .unique()
-        .scalar_one_or_none()
-    )
+    stmt = select(UserTemplate).where(UserTemplate.id == user_template_id)
+    if tenant_id is not None:
+        stmt = stmt.where(UserTemplate.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(UserTemplate.workspace_id == workspace_id)
+    user_template = (await db.execute(stmt)).unique().scalar_one_or_none()
     if user_template:
         await load_user_template_attrs(user_template)
     return user_template
 
 
-async def get_user_templates(db: AsyncSession, query: UserTemplateListQuery) -> list[UserTemplate]:
+async def get_user_templates(
+    db: AsyncSession,
+    query: UserTemplateListQuery,
+    *,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
+) -> list[UserTemplate]:
     """
     Retrieves a list of user templates with optional pagination.
 
@@ -155,6 +209,10 @@ async def get_user_templates(db: AsyncSession, query: UserTemplateListQuery) -> 
         List[UserTemplate]: A list of user template objects.
     """
     stmt = select(UserTemplate).order_by(UserTemplate.id.asc())
+    if tenant_id is not None:
+        stmt = stmt.where(UserTemplate.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(UserTemplate.workspace_id == workspace_id)
     if query.ids:
         stmt = stmt.where(UserTemplate.id.in_(query.ids))
     if query.offset:
@@ -172,6 +230,9 @@ async def get_user_templates(db: AsyncSession, query: UserTemplateListQuery) -> 
 async def get_user_templates_simple(
     db: AsyncSession,
     query: UserTemplateSimpleListQuery,
+    *,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> tuple[list[tuple[int, str]], int]:
     """
     Retrieves lightweight user template data with only id and name.
@@ -188,6 +249,10 @@ async def get_user_templates_simple(
         Tuple of (list of (id, name) tuples, total_count).
     """
     stmt = select(UserTemplate.id, UserTemplate.name)
+    if tenant_id is not None:
+        stmt = stmt.where(UserTemplate.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(UserTemplate.workspace_id == workspace_id)
 
     if query.ids:
         stmt = stmt.where(UserTemplate.id.in_(query.ids))

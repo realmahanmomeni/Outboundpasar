@@ -138,6 +138,10 @@ async def _resolve_users_usage_admins_filter(
 
     admins_filter = list(dict.fromkeys(requested_admins))
     if can_read_all_users or all(username == admin.username for username in admins_filter):
+        for username in admins_filter:
+            if username == admin.username:
+                continue
+            await operation.get_validated_admin(db, username, current_admin=admin)
         return admins_filter
 
     if not _has_permission(admin, "admins", "read"):
@@ -146,11 +150,23 @@ async def _resolve_users_usage_admins_filter(
     for username in admins_filter:
         if username == admin.username:
             continue
-        db_admin = await get_admin(db, username, load_users=False, load_usage_logs=False)
-        if not db_admin:
-            await operation.raise_error(message="Admin not found", code=404)
+        await operation.get_validated_admin(db, username, current_admin=admin)
 
     return admins_filter
+
+
+async def _actor_workspace_id(db: AsyncSession, admin: AdminDetails) -> int | None:
+    from app.services.workspace_scope import require_admin_workspace_id
+
+    if admin.is_owner:
+        return None
+    return await require_admin_workspace_id(db, admin, False)
+
+
+async def _actor_tenant_id(db: AsyncSession, admin: AdminDetails) -> int | None:
+    from app.services.tenant_admin_scope import tenant_id_for_actor_queries
+
+    return await tenant_id_for_actor_queries(db, admin)
 
 
 logger = get_logger("user-operation")
@@ -211,15 +227,48 @@ class UserOperation(BaseOperation):
         )
 
     @staticmethod
-    async def generate_subscription_url(user: UserNotificationResponse):
-        salt = secrets.token_hex(8)
-        settings = await subscription_settings()
-        url_prefix = (
-            user.admin.sub_domain.replace("*", salt)
+    async def generate_subscription_url(user: UserNotificationResponse, db: AsyncSession | None = None):
+        from app.db import GetDB
+        from app.services.subscription_scope import subscription_settings_for_user
+
+        async def _settings(session: AsyncSession):
+            if getattr(user, "id", None) is not None:
+                from app.db.crud.user import get_user_by_id
+
+                db_user = await get_user_by_id(session, user.id, load_admin=True)
+                if db_user is not None:
+                    return await subscription_settings_for_user(session, db_user)
+            workspace_id = user.admin.workspace_id if user.admin else None
+            if workspace_id is not None:
+                from app.db.crud.settings import get_settings_by_workspace
+
+                row = await get_settings_by_workspace(session, workspace_id)
+                if row is not None:
+                    from app.models.settings import Subscription
+
+                    return Subscription.model_validate(row.subscription)
+            return await subscription_settings()
+
+        if db is not None:
+            settings = await _settings(db)
+        else:
+            async with GetDB() as session:
+                settings = await _settings(session)
+
+        raw_prefix = (
+            user.admin.sub_domain
             if user.admin and user.admin.sub_domain
-            else (settings.url_prefix).replace("*", salt)
+            else settings.url_prefix
         )
-        token = await create_subscription_token(user.id)
+        if "*" in raw_prefix:
+            salt = secrets.token_hex(8)
+            url_prefix = raw_prefix.replace("*", salt)
+        else:
+            url_prefix = raw_prefix
+
+        token = getattr(user, "sub_token", None)
+        if not token:
+            token = await create_subscription_token(user.id)
         return f"{url_prefix}/{subscription_env_settings.path}/{token}"
 
     async def _generate_usernames(
@@ -412,6 +461,10 @@ class UserOperation(BaseOperation):
         return [user.subscription_url for user in users_list]
 
     async def validate_user(self, db_user: User, include_subscription_url: bool = True) -> UserNotificationResponse:
+        from sqlalchemy.ext.asyncio import async_object_session
+        from sqlalchemy import select
+        from app.db.models_oc import OCUserMapping
+
         lifetime_used_traffic = db_user.lifetime_used_traffic
         group_ids = list(db_user.group_ids or [])
         group_names = list(db_user.group_names or [])
@@ -419,6 +472,20 @@ class UserOperation(BaseOperation):
         user.lifetime_used_traffic = lifetime_used_traffic
         user.group_ids = group_ids
         user.group_names = group_names
+        
+        session = async_object_session(db_user)
+        if session is not None:
+            from app.services.oc_user_mapping_state import oc_user_mapping_runtime_active_criteria
+
+            user.active_panel_ids = (
+                await session.execute(
+                    select(OCUserMapping.panel_id).where(
+                        OCUserMapping.user_id == db_user.id,
+                        oc_user_mapping_runtime_active_criteria(),
+                    )
+                )
+            ).scalars().all()
+            
         if include_subscription_url:
             user.subscription_url = await self.generate_subscription_url(user)
         return user
@@ -469,7 +536,7 @@ class UserOperation(BaseOperation):
         allowed = apply_template_access(admin, [template_id])
         if allowed is not None and template_id not in allowed:
             await self.raise_error("User Template not found", 404)
-        return await self.get_validated_user_template(db, template_id)
+        return await self.get_validated_user_template(db, template_id, admin=admin)
 
     async def _enforce_user_limits(
         self,
@@ -992,7 +1059,14 @@ class UserOperation(BaseOperation):
             admin_ids=[scope_admin_id] if scope_admin_id is not None else None,
             limit=len(ids_list),
         )
-        users = await get_users(db, query=query, load_admin_role=load_admin_role)
+        workspace_id = await _actor_workspace_id(db, admin)
+        users = await get_users(
+            db,
+            query=query,
+            load_admin_role=load_admin_role,
+            tenant_id=admin.tenant_id if not admin.is_owner else None,
+            workspace_id=workspace_id,
+        )
 
         # Verify every requested ID was found (mirrors the 404 in get_validated_user_by_id)
         found_ids = {user.id for user in users}
@@ -1211,6 +1285,9 @@ class UserOperation(BaseOperation):
                 db_user.last_status_change = changed_at
                 changed_user_ids.append(db_user.id)
 
+                from app.node.oc_sync import enqueue_oc_user_sync
+                await enqueue_oc_user_sync(db, db_user)
+
             await db.commit()
         except Exception:
             await db.rollback()
@@ -1301,6 +1378,12 @@ class UserOperation(BaseOperation):
         return await self._active_next_plan(db, db_user, admin)
 
     async def _set_owner(self, db: AsyncSession, db_user: User, new_admin, admin: AdminDetails) -> UserResponse:
+        if not admin.is_owner:
+            actor_workspace_id = await _actor_workspace_id(db, admin)
+            if actor_workspace_id is None:
+                await self.raise_error(message="Workspace scope required", code=403)
+            if new_admin.workspace_id != actor_workspace_id:
+                await self.raise_error(message="Admin not found", code=404)
         db_user = await set_owner(db, db_user, new_admin)
         user = await self.validate_user(db_user)
         logger.info(
@@ -1317,21 +1400,21 @@ class UserOperation(BaseOperation):
             DeprecationWarning,
             stacklevel=2,
         )
-        new_admin = await self.get_validated_admin(db, username=admin_username)
+        new_admin = await self.get_validated_admin(db, username=admin_username, current_admin=admin)
         db_user = await self.get_validated_user(db, username, admin)
         return await self._set_owner(db, db_user, new_admin, admin)
 
     async def set_owner_by_id(
         self, db: AsyncSession, user_id: int, admin_username: str, admin: AdminDetails
     ) -> UserResponse:
-        new_admin = await self.get_validated_admin(db, username=admin_username)
+        new_admin = await self.get_validated_admin(db, username=admin_username, current_admin=admin)
         db_user = await self.get_validated_user_by_id(db, user_id, admin, scope_action="update")
         return await self._set_owner(db, db_user, new_admin, admin)
 
     async def bulk_set_owner(
         self, db: AsyncSession, bulk_users: BulkUsersSetOwner, admin: AdminDetails
     ) -> BulkUsersActionResponse:
-        new_admin = await self.get_validated_admin(db, username=bulk_users.admin_username)
+        new_admin = await self.get_validated_admin(db, username=bulk_users.admin_username, current_admin=admin)
         db_users = await self._get_validated_users_by_ids(
             db, bulk_users.ids, admin, load_usage_logs=False, scope_action="update"
         )
@@ -1442,16 +1525,19 @@ class UserOperation(BaseOperation):
         query: UserListQuery,
     ) -> UsersResponse:
         """Get all users"""
-        scope_admin_id = get_scope_admin_id(admin, "users", "read_simple")
+        scope_admin_id = get_scope_admin_id(admin, "users", "read")
         if scope_admin_id is not None:
             query = query.model_copy(update={"owner": [admin.username], "admin_ids": None})
 
+        workspace_id = await _actor_workspace_id(db, admin)
         users, count = await get_users(
             db=db,
             query=query,
             return_with_count=True,
             load_usage_logs=False,
             load_lifetime_used_traffic=True,
+            tenant_id=admin.tenant_id if not admin.is_owner else None,
+            workspace_id=workspace_id,
         )
 
         if query.load_sub:
@@ -1480,10 +1566,13 @@ class UserOperation(BaseOperation):
         )
 
         # Call CRUD function
+        workspace_id = await _actor_workspace_id(db, admin)
         rows, total = await get_users_simple(
             db=db,
             query=query,
             admin=admin_filter,
+            tenant_id=admin.tenant_id if not admin.is_owner else None,
+            workspace_id=workspace_id,
         )
 
         # Convert tuples to Pydantic models
@@ -1508,6 +1597,7 @@ class UserOperation(BaseOperation):
             group_by_node = False
 
         admins_filter = await _resolve_users_usage_admins_filter(self, db, admin, query.owner)
+        workspace_id = await _actor_workspace_id(db, admin)
 
         return await get_all_users_usages(
             db=db,
@@ -1517,6 +1607,7 @@ class UserOperation(BaseOperation):
             node_id=node_id,
             admins=admins_filter,
             group_by_node=group_by_node,
+            workspace_id=workspace_id,
         )
 
     async def get_users_count_metric(
@@ -1542,6 +1633,7 @@ class UserOperation(BaseOperation):
             await self.raise_error(message=str(exc), code=400)
 
         admins_filter = await _resolve_users_usage_admins_filter(self, db, admin, query.owner)
+        workspace_id = await _actor_workspace_id(db, admin)
 
         return await get_user_count_metric_stats(
             db=db,
@@ -1552,6 +1644,7 @@ class UserOperation(BaseOperation):
             metric=metric,
             node_id=node_id,
             group_by_node=group_by_node,
+            workspace_id=workspace_id,
         )
 
     @staticmethod
@@ -1563,6 +1656,7 @@ class UserOperation(BaseOperation):
         self,
         db: AsyncSession,
         query: ExpiredUsersQuery,
+        admin: AdminDetails,
     ) -> list[str]:
         """
         Get users who match the cleanup target within the specified date range.
@@ -1575,14 +1669,18 @@ class UserOperation(BaseOperation):
         """
 
         expired_after, expired_before = await self.validate_dates(query.expired_after, query.expired_before, False)
+        tenant_id = admin.tenant_id if not admin.is_owner else None
+        workspace_id = await _actor_workspace_id(db, admin)
         if query.admin_username:
-            admin_id = (await self.get_validated_admin(db, query.admin_username)).id
+            admin_id = (await self.get_validated_admin(db, query.admin_username, current_admin=admin)).id
         else:
             admin_id = None
         users = await get_expired_users(
             db,
             query=query.model_copy(update={"expired_after": expired_after, "expired_before": expired_before}),
             admin_id=admin_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
         )
         return [row.username for row in users]
 
@@ -1603,9 +1701,11 @@ class UserOperation(BaseOperation):
         """
 
         expired_after, expired_before = await self.validate_dates(query.expired_after, query.expired_before, False)
+        tenant_id = admin.tenant_id if not admin.is_owner else None
+        workspace_id = await _actor_workspace_id(db, admin)
 
         if query.admin_username:
-            admin_id = (await self.get_validated_admin(db, query.admin_username)).id
+            admin_id = (await self.get_validated_admin(db, query.admin_username, current_admin=admin)).id
         else:
             admin_id = None
         username_list = await remove_expired_users(
@@ -1615,6 +1715,8 @@ class UserOperation(BaseOperation):
             admin_id,
             target=query.target,
             dry_run=query.dry_run,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
         )
         if not query.dry_run:
             await self.remove_users_logger(users=username_list, by=admin.username)
@@ -1917,35 +2019,38 @@ class UserOperation(BaseOperation):
 
         return self._build_bulk_action_response(users)
 
-    async def bulk_modify_expire(self, db: AsyncSession, bulk_model: BulkUser):
+    async def bulk_modify_expire(self, db: AsyncSession, bulk_model: BulkUser, admin: AdminDetails):
+        workspace_id = await _actor_workspace_id(db, admin)
         if bulk_model.dry_run:
-            n = await count_bulk_expire_targets(db, bulk_model)
+            n = await count_bulk_expire_targets(db, bulk_model, workspace_id=workspace_id)
             return BulkOperationDryRunResponse(affected_users=n)
-        users, users_count = await update_users_expire(db, bulk_model)
+        users, users_count = await update_users_expire(db, bulk_model, workspace_id=workspace_id)
         await sync_users(users)
 
         if self.operator_type in (OperatorType.API, OperatorType.WEB):
             return {"detail": f"operation has been successfuly done on {users_count} users"}
         return users_count
 
-    async def bulk_modify_datalimit(self, db: AsyncSession, bulk_model: BulkUser):
+    async def bulk_modify_datalimit(self, db: AsyncSession, bulk_model: BulkUser, admin: AdminDetails):
+        workspace_id = await _actor_workspace_id(db, admin)
         if bulk_model.dry_run:
-            n = await count_bulk_datalimit_targets(db, bulk_model)
+            n = await count_bulk_datalimit_targets(db, bulk_model, workspace_id=workspace_id)
             return BulkOperationDryRunResponse(affected_users=n)
-        users, users_count = await update_users_datalimit(db, bulk_model)
+        users, users_count = await update_users_datalimit(db, bulk_model, workspace_id=workspace_id)
         await sync_users(users)
 
         if self.operator_type in (OperatorType.API, OperatorType.WEB):
             return {"detail": f"operation has been successfuly done on {users_count} users"}
         return users_count
 
-    async def bulk_modify_proxy_settings(self, db: AsyncSession, bulk_model: BulkUsersProxy):
+    async def bulk_modify_proxy_settings(self, db: AsyncSession, bulk_model: BulkUsersProxy, admin: AdminDetails):
+        workspace_id = await _actor_workspace_id(db, admin)
         if bulk_model.method is None:
             await self.raise_error(message="No supported proxy settings were provided", code=400, db=db)
         if bulk_model.dry_run:
-            n = await count_bulk_proxy_targets(db, bulk_model)
+            n = await count_bulk_proxy_targets(db, bulk_model, workspace_id=workspace_id)
             return BulkOperationDryRunResponse(affected_users=n)
-        users, users_count = await update_users_proxy_settings(db, bulk_model)
+        users, users_count = await update_users_proxy_settings(db, bulk_model, workspace_id=workspace_id)
         await sync_users(users)
 
         if self.operator_type in (OperatorType.API, OperatorType.WEB):
@@ -2014,11 +2119,12 @@ class UserOperation(BaseOperation):
                 if not can_read_admins and admin_id != admin.id:
                     await self.raise_error(message="You're not allowed", code=403)
                 elif can_read_admins and admin_id != admin.id:
-                    await self.get_validated_admin_by_id(db, admin_id)
+                    await self.get_validated_admin_by_id(db, admin_id, current_admin=admin)
                 resolved_admin_id = admin_id
             else:
                 resolved_admin_id = get_scope_admin_id(admin, "users", "read")
 
+        workspace_id = await _actor_workspace_id(db, admin)
         agent_counts = await get_users_subscription_agent_counts(
             db,
             user_id=resolved_user_id,
@@ -2026,6 +2132,7 @@ class UserOperation(BaseOperation):
             start=start,
             end=end,
             period=period,
+            workspace_id=workspace_id,
         )
         agent_stats = await get_users_subscription_agent_stats(
             db,
@@ -2034,6 +2141,7 @@ class UserOperation(BaseOperation):
             period=period,
             user_id=resolved_user_id,
             admin_id=resolved_admin_id,
+            workspace_id=workspace_id,
         )
         return self._build_user_agent_chart(
             agent_counts,

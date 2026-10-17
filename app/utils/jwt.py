@@ -40,7 +40,7 @@ async def get_admin_payload(token: str) -> dict | None:
         if admin_id is not None:
             try:
                 admin_id = int(admin_id)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 return
         if not username or access not in ("admin", "sudo"):
             return
@@ -54,6 +54,27 @@ async def get_admin_payload(token: str) -> dict | None:
             "username": username,
             "created_at": created_at,
         }
+    except jwt.exceptions.PyJWTError:
+        return
+
+
+async def create_customer_token(account_id: str) -> str:
+    data = {"sub": account_id, "access": "customer", "iat": datetime.now(UTC)}
+    if jwt_settings.access_token_expire_minutes > 0:
+        expire = datetime.now(UTC) + timedelta(minutes=jwt_settings.access_token_expire_minutes)
+        data["exp"] = expire
+    encoded_jwt = jwt.encode(data, await get_secret_key(), algorithm="HS256")
+    return encoded_jwt
+
+
+async def get_customer_payload(token: str) -> dict | None:
+    try:
+        payload = jwt.decode(token, await get_secret_key(), algorithms=["HS256"], leeway=5)
+        account_id: str = payload.get("sub")
+        access: str = payload.get("access")
+        if not account_id or access != "customer":
+            return
+        return {"account_id": account_id}
     except jwt.exceptions.PyJWTError:
         return
 

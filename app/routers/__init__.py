@@ -14,9 +14,19 @@ from . import (
     settings,
     setup,
     subscription,
+    subscription_experience_template,
+    subscription_branding,
     system,
     user,
     user_template,
+    customer_auth,
+    panel,
+    integration,
+    user_panel_binding,
+    custom_domain,
+    integration_managed_subdomain,
+    panel_statistics,
+    hwid_management,
 )
 
 api_router = APIRouter()
@@ -36,8 +46,19 @@ routers = [
     node.router,
     user.router,
     subscription.router,
+    subscription_experience_template.router,
+    subscription_branding.router,
     user_template.router,
     hwid.router,
+    customer_auth.router,
+    panel.router,
+    integration.router,
+    user_panel_binding.router,
+    user_panel_binding.options_router,
+    custom_domain.router,
+    integration_managed_subdomain.router,
+    panel_statistics.router,
+    hwid_management.router,
 ]
 
 for router in routers:

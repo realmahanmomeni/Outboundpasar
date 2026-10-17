@@ -1,0 +1,1073 @@
+import uuid
+from typing import Any
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Group, ProxyHost, ProxyInbound, User, users_groups_association
+from app.db.models_oc import (
+    OCIntegration,
+    OCPanel,
+    OCPanelConfig,
+    OCPanelDestinationHost,
+    OCPanelGroup,
+    OCUserMapping,
+    OCSyncState,
+    TenantTelegramConnection,
+)
+from app.node.user import _bucket_inbounds, _inbounds_from_loaded_groups
+from app.services.oc_connection_credentials import panel_has_active_connection
+from app.services.oc_reconcile import (
+    ReconcileAction,
+    classify_mapping_action,
+    normalize_config_set,
+)
+from app.services.oc_user_mapping_state import (
+    OC_MAPPING_STATUS_ACTIVE,
+    OC_MAPPING_STATUS_DELETED,
+    OC_MAPPING_STATUS_PENDING,
+    mapping_needs_subscription_url_repair,
+    resolve_oc_sync_operation,
+)
+from app.services.oc_seller_groups import (
+    GroupDecision,
+    decide_import_groups,
+    group_drift,
+    import_group_payload,
+    load_panel_group_inventory,
+)
+from app.services.oc_sync_identity import merge_identity_rotation_payload
+from app.utils.logger import get_logger
+
+logger = get_logger("oc-sync")
+
+
+def legacy_panel_groups_fallback_is_allowed() -> bool:
+    """
+    Pre-aed0dcfe behavior filled empty ``desired_oc_group_ids`` with all wizard-selected
+    panel groups. Production BUG1 (09280bf) showed that pattern can widen subscriptions.
+    Re-enable only after Outbound Center documents that explicit ``configs`` are a strict
+    allowlist independent of group membership.
+    """
+    return False
+
+
+def _source_group_ids_from_group_mapping(
+    mapping: dict[str, Any] | None,
+    selected_source_groups: set[str],
+) -> set[str]:
+    mapping = mapping or {}
+    if not mapping.get("supported"):
+        return set()
+    out: set[str] = set()
+    for g_id in mapping.get("groups") or []:
+        g = str(g_id)
+        if g in selected_source_groups:
+            out.add(g)
+    return out
+
+
+async def _live_oc_group_ids_for_configs(
+    db_session: AsyncSession,
+    panel_id: int,
+    config_ids: list[str],
+    selected_source_groups: set[str],
+) -> set[str]:
+    """Refresh group_mapping from OC catalog when local rows lack group ids."""
+    if not config_ids or not selected_source_groups:
+        return set()
+    panel = (
+        await db_session.execute(
+            select(OCPanel).where(OCPanel.id == panel_id)
+        )
+    ).scalar_one_or_none()
+    if panel is None:
+        return set()
+    from sqlalchemy.orm import selectinload
+
+    if panel.integration is None:
+        panel = (
+            await db_session.execute(
+                select(OCPanel)
+                .options(selectinload(OCPanel.integration))
+                .where(OCPanel.id == panel_id)
+            )
+        ).scalar_one_or_none()
+    if panel is None or panel.integration is None:
+        return set()
+    if not await panel_has_active_connection(db_session, panel):
+        return set()
+    path = f"/v1/integration/panels/{panel.source_panel_id}/configs"
+    try:
+        from app.services.oc_connection_credentials import call_oc_panel_api
+
+        data = await call_oc_panel_api(db_session, panel, "GET", path)
+    except Exception as exc:
+        logger.info(
+            "oc_sync_live_config_groups_skipped panel_id=%s reason=%s",
+            panel_id,
+            type(exc).__name__,
+        )
+        return set()
+    want = {str(c) for c in config_ids}
+    out: set[str] = set()
+    for row in data.get("configs") or []:
+        cid = str(row.get("id") or "")
+        if cid not in want:
+            continue
+        out |= _source_group_ids_from_group_mapping(
+            row.get("group_mapping") if isinstance(row.get("group_mapping"), dict) else {},
+            selected_source_groups,
+        )
+    return out
+
+
+OC_PANEL_STATUS_INACTIVE = "inactive"
+OC_PANEL_STATUS_CONNECTION_REVOKED = "connection_revoked"
+OC_PANEL_BLOCKING_STATUSES = frozenset({OC_PANEL_STATUS_INACTIVE, OC_PANEL_STATUS_CONNECTION_REVOKED})
+
+
+async def enqueue_oc_user_sync_many(db_session: AsyncSession, users: list[User]) -> None:
+    for db_user in users:
+        await enqueue_oc_user_sync(db_session, db_user)
+
+
+async def tenant_panel_allows_oc_user_mutations(db_session: AsyncSession, panel_id: int) -> bool:
+    panel = await db_session.get(OCPanel, panel_id)
+    if panel is None:
+        return False
+    if (panel.sync_status or "") in OC_PANEL_BLOCKING_STATUSES:
+        return False
+    return await panel_has_active_connection(db_session, panel)
+
+
+def _user_panel_workspace_compatible(db_user: User, panel: OCPanel) -> bool:
+    if panel.workspace_id is None or db_user.workspace_id is None:
+        return True
+    return db_user.workspace_id == panel.workspace_id
+
+
+def owned_mapping_external_user_id(mapping: OCUserMapping) -> str | None:
+    """Remote OC user id PasarGuard may delete (must come from a local mapping row)."""
+    ext = str(mapping.external_user_id or "").strip()
+    return ext if ext else None
+
+
+def _delete_sync_payload(
+    mapping: OCUserMapping,
+    *,
+    source_panel_id: str | None,
+    integration_id: int | None,
+    tenant_id: int | None = None,
+    oc_account_id: int | None = None,
+    connection_id: int | None = None,
+) -> dict[str, Any]:
+    """Self-contained OC delete job payload (survives OCPanel / mapping CASCADE)."""
+    external_user_id = owned_mapping_external_user_id(mapping)
+    if not external_user_id:
+        raise ValueError("OC delete payload requires a non-empty external_user_id from OCUserMapping")
+    payload: dict[str, Any] = {"external_user_id": external_user_id}
+    if source_panel_id is not None:
+        payload["source_panel_id"] = source_panel_id
+    if integration_id is not None:
+        payload["integration_id"] = integration_id
+    # Snapshot of who may authorise the delete on OC once the OCPanel row is gone.
+    if tenant_id is not None:
+        payload["tenant_id"] = tenant_id
+    if oc_account_id is not None:
+        payload["oc_account_id"] = oc_account_id
+    if connection_id is not None:
+        payload["connection_id"] = connection_id
+    return payload
+
+
+async def enqueue_mapping_delete_sync(
+    db_session: AsyncSession,
+    user_id: int,
+    panel_id: int,
+    mapping: OCUserMapping,
+    *,
+    connection_id: int | None = None,
+) -> None:
+    if mapping.panel_id != panel_id:
+        raise ValueError(
+            f"OCUserMapping panel_id {mapping.panel_id} does not match delete target panel {panel_id}"
+        )
+    if not owned_mapping_external_user_id(mapping):
+        return
+
+    last_configs = mapping.last_synced_configs
+    if last_configs is not None:
+        last_configs = sorted(last_configs)
+
+    if mapping.status == OC_MAPPING_STATUS_DELETED and last_configs == []:
+        return
+
+    entity_id = f"{user_id}_{panel_id}"
+
+    panel_meta = (
+        await db_session.execute(
+            select(
+                OCPanel.source_panel_id,
+                OCPanel.integration_id,
+                OCPanel.tenant_id,
+                OCPanel.oc_account_id,
+            ).where(OCPanel.id == panel_id)
+        )
+    ).one_or_none()
+    source_panel_id = panel_meta[0] if panel_meta else None
+    integration_id = panel_meta[1] if panel_meta else None
+    payload = _delete_sync_payload(
+        mapping,
+        source_panel_id=source_panel_id,
+        integration_id=integration_id,
+        tenant_id=panel_meta[2] if panel_meta else None,
+        oc_account_id=panel_meta[3] if panel_meta else None,
+        connection_id=connection_id,
+    )
+
+    pending_job = (
+        await db_session.execute(
+            select(OCSyncState).where(
+                OCSyncState.entity_type == "user_mapping",
+                OCSyncState.entity_id == entity_id,
+                OCSyncState.status == "pending",
+            )
+        )
+    ).scalars().first()
+
+    if pending_job:
+        pending_job.operation = "delete"
+        pending_job.payload = payload
+        pending_job.revision += 1
+        await db_session.flush()
+    else:
+        job = OCSyncState(
+            entity_type="user_mapping",
+            entity_id=entity_id,
+            operation="delete",
+            idempotency_key=f"sync_{user_id}_{panel_id}_{uuid.uuid4()}",
+            payload=payload,
+            status="pending",
+        )
+        db_session.add(job)
+        await db_session.flush()
+
+
+async def enqueue_discovery_user_delete_sync(
+    db_session: AsyncSession,
+    panel: OCPanel,
+    *,
+    connection_id: int | None = None,
+) -> None:
+    """Delete the Central integration discovery/test user on the remote OC panel."""
+    external_user_id = (panel.test_user_id or "").strip()
+    if not external_user_id:
+        return
+
+    entity_id = str(panel.id)
+    payload = _delete_sync_payload(
+        OCUserMapping(
+            user_id=0,
+            panel_id=panel.id,
+            external_user_id=external_user_id,
+        ),
+        source_panel_id=panel.source_panel_id,
+        integration_id=panel.integration_id,
+        tenant_id=panel.tenant_id,
+        oc_account_id=panel.oc_account_id,
+        connection_id=connection_id,
+    )
+
+    pending_job = (
+        await db_session.execute(
+            select(OCSyncState).where(
+                OCSyncState.entity_type == "panel_discovery_user",
+                OCSyncState.entity_id == entity_id,
+                OCSyncState.status == "pending",
+            )
+        )
+    ).scalars().first()
+    if pending_job:
+        pending_job.operation = "delete"
+        pending_job.payload = payload
+        pending_job.revision += 1
+        await db_session.flush()
+        return
+
+    db_session.add(
+        OCSyncState(
+            entity_type="panel_discovery_user",
+            entity_id=entity_id,
+            operation="delete",
+            idempotency_key=f"discovery_delete_{panel.id}_{uuid.uuid4()}",
+            payload=payload,
+            status="pending",
+        )
+    )
+    await db_session.flush()
+
+
+async def enqueue_panel_user_deletions(
+    db_session: AsyncSession, panel_id: int, *, connection_id: int | None = None
+) -> None:
+    mappings = (
+        await db_session.execute(select(OCUserMapping).where(OCUserMapping.panel_id == panel_id))
+    ).scalars().all()
+    for mapping in mappings:
+        await enqueue_mapping_delete_sync(
+            db_session, mapping.user_id, mapping.panel_id, mapping, connection_id=connection_id
+        )
+
+
+async def remove_imported_panel(db_session: AsyncSession, panel: OCPanel) -> None:
+    """
+    Remove a PasarGuard panel import. Enqueues OC user delete sync jobs, then
+    removes local virtual inbounds/hosts and the OCPanel row (does not delete
+    remote Outbound Center infrastructure).
+    """
+    mapping_count = (
+        await db_session.execute(
+            select(OCUserMapping.id).where(OCUserMapping.panel_id == panel.id)
+        )
+    ).scalars().all()
+    logger.info(
+        "OC_PANEL_DELETE_CLEANUP panel_id=%s mapping_count=%s source_panel_id=%s",
+        panel.id,
+        len(mapping_count),
+        panel.source_panel_id,
+    )
+    await enqueue_discovery_user_delete_sync(db_session, panel)
+    await enqueue_panel_user_deletions(db_session, panel.id)
+    from app.services.oc_destination_host_lifecycle import teardown_imported_panel_local_resources
+
+    await teardown_imported_panel_local_resources(db_session, panel)
+    await db_session.delete(panel)
+    await db_session.flush()
+
+
+async def enqueue_workspace_panel_user_deletions(
+    db_session: AsyncSession, workspace_id: int, *, connection_id: int | None = None
+) -> None:
+    panel_ids = (
+        await db_session.execute(select(OCPanel.id).where(OCPanel.workspace_id == workspace_id))
+    ).scalars().all()
+    if not panel_ids:
+        return
+
+    mappings = (
+        await db_session.execute(select(OCUserMapping).where(OCUserMapping.panel_id.in_(panel_ids)))
+    ).scalars().all()
+
+    for mapping in mappings:
+        await enqueue_mapping_delete_sync(
+            db_session, mapping.user_id, mapping.panel_id, mapping, connection_id=connection_id
+        )
+
+
+async def enqueue_tenant_panel_user_deletions(
+    db_session: AsyncSession, tenant_id: int, *, connection_id: int | None = None
+) -> None:
+    panel_ids = (
+        await db_session.execute(select(OCPanel.id).where(OCPanel.tenant_id == tenant_id))
+    ).scalars().all()
+    if not panel_ids:
+        return
+
+    mappings = (
+        await db_session.execute(select(OCUserMapping).where(OCUserMapping.panel_id.in_(panel_ids)))
+    ).scalars().all()
+
+    for mapping in mappings:
+        await enqueue_mapping_delete_sync(
+            db_session, mapping.user_id, mapping.panel_id, mapping, connection_id=connection_id
+        )
+
+
+async def enqueue_oc_connection_revoke(db_session: AsyncSession, connection: TenantTelegramConnection) -> None:
+    """Propagate a local revoke to Outbound Center (retried by the sync worker)."""
+    if not connection.oc_connection_token_encrypted:
+        return  # legacy connection: OC never issued a credential, nothing to revoke there
+    from app.services.oc_integration_client import get_active_integration_or_none
+
+    integration = await get_active_integration_or_none(db_session)
+    if integration is None:
+        return
+    entity_id = str(connection.id)
+    existing = (
+        await db_session.execute(
+            select(OCSyncState).where(
+                OCSyncState.entity_type == "oc_connection",
+                OCSyncState.entity_id == entity_id,
+                OCSyncState.status == "pending",
+            )
+        )
+    ).scalars().first()
+    if existing:
+        return
+    db_session.add(
+        OCSyncState(
+            entity_type="oc_connection",
+            entity_id=entity_id,
+            operation="revoke",
+            idempotency_key=f"oc_connection_revoke_{connection.id}_{uuid.uuid4()}",
+            payload={"connection_id": connection.id, "integration_id": integration.id},
+            status="pending",
+        )
+    )
+    await db_session.flush()
+
+
+async def desired_oc_group_ids(
+    db_session: AsyncSession, panel_id: int, config_ids: list[str]
+) -> list[str]:
+    """
+    OC source group ids required to authorize ``config_ids`` on PUT.
+
+    Prefer ``OCPanelConfig.panel_group_id`` joins. When that FK is unset (common on
+    destination-only catalogs), use each config's OC ``group_mapping`` intersected
+    with wizard-selected panel groups — never all imported groups.
+    """
+    if not config_ids:
+        return []
+    group_ids: set[str] = set(
+        (
+            await db_session.execute(
+                select(OCPanelGroup.source_group_id)
+                .join(OCPanelConfig, OCPanelConfig.panel_group_id == OCPanelGroup.id)
+                .where(
+                    OCPanelConfig.panel_id == panel_id,
+                    OCPanelConfig.source_config_id.in_(config_ids),
+                    OCPanelGroup.is_selected.is_(True),
+                )
+                .distinct()
+            )
+        ).scalars().all()
+    )
+    selected_source_groups = set(
+        (
+            await db_session.execute(
+                select(OCPanelGroup.source_group_id).where(
+                    OCPanelGroup.panel_id == panel_id,
+                    OCPanelGroup.is_selected.is_(True),
+                )
+            )
+        ).scalars().all()
+    )
+    matched_config_rows: list[OCPanelConfig] = []
+    if selected_source_groups:
+        matched_config_rows = list(
+            (
+                await db_session.execute(
+                    select(OCPanelConfig).where(
+                        OCPanelConfig.panel_id == panel_id,
+                        OCPanelConfig.source_config_id.in_(config_ids),
+                        OCPanelConfig.source_missing.is_(False),
+                    )
+                )
+            ).scalars().all()
+        )
+        for cfg in matched_config_rows:
+            payload = cfg.source_payload if isinstance(cfg.source_payload, dict) else {}
+            group_ids |= _source_group_ids_from_group_mapping(
+                payload.get("group_mapping") if isinstance(payload.get("group_mapping"), dict) else {},
+                selected_source_groups,
+            )
+    if not group_ids and config_ids and matched_config_rows:
+        group_ids |= await _live_oc_group_ids_for_configs(
+            db_session, panel_id, config_ids, selected_source_groups
+        )
+    return sorted(group_ids)
+
+
+async def selected_oc_panel_group_ids(db_session: AsyncSession, panel_id: int) -> list[str]:
+    """OC group ids the operator selected during panel import (wizard)."""
+    rows = (
+        await db_session.execute(
+            select(OCPanelGroup.source_group_id).where(
+                OCPanelGroup.panel_id == panel_id,
+                OCPanelGroup.is_selected.is_(True),
+            )
+        )
+    ).scalars().all()
+    return sorted(set(rows))
+
+
+async def resolve_destination_config_ids_for_panel_tags(
+    db_session: AsyncSession, panel_id: int, tags: list[str]
+) -> list[str]:
+    """Destination host fingerprints from ``oc_<panel>_d_<id>`` virtual inbound tags."""
+    from app.services.oc_share_link import parse_destination_tag
+
+    dest_ids: set[str] = set()
+    for tag in tags:
+        parsed = parse_destination_tag(tag)
+        if parsed is None:
+            continue
+        pid, dest_id = parsed
+        if pid == panel_id and dest_id:
+            dest_ids.add(dest_id)
+    return sorted(dest_ids)
+
+
+async def resolve_desired_sync_keys_for_panel(
+    db_session: AsyncSession, panel_id: int, tags: list[str]
+) -> list[str]:
+    """
+    Keys stored in ``last_synced_configs`` for runtime filtering: catalog config ids plus
+    destination fingerprints when catalog mapping is absent (not inferred from destination).
+    """
+    catalog = await resolve_desired_config_ids_for_panel(db_session, panel_id, tags)
+    destination = await resolve_destination_config_ids_for_panel_tags(db_session, panel_id, tags)
+    return sorted(set(catalog) | set(destination))
+
+
+async def resolve_desired_config_ids_for_panel(
+    db_session: AsyncSession, panel_id: int, tags: list[str]
+) -> list[str]:
+    from app.services.oc_destination_runtime import source_config_ids_for_panel_tags
+
+    if not tags:
+        return []
+    configs = await source_config_ids_for_panel_tags(db_session, panel_id, tags)
+    if not configs:
+        configs = list(
+            (
+                await db_session.execute(
+                    select(OCPanelConfig.source_config_id).where(
+                        OCPanelConfig.panel_id == panel_id,
+                        OCPanelConfig.virtual_inbound_tag.in_(tags),
+                        OCPanelConfig.source_missing == False,
+                    )
+                )
+            ).scalars().all()
+        )
+    return sorted(configs)
+
+
+async def _explicit_loss_of_access(db_session: AsyncSession, db_user: User, access_allowed: bool) -> bool:
+    """True when losing the user's desired panels is explained by explicit user/group state."""
+    if not access_allowed:
+        return True
+    enabled_groups = await db_session.scalar(
+        select(func.count())
+        .select_from(Group)
+        .join(users_groups_association, users_groups_association.c.groups_id == Group.id)
+        .where(users_groups_association.c.user_id == db_user.id, Group.is_disabled.is_(False))
+    )
+    return not enabled_groups
+
+
+def _log_reconcile_action(
+    action: ReconcileAction,
+    *,
+    user_id: int,
+    panel_id: int,
+    mapping_id: int | None,
+    external_user_id: str | None,
+    reason: str,
+) -> None:
+    logger.info(
+        "%s user_id=%s panel_id=%s mapping_id=%s external_user_id=%s reason=%s",
+        action.value,
+        user_id,
+        panel_id,
+        mapping_id,
+        external_user_id or "-",
+        reason,
+    )
+
+
+async def build_oc_user_put_payload(
+    db_session: AsyncSession,
+    panel_id: int,
+    config_ids: list[str],
+    *,
+    import_group_ids: list[str] | None = None,
+) -> dict[str, list[str]]:
+    """
+    Payload for OC user PUT.
+
+    When catalog config ids are destination inbound tags, OC often rejects explicit
+    ``configs`` unless the user is assigned via ``groups`` first (same as discovery).
+
+    ``import_group_ids`` is the panel's import selection (see ``resolve_oc_user_group_payload``). When it
+    is given the groups are exactly that selection: nothing is derived from the user's configs, so the
+    user's host/config choice can never widen or narrow seller group membership. Without it the behaviour
+    is unchanged (config-derived groups only; the legacy "all selected groups" fallback stays disabled).
+    """
+    if import_group_ids is not None:
+        return {"groups": sorted({str(g) for g in import_group_ids}), "configs": config_ids}
+    groups = await desired_oc_group_ids(db_session, panel_id, config_ids)
+    if (
+        not groups
+        and config_ids
+        and legacy_panel_groups_fallback_is_allowed()
+    ):
+        groups = await selected_oc_panel_group_ids(db_session, panel_id)
+    return {"groups": groups, "configs": config_ids}
+
+
+async def resolve_oc_user_group_payload(
+    db_session: AsyncSession,
+    *,
+    user_id: int,
+    panel_id: int,
+    config_ids: list[str],
+) -> tuple[dict[str, Any], GroupDecision]:
+    """
+    Seller PUT payload (groups/configs) for one user on one panel plus the safety decision.
+
+    The groups are the panel's import selection (``OCPanelGroup.is_selected``), verbatim. They do not
+    depend on the user (``user_id`` is only kept for call-site compatibility), on the user's configs, or
+    on any per-user list. If groups were imported but none is selected the decision is *blocked* and the
+    caller must not create/update the seller account; a panel without imported groups keeps the legacy
+    payload.
+    """
+    inventory = await load_panel_group_inventory(db_session, panel_id)
+    decision = decide_import_groups(inventory)
+    if decision.blocked:
+        return {"groups": [], "configs": list(config_ids)}, decision
+
+    if not decision.groups:
+        # No imported group rows at all (legacy panel): nothing to apply, unchanged legacy payload.
+        return await build_oc_user_put_payload(db_session, panel_id, config_ids), decision
+
+    payload = await build_oc_user_put_payload(
+        db_session, panel_id, config_ids, import_group_ids=list(decision.groups)
+    )
+    payload = dict(payload)
+    payload["group_selection"] = import_group_payload(decision)
+    return payload, decision
+
+
+_GROUP_BLOCK_LOG_INTERVAL_SECONDS = 900.0
+_group_block_last_logged: dict[tuple[int, str], float] = {}
+
+
+def _log_group_selection_blocked(user_id: int, panel_id: int, decision: GroupDecision) -> None:
+    """Rate-limited per panel+issue (the 5-minute reconcile tick would otherwise repeat this per user)."""
+    import time
+
+    key = (panel_id, decision.issue or "")
+    now = time.monotonic()
+    last = _group_block_last_logged.get(key)
+    if last is not None and now - last < _GROUP_BLOCK_LOG_INTERVAL_SECONDS:
+        return
+    _group_block_last_logged[key] = now
+    logger.warning(
+        "oc_seller_group_selection_blocked panel_id=%s issue=%s first_user_id=%s detail=%s "
+        "(no seller account was created/updated for users of this panel)",
+        panel_id,
+        decision.issue,
+        user_id,
+        decision.message,
+    )
+
+
+async def enqueue_oc_user_sync(
+    db_session: AsyncSession,
+    db_user: User,
+    *,
+    periodic_reconcile: bool = False,
+    force_panel_ids: set[int] | None = None,
+) -> None:
+    """
+    Enqueue synchronization events (Create, Update, Delete) to Outbound Center
+    by diffing the user's active virtual inbounds against their current mappings.
+
+    ``periodic_reconcile=True`` is the 5-minute safety-net tick. Missing local membership there is
+    indistinguishable from a transient inconsistency (cleanup race, incomplete import, empty catalog), so
+    the tick may create/update/repair but only deletes the provisioned OC user when the loss is explained by
+    explicit state: the user no longer has access (disabled/expired/limited) or none of the user's groups is
+    enabled. Event-driven calls (user/group/panel edits, expiry review, panel removal) keep full semantics.
+    """
+    from app.operation.access_control import check_user_access_allowed
+
+    # Determine user access
+    access_allowed = await check_user_access_allowed(db_user, db_session)
+    if access_allowed:
+        inbounds = _inbounds_from_loaded_groups(db_user)
+        if inbounds is None:
+            inbounds = await db_user.inbounds()
+        
+        buckets = _bucket_inbounds(inbounds)
+        active_panel_ids = {p for p in buckets.keys() if p is not None and buckets[p]}
+    else:
+        active_panel_ids = set()
+        buckets = {}
+
+    # Load existing mappings
+    existing_mappings = (await db_session.execute(
+        select(OCUserMapping).where(OCUserMapping.user_id == db_user.id)
+    )).scalars().all()
+    
+    existing_panel_ids = {m.panel_id: m for m in existing_mappings}
+
+    from app.services.oc_reconcile import DesiredPanelState
+
+    desired_panel_ids: set[int] = set()
+
+    for panel_id in active_panel_ids:
+        if not await tenant_panel_allows_oc_user_mutations(db_session, panel_id):
+            continue
+
+        panel_row = await db_session.get(OCPanel, panel_id)
+        if panel_row is not None and not _user_panel_workspace_compatible(db_user, panel_row):
+            continue
+
+        tags = buckets.get(panel_id) or []
+        configs = await resolve_desired_config_ids_for_panel(db_session, panel_id, tags)
+        sync_keys = await resolve_desired_sync_keys_for_panel(db_session, panel_id, tags)
+        from app.services.oc_share_link import parse_destination_tag
+
+        has_destination_host_tags = any(parse_destination_tag(t) for t in tags)
+        if not sync_keys and not has_destination_host_tags:
+            mapping = existing_panel_ids.get(panel_id)
+            if mapping is not None:
+                action = classify_mapping_action(
+                    mapping,
+                    DesiredPanelState(panel_id=panel_id, desired_active=False, config_ids=frozenset()),
+                )
+                if action == ReconcileAction.DELETE:
+                    # The user still holds host tags for this panel but none resolve to configs:
+                    # an incomplete/empty catalog or transient inconsistency, not an intentional removal.
+                    _log_reconcile_action(
+                        ReconcileAction.SKIP,
+                        user_id=db_user.id,
+                        panel_id=panel_id,
+                        mapping_id=mapping.id,
+                        external_user_id=mapping.external_user_id,
+                        reason="empty_desired_configs_keep_remote_user",
+                    )
+            continue
+
+        desired_panel_ids.add(panel_id)
+        desired_set = normalize_config_set(sync_keys)
+        mapping = existing_panel_ids.get(panel_id)
+        is_new_mapping = False
+        forced = bool(force_panel_ids and panel_id in force_panel_ids)
+        resolved_payload: dict[str, Any] | None = None
+        if mapping is None:
+            # A brand-new seller account must never be created before its groups are known.
+            resolved_payload, group_decision = await resolve_oc_user_group_payload(
+                db_session, user_id=db_user.id, panel_id=panel_id, config_ids=configs
+            )
+            if group_decision.blocked:
+                _log_group_selection_blocked(db_user.id, panel_id, group_decision)
+                continue
+        if not mapping:
+            mapping = OCUserMapping(
+                user_id=db_user.id,
+                panel_id=panel_id,
+                external_user_id=str(uuid.uuid4()),
+                status=OC_MAPPING_STATUS_PENDING,
+            )
+            db_session.add(mapping)
+            await db_session.flush()
+            existing_panel_ids[panel_id] = mapping
+            is_new_mapping = True
+
+        if (
+            periodic_reconcile
+            and not is_new_mapping
+            and mapping.last_synced_configs is not None
+            and mapping.last_synced_configs == []
+        ):
+            _log_reconcile_action(
+                ReconcileAction.SKIP,
+                user_id=db_user.id,
+                panel_id=panel_id,
+                mapping_id=mapping.id,
+                external_user_id=mapping.external_user_id,
+                reason="empty_last_synced_configs_deferred_for_manual_repair",
+            )
+            continue
+
+        # The panel's import selection changed (or a previous group update failed) since the groups were
+        # last applied to this seller account: queue the update even though the configs are unchanged.
+        # Accounts whose applied groups are unknown (NULL) are not treated as drift (no surprise bulk resync).
+        group_drift_detected = False
+        if not is_new_mapping and mapping.last_synced_group_ids is not None:
+            drift_payload, drift_decision = await resolve_oc_user_group_payload(
+                db_session, user_id=db_user.id, panel_id=panel_id, config_ids=configs
+            )
+            if drift_decision.blocked:
+                _log_group_selection_blocked(db_user.id, panel_id, drift_decision)
+            elif group_drift(mapping.last_synced_group_ids, drift_decision.groups):
+                group_drift_detected = True
+                resolved_payload = drift_payload
+
+        action = classify_mapping_action(
+            mapping,
+            DesiredPanelState(panel_id=panel_id, desired_active=True, config_ids=desired_set),
+        )
+        if action == ReconcileAction.NOOP and not forced and not group_drift_detected:
+            continue
+
+        last_configs = mapping.last_synced_configs
+        if last_configs is not None:
+            last_configs = sorted(last_configs)
+
+        needs_sync = (
+            is_new_mapping
+            or last_configs is None
+            or mapping.status != OC_MAPPING_STATUS_ACTIVE
+            or normalize_config_set(last_configs) != desired_set
+            or mapping_needs_subscription_url_repair(mapping, desired_set)
+            or forced
+            or group_drift_detected
+        )
+        if not needs_sync:
+            continue
+
+        if resolved_payload is None:
+            resolved_payload, group_decision = await resolve_oc_user_group_payload(
+                db_session, user_id=db_user.id, panel_id=panel_id, config_ids=configs
+            )
+            if group_decision.blocked:
+                # Existing account keeps its current state; nothing is queued or mutated.
+                _log_group_selection_blocked(db_user.id, panel_id, group_decision)
+                continue
+
+        log_action = (
+            ReconcileAction.CREATE
+            if action in (ReconcileAction.CREATE, ReconcileAction.REPAIR)
+            and is_new_mapping
+            else action
+        )
+        if action == ReconcileAction.REPAIR:
+            log_action = ReconcileAction.REPAIR
+        _log_reconcile_action(
+            log_action,
+            user_id=db_user.id,
+            panel_id=panel_id,
+            mapping_id=mapping.id,
+            external_user_id=mapping.external_user_id,
+            reason=f"status={mapping.status} configs={sorted(desired_set)}",
+        )
+
+        if mapping.status != OC_MAPPING_STATUS_ACTIVE:
+            mapping.status = OC_MAPPING_STATUS_PENDING
+        entity_id = f"{db_user.id}_{panel_id}"
+
+        pending_job = (
+            await db_session.execute(
+                select(OCSyncState).where(
+                    OCSyncState.entity_type == "user_mapping",
+                    OCSyncState.entity_id == entity_id,
+                    OCSyncState.status == "pending",
+                )
+            )
+        ).scalars().first()
+
+        operation = resolve_oc_sync_operation(
+            mapping, is_new_mapping=is_new_mapping, last_configs=last_configs
+        )
+        payload = resolved_payload
+        payload["sync_keys"] = sorted(sync_keys)
+        payload["destination_sync_keys"] = await resolve_destination_config_ids_for_panel_tags(
+            db_session, panel_id, tags
+        )
+
+        prior_rotation_payload: dict[str, Any] | None = None
+        if pending_job:
+            prior_rotation_payload = pending_job.payload
+        else:
+            last_failed = (
+                await db_session.execute(
+                    select(OCSyncState)
+                    .where(
+                        OCSyncState.entity_type == "user_mapping",
+                        OCSyncState.entity_id == entity_id,
+                        OCSyncState.status == "failed",
+                    )
+                    .order_by(OCSyncState.id.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
+            if last_failed and last_failed.payload:
+                prior_rotation_payload = last_failed.payload
+        payload = merge_identity_rotation_payload(payload, prior_payload=prior_rotation_payload)
+
+        if pending_job:
+            if pending_job.operation == "delete":
+                pending_job.operation = operation
+            pending_job.payload = payload
+            pending_job.revision += 1
+        else:
+            job = OCSyncState(
+                entity_type="user_mapping",
+                entity_id=entity_id,
+                operation=operation,
+                idempotency_key=f"sync_{db_user.id}_{panel_id}_{uuid.uuid4()}",
+                payload=payload,
+                status="pending",
+            )
+            db_session.add(job)
+
+    for panel_id, mapping in existing_panel_ids.items():
+        if panel_id in desired_panel_ids:
+            continue
+        if panel_id in active_panel_ids:
+            continue
+        action = classify_mapping_action(
+            mapping,
+            DesiredPanelState(panel_id=panel_id, desired_active=False, config_ids=frozenset()),
+        )
+        if action == ReconcileAction.DELETE:
+            if periodic_reconcile and not await _explicit_loss_of_access(db_session, db_user, access_allowed):
+                _log_reconcile_action(
+                    ReconcileAction.SKIP,
+                    user_id=db_user.id,
+                    panel_id=panel_id,
+                    mapping_id=mapping.id,
+                    external_user_id=mapping.external_user_id,
+                    reason="panel_not_desired_unexplained_by_user_or_group_state",
+                )
+                continue
+            _log_reconcile_action(
+                action,
+                user_id=db_user.id,
+                panel_id=panel_id,
+                mapping_id=mapping.id,
+                external_user_id=mapping.external_user_id,
+                reason="panel_not_desired",
+            )
+            await enqueue_mapping_delete_sync(db_session, db_user.id, panel_id, mapping)
+
+def oc_panel_status_to_sync_status(oc_status: Any) -> str:
+    """OC reports ACTIVE / SUSPENDED / OFFLINE_BY_SYSTEM (any case)."""
+    return "connected" if str(oc_status or "").strip().lower() == "active" else OC_PANEL_STATUS_INACTIVE
+
+
+def _clean(value: Any) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+async def sync_panel_from_outbound_center(db_session: AsyncSession, panel_id: int):
+    """
+    Synchronizes an already imported panel with Outbound Center using the tenant's
+    account-scoped connection credential.
+
+    OC is the source of truth for: panel status, groups (id/name) and configs
+    (id/name/protocol/network/group mapping). PasarGuard only adds local selection state.
+    """
+    from datetime import UTC, datetime as dt
+
+    from sqlalchemy.orm import selectinload
+
+    from app.services.oc_connection_credentials import connection_token_for_panel
+    from app.services.oc_integration_client import OcIntegrationApiError, call_oc_api
+
+    panel = (await db_session.execute(
+        select(OCPanel)
+        .options(
+            selectinload(OCPanel.integration),
+            selectinload(OCPanel.groups),
+            selectinload(OCPanel.configs)
+        )
+        .where(OCPanel.id == panel_id)
+        .with_for_update()
+    )).scalar_one_or_none()
+
+    if not panel:
+        raise ValueError(f"Panel {panel_id} not found")
+
+    integration = panel.integration
+    if not integration or not integration.is_active:
+        raise ValueError(f"Integration not active for panel {panel_id}")
+
+    token = await connection_token_for_panel(db_session, panel)
+    base = f"/v1/integration/panels/{panel.source_panel_id}"
+
+    # A. Panel metadata sync (readable even when the panel is inactive on OC)
+    try:
+        panel_data = await call_oc_api(integration, "GET", base, connection_token=token)
+    except OcIntegrationApiError as exc:
+        if exc.code == "CONNECTION_REVOKED":
+            panel.sync_status = OC_PANEL_STATUS_CONNECTION_REVOKED
+            await db_session.commit()
+        raise
+    status_value = oc_panel_status_to_sync_status((panel_data or {}).get("status"))
+    panel.sync_status = status_value
+    panel.last_sync_at = dt.now(UTC)
+    if status_value != "connected":
+        # Inactive on OC: keep what we have, stop here. Mappings stay as they are; the
+        # worker/enqueue paths skip blocked panels until a later sync sees it ACTIVE again.
+        await db_session.commit()
+        return
+
+    # B. Group sync
+    group_data = await call_oc_api(integration, "GET", f"{base}/groups", connection_token=token)
+    oc_groups = group_data.get("groups", [])
+
+    existing_groups = {g.source_group_id: g for g in panel.groups}
+
+    for g_data in oc_groups:
+        g_id = str(g_data["id"])
+        g_name = str(g_data["name"])
+
+        if g_id in existing_groups:
+            existing_groups[g_id].source_name = g_name
+        else:
+            new_group = OCPanelGroup(
+                panel_id=panel.id,
+                source_group_id=g_id,
+                source_name=g_name,
+                is_selected=False  # Safe default for new groups
+            )
+            db_session.add(new_group)
+            panel.groups.append(new_group)
+            existing_groups[g_id] = new_group
+
+    await db_session.flush()
+
+    # C. Config sync
+    config_data = await call_oc_api(integration, "GET", f"{base}/configs", connection_token=token)
+    oc_configs = config_data.get("configs", [])
+
+    existing_configs = {c.source_config_id: c for c in panel.configs}
+    oc_config_ids = set()
+
+    from app.services.oc_panel_materialization import upsert_oc_panel_config_row
+
+    existing_group_by_source = existing_groups
+    for c_data in oc_configs:
+        c_id = str(c_data["id"])
+        oc_config_ids.add(c_id)
+        await upsert_oc_panel_config_row(
+            db_session,
+            panel=panel,
+            c_data=c_data,
+            existing_configs=existing_configs,
+            existing_group_by_source=existing_group_by_source,
+        )
+
+    for c_id, pc in existing_configs.items():
+        if c_id not in oc_config_ids:
+            pc.source_missing = True
+            tag = pc.virtual_inbound_tag
+            if tag:
+                host = (
+                    await db_session.execute(select(ProxyHost).where(ProxyHost.inbound_tag == tag))
+                ).scalar_one_or_none()
+                if host is not None:
+                    host.is_disabled = True
+
+    from app.services.oc_panel_host_subscription import refresh_panel_hosts_from_discovery_subscription
+
+    if panel.test_user_id:
+        try:
+            await refresh_panel_hosts_from_discovery_subscription(db_session, panel)
+        except Exception:
+            logger.exception("oc_discovery_host_refresh_failed panel_id=%s", panel.id)
+
+    from app.services.oc_panel_destination_hosts import ensure_panel_destination_hosts_materialized
+
+    try:
+        await ensure_panel_destination_hosts_materialized(db_session, panel)
+    except Exception:
+        logger.exception("oc_destination_host_repair_failed panel_id=%s", panel.id)
+
+    await db_session.commit()

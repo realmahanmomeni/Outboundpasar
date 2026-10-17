@@ -1,15 +1,14 @@
 from app.models.api_key import APIKeyResponse
-from app.models.settings import NotificationSettings
 from app.notification.client import send_discord_webhook
 from app.notification.helpers import get_discord_webhook
-from app.settings import notification_settings
+from app.notification.delivery_scope import notification_settings_for_delivery
 
 from . import colors, messages
 
 ENTITY = "api_key"
 
 
-async def create_api_key(api_key: APIKeyResponse, admin_username: str, by: str):
+async def create_api_key(api_key: APIKeyResponse, admin_username: str, by: str, *, delivery_workspace_id: int | None = None):
     data = messages.CREATE_API_KEY.copy()
     data["description"] = data["description"].format(
         name=api_key.name,
@@ -22,13 +21,13 @@ async def create_api_key(api_key: APIKeyResponse, admin_username: str, by: str):
     )
     data["color"] = colors.GREEN
 
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_discord:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_discord:
         webhook_url = get_discord_webhook(settings, ENTITY)
-        await send_discord_webhook(data, webhook_url)
+        await send_discord_webhook(data, webhook_url, delivery_workspace_id=delivery_workspace_id)
 
 
-async def modify_api_key(api_key: APIKeyResponse, admin_username: str, by: str):
+async def modify_api_key(api_key: APIKeyResponse, admin_username: str, by: str, *, delivery_workspace_id: int | None = None):
     data = messages.MODIFY_API_KEY.copy()
     data["description"] = data["description"].format(
         name=api_key.name,
@@ -42,13 +41,13 @@ async def modify_api_key(api_key: APIKeyResponse, admin_username: str, by: str):
     )
     data["color"] = colors.BLUE
 
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_discord:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_discord:
         webhook_url = get_discord_webhook(settings, ENTITY)
-        await send_discord_webhook(data, webhook_url)
+        await send_discord_webhook(data, webhook_url, delivery_workspace_id=delivery_workspace_id)
 
 
-async def remove_api_key(api_key: APIKeyResponse, admin_username: str, by: str):
+async def remove_api_key(api_key: APIKeyResponse, admin_username: str, by: str, *, delivery_workspace_id: int | None = None):
     data = messages.REMOVE_API_KEY.copy()
     data["description"] = data["description"].format(
         name=api_key.name,
@@ -60,7 +59,7 @@ async def remove_api_key(api_key: APIKeyResponse, admin_username: str, by: str):
     )
     data["color"] = colors.RED
 
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_discord:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_discord:
         webhook_url = get_discord_webhook(settings, ENTITY)
-        await send_discord_webhook(data, webhook_url)
+        await send_discord_webhook(data, webhook_url, delivery_workspace_id=delivery_workspace_id)

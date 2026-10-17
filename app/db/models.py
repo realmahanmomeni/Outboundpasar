@@ -1,4 +1,5 @@
 import os
+import secrets
 from datetime import UTC, datetime as dt
 from enum import Enum
 from typing import Any
@@ -12,6 +13,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Numeric,
     String,
     Table,
     Text,
@@ -65,12 +67,48 @@ class AdminStatus(str, Enum):
     limited = "limited"
 
 
+class TenantStatus(str, Enum):
+    active = "active"
+    disabled = "disabled"
+
+
 class IdMixin:
     id: Mapped[int] = mapped_column(SqliteCompatibleBigInteger, primary_key=True, init=False, autoincrement=True)
 
 
 class CreatedAtUTCMixin(IdMixin):
     created_at: Mapped[dt] = mapped_column(DateTime(timezone=True), default_factory=lambda: dt.now(UTC), init=False)
+
+
+class Tenant(Base, CreatedAtUTCMixin):
+    __tablename__ = "tenants"
+    name: Mapped[str] = mapped_column(String(128))
+    status: Mapped[TenantStatus] = mapped_column(
+        SQLEnum(TenantStatus, name="tenantstatus", create_constraint=True),
+        default=TenantStatus.active,
+        server_default="active",
+    )
+    admins: Mapped[list["Admin"]] = relationship(back_populates="tenant", init=False, default_factory=list)
+
+
+class Workspace(Base, CreatedAtUTCMixin):
+    """Private data boundary for one tenant Administrator and their Operators."""
+
+    __tablename__ = "workspaces"
+    __table_args__ = (UniqueConstraint("owner_admin_id", name="uq_workspaces_owner_admin_id"),)
+
+    tenant_id: Mapped[int] = fk_id_column("tenants.id", ondelete="CASCADE")
+    owner_admin_id: Mapped[int] = fk_id_column("admins.id", ondelete="RESTRICT")
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
+    )
+
+    tenant: Mapped[Tenant] = relationship(init=False, lazy="select")
+    owner_admin: Mapped["Admin"] = relationship(
+        foreign_keys=[owner_admin_id],
+        init=False,
+        lazy="select",
+    )
 
 
 class Admin(Base, CreatedAtUTCMixin):
@@ -86,6 +124,15 @@ class Admin(Base, CreatedAtUTCMixin):
     )
     api_keys: Mapped[list[APIKey]] = relationship(
         back_populates="admin", init=False, default_factory=list, cascade="all, delete-orphan"
+    )
+
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(back_populates="admins", init=False, lazy="select")
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
     )
 
     password_reset_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
@@ -198,6 +245,12 @@ class User(Base, CreatedAtUTCMixin):
         Index("idx_users_admin_created", "admin_id", "created_at"),
     )
     username: Mapped[str] = mapped_column(CaseSensitiveString(128), unique=True, index=True)
+    sub_token: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        default_factory=lambda: secrets.token_hex(16),
+    )
     node_usages: Mapped[list[NodeUserUsage]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
@@ -228,6 +281,12 @@ class User(Base, CreatedAtUTCMixin):
     )
     _expire: Mapped[dt | None] = mapped_column("expire", DateTime(timezone=True), default=None, init=False)
     admin_id: Mapped[int | None] = fk_id_column("admins.id", default=None)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
     sub_revoked_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
     note: Mapped[str | None] = mapped_column(String(500), default=None)
     online_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
@@ -468,7 +527,8 @@ class UserStatusCreate(str, Enum):
 
 class UserTemplate(Base, IdMixin):
     __tablename__ = "user_templates"
-    name: Mapped[str] = mapped_column(String(64), unique=True)
+    __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_user_templates_workspace_id_name"),)
+    name: Mapped[str] = mapped_column(String(64))
     username_prefix: Mapped[str | None] = mapped_column(String(20))
     username_suffix: Mapped[str | None] = mapped_column(String(20))
     extra_settings: Mapped[dict | None] = mapped_column(JSON(True))
@@ -488,10 +548,68 @@ class UserTemplate(Base, IdMixin):
         server_default="no_reset",
     )
     is_disabled: Mapped[bool] = mapped_column(server_default="0", default=False)
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(init=False)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
 
     @property
     def group_ids(self):
         return [group.id for group in self.groups]
+
+
+class SubscriptionExperienceTemplate(Base, CreatedAtUTCMixin):
+    """Workspace-scoped subscription page appearance (Phase 3-C)."""
+
+    __tablename__ = "subscription_experience_templates"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "name", name="uq_subscription_experience_templates_workspace_name"),
+    )
+
+    name: Mapped[str] = mapped_column(String(128))
+    workspace_id: Mapped[int] = fk_id_column("workspaces.id", ondelete="CASCADE")
+    is_enabled: Mapped[bool] = mapped_column(default=True, server_default="1")
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    title: Mapped[str | None] = mapped_column(String(512), default=None)
+    description: Mapped[str | None] = mapped_column(Text(), default=None)
+    logo_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    theme: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), default=None)
+    support_links: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON(none_as_null=True), default=None)
+    footer_text: Mapped[str | None] = mapped_column(Text(), default=None)
+    custom_blocks: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON(none_as_null=True), default=None)
+
+
+class SubscriptionBrandingProfile(Base, CreatedAtUTCMixin):
+    """Per-workspace white-label branding for subscription pages (Phase 3-D)."""
+
+    __tablename__ = "subscription_branding_profiles"
+    __table_args__ = (UniqueConstraint("workspace_id", name="uq_subscription_branding_profiles_workspace_id"),)
+
+    workspace_id: Mapped[int] = fk_id_column("workspaces.id", ondelete="CASCADE")
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    created_by_admin_id: Mapped[int | None] = fk_id_column("admins.id", ondelete="SET NULL", default=None)
+    brand_name: Mapped[str | None] = mapped_column(String(256), default=None)
+    logo_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    support_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    telegram_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    welcome_message: Mapped[str | None] = mapped_column(Text(), default=None)
+    footer_text: Mapped[str | None] = mapped_column(Text(), default=None)
+    primary_color: Mapped[str | None] = mapped_column(String(64), default=None)
+    secondary_color: Mapped[str | None] = mapped_column(String(64), default=None)
+    favicon_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    custom_css: Mapped[str | None] = mapped_column(Text(), default=None)
+    support_text: Mapped[str | None] = mapped_column(Text(), default=None)
+    customer_footer: Mapped[str | None] = mapped_column(Text(), default=None)
+    hide_platform_branding: Mapped[bool] = mapped_column(default=False, server_default="0")
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: dt.now(UTC),
+        onupdate=lambda: dt.now(UTC),
+    )
 
 
 class UserUsageResetLogs(Base, IdMixin):
@@ -581,6 +699,12 @@ class ProxyHost(Base, IdMixin):
         server_default=ProxyHostSecurity.none.name,
     )
     is_disabled: Mapped[bool | None] = mapped_column(default=False)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
     fragment_settings: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), default=None)
     noise_settings: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), default=None)
     random_user_agent: Mapped[bool] = mapped_column(default=False, server_default="0")
@@ -599,6 +723,8 @@ class ProxyHost(Base, IdMixin):
     subscription_templates: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), default=None)
     final_mask_settings: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), default=None)
     cipher_suites: Mapped[str | None] = mapped_column(String(1024), default=None)
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(init=False)
 
 
 class System(Base, IdMixin):
@@ -808,6 +934,14 @@ class Group(Base, IdMixin):
         secondary=template_group_association, back_populates="groups", init=False
     )
     is_disabled: Mapped[bool] = mapped_column(server_default="0", default=False)
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(init=False)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
 
     @hybrid_property
     def inbound_ids(self) -> list[int]:
@@ -887,7 +1021,7 @@ class WireGuardSubnet(Base, IdMixin):
 class ClientTemplate(Base, IdMixin):
     __tablename__ = "client_templates"
     __table_args__ = (
-        UniqueConstraint("template_type", "name"),
+        UniqueConstraint("workspace_id", "template_type", "name", name="uq_client_templates_workspace_type_name"),
         Index("ix_client_templates_template_type", "template_type"),
     )
     name: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -895,6 +1029,14 @@ class ClientTemplate(Base, IdMixin):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     is_default: Mapped[bool] = mapped_column(default=False, server_default="0")
     is_system: Mapped[bool] = mapped_column(default=False, server_default="0")
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(init=False)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="SET NULL", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
 
 
 class NodeStat(Base, CreatedAtUTCMixin):
@@ -918,6 +1060,14 @@ class Settings(Base, IdMixin):
     subscription: Mapped[dict] = mapped_column(JSON())
     hwid: Mapped[dict] = mapped_column(JSON())
     general: Mapped[dict] = mapped_column(JSON())
+    tenant_id: Mapped[int | None] = fk_id_column("tenants.id", default=None)
+    tenant: Mapped[Tenant | None] = relationship(init=False)
+    workspace_id: Mapped[int | None] = fk_id_column("workspaces.id", ondelete="CASCADE", default=None)
+    workspace: Mapped[Workspace | None] = relationship(
+        foreign_keys=[workspace_id],
+        init=False,
+        lazy="select",
+    )
 
 
 class AdminRole(Base, CreatedAtUTCMixin):
@@ -1005,3 +1155,105 @@ class TempKey(Base):
     expires_at: Mapped[dt] = mapped_column(DateTime(timezone=True))
     used_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
     used_by_ip: Mapped[str | None] = mapped_column(String(45), default=None)
+
+
+class SubscriptionDomainKind(str, Enum):
+    arbitrary = "arbitrary"
+    oc_managed = "oc_managed"
+
+
+class SubscriptionCustomDomainState(str, Enum):
+    pending_verification = "pending_verification"
+    verified = "verified"
+    pending_certificate = "pending_certificate"
+    active = "active"
+    renewal_pending = "renewal_pending"
+    failed = "failed"
+    disabled = "disabled"
+
+
+class SubscriptionCustomDomain(Base, CreatedAtUTCMixin):
+    """Per-workspace custom hostname for subscription pages (Phase 3-B)."""
+
+    __tablename__ = "subscription_custom_domains"
+    __table_args__ = (
+        UniqueConstraint("hostname_normalized", name="uq_subscription_custom_domains_hostname"),
+        Index("ix_subscription_custom_domains_workspace_id", "workspace_id"),
+    )
+
+    workspace_id: Mapped[int] = fk_id_column("workspaces.id", ondelete="CASCADE")
+    tenant_id: Mapped[int] = fk_id_column("tenants.id", ondelete="CASCADE")
+    hostname_normalized: Mapped[str] = mapped_column(String(253))
+    domain_kind: Mapped[str] = mapped_column(String(32), default=SubscriptionDomainKind.arbitrary.value, server_default="arbitrary")
+    oc_subdomain_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    oc_subdomain_label: Mapped[str | None] = mapped_column(String(63), default=None)
+    oc_owner_account_id: Mapped[int | None] = mapped_column(default=None)
+    oc_last_validated_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
+    state: Mapped[SubscriptionCustomDomainState] = mapped_column(
+        SQLEnum(
+            SubscriptionCustomDomainState,
+            name="subscriptioncustomdomainstate",
+            create_constraint=True,
+            values_callable=lambda enum: [e.value for e in enum],
+            native_enum=False,
+        ),
+        default=SubscriptionCustomDomainState.pending_verification,
+        server_default="pending_verification",
+    )
+    verification_token_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    verification_expires_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
+    verified_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
+    certificate_ref: Mapped[str | None] = mapped_column(String(128), default=None)
+    certificate_not_after: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
+    certificate_last_error: Mapped[str | None] = mapped_column(String(512), default=None)
+    certificate_issue_attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    certificate_issue_locked_until: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
+    )
+
+
+class ManagedSubdomainBotBindingStatus(str, Enum):
+    pending_claim = "pending_claim"
+    claimed = "claimed"
+    revoked = "revoked"
+
+
+class IntegrationApiNonce(Base):
+    __tablename__ = "integration_api_nonces"
+
+    nonce_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[dt] = mapped_column(DateTime(timezone=True))
+
+
+class ManagedSubdomainBotBinding(Base, CreatedAtUTCMixin):
+    """Pre-registered managed subdomain from Outbound Center bot (awaiting panel admin confirmation)."""
+
+    __tablename__ = "managed_subdomain_bot_bindings"
+    __table_args__ = (
+        UniqueConstraint("label", name="uq_managed_subdomain_bot_bindings_label"),
+        UniqueConstraint("idempotency_key", name="uq_managed_subdomain_bot_bindings_idempotency_key"),
+        Index("ix_managed_subdomain_bot_bindings_workspace_id", "workspace_id"),
+    )
+
+    tenant_id: Mapped[int] = fk_id_column("tenants.id", ondelete="CASCADE")
+    workspace_id: Mapped[int] = fk_id_column("workspaces.id", ondelete="CASCADE")
+    binding_admin_id: Mapped[int] = fk_id_column("admins.id", ondelete="CASCADE")
+    label: Mapped[str] = mapped_column(String(63))
+    fqdn: Mapped[str] = mapped_column(String(253))
+    oc_subdomain_id: Mapped[str] = mapped_column(String(128))
+    oc_account_id: Mapped[int] = mapped_column()
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default=ManagedSubdomainBotBindingStatus.pending_claim.value,
+        server_default="pending_claim",
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), default=None)
+    revoked_at: Mapped[dt | None] = mapped_column(DateTime(timezone=True), default=None)
+    updated_at: Mapped[dt] = mapped_column(
+        DateTime(timezone=True), default_factory=lambda: dt.now(UTC), onupdate=lambda: dt.now(UTC), init=False
+    )
+
+
+# Import OC integration models so Alembic can discover them
+import app.db.models_oc  # noqa: F401

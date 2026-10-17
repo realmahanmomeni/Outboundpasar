@@ -15,6 +15,7 @@ from app.db.models import (
     NodeUsage,
     NodeUsageResetLogs,
     NodeUserUsage,
+    User,
 )
 from app.models.node import (
     NodeCreate,
@@ -33,6 +34,7 @@ from .general import (
     _build_trunc_expression,
     _get_next_period_boundary,
     attach_timezone_to_period_start,
+    get_complete_period_start_for_filter,
     to_utc_for_filter,
 )
 
@@ -250,26 +252,26 @@ async def get_nodes_usage(
     period: Period,
     node_id: int | None = None,
     group_by_node: bool = False,
+    workspace_id: int | None = None,
 ) -> NodeUsageStatsList:
     """
     Retrieves usage data for all nodes within a specified time range.
     Groups data by periods in the timezone of the start/end parameters.
 
-    Only includes COMPLETE period buckets. If start is not aligned to a period
-    boundary (e.g., 14:02:37 for hourly grouping), the partial first bucket
-    is excluded (14:00-15:00 would be excluded, 15:00-16:00 would be first bucket).
-
-    Args:
-        db (AsyncSession): The database session.
-        start (datetime): The start time of the usage period (timezone-aware).
-        end (datetime): The end time of the usage period (timezone-aware).
-        period (Period): The time period for grouping (minute, hour, day, month).
-        node_id (Optional[int]): Filter by specific node ID.
-        group_by_node (bool): Whether to group results by node.
-
-    Returns:
-        NodeUsageStatsList: A NodeUsageStatsList contain list of NodeUsageResponse objects containing usage data.
+    When ``workspace_id`` is set, aggregates attributed user traffic (``node_user_usages``)
+    for users in that workspace instead of global node counters.
     """
+    if workspace_id is not None:
+        return await _get_nodes_workspace_user_usage(
+            db,
+            start,
+            end,
+            period,
+            node_id=node_id,
+            group_by_node=group_by_node,
+            workspace_id=workspace_id,
+        )
+
     # Get database dialect for later use
     dialect = db.bind.dialect.name
 
@@ -344,6 +346,70 @@ async def get_nodes_usage(
         if node_id_val not in stats:
             stats[node_id_val] = []
         stats[node_id_val].append(NodeUsageStat(**row_dict))
+
+    return NodeUsageStatsList(period=period, start=start, end=end, stats=stats)
+
+
+async def _get_nodes_workspace_user_usage(
+    db: AsyncSession,
+    start: datetime,
+    end: datetime,
+    period: Period,
+    *,
+    node_id: int | None,
+    group_by_node: bool,
+    workspace_id: int,
+) -> NodeUsageStatsList:
+    """Workspace-scoped node usage from per-user traffic rows."""
+    dialect = db.bind.dialect.name
+    trunc_expr = _build_trunc_expression(db, period, NodeUserUsage.created_at, start)
+    start_utc = get_complete_period_start_for_filter(start, period)
+    end_utc = to_utc_for_filter(end)
+    conditions = [
+        NodeUserUsage.created_at >= start_utc,
+        NodeUserUsage.created_at < end_utc,
+        User.workspace_id == workspace_id,
+    ]
+    stats_key = node_id
+    if node_id is not None:
+        conditions.append(NodeUserUsage.node_id == node_id)
+    else:
+        stats_key = -1
+
+    from_clause = NodeUserUsage.__table__.join(User, User.id == NodeUserUsage.user_id)
+    traffic_sum = func.sum(NodeUserUsage.used_traffic)
+
+    if group_by_node:
+        stmt = (
+            select(
+                trunc_expr.label("period_start"),
+                func.coalesce(NodeUserUsage.node_id, 0).label("node_id"),
+                traffic_sum.label("downlink"),
+            )
+            .select_from(from_clause)
+            .where(and_(*conditions))
+            .group_by(trunc_expr, NodeUserUsage.node_id)
+            .order_by(trunc_expr, NodeUserUsage.node_id)
+        )
+    else:
+        stmt = (
+            select(trunc_expr.label("period_start"), traffic_sum.label("downlink"))
+            .select_from(from_clause)
+            .where(and_(*conditions))
+            .group_by(trunc_expr)
+            .order_by(trunc_expr)
+        )
+
+    result = await db.execute(stmt)
+    stats: dict[int, list[NodeUsageStat]] = {}
+    for row in result.mappings():
+        row_dict = dict(row)
+        node_id_val = row_dict.pop("node_id", stats_key)
+        downlink = int(row_dict.pop("downlink") or 0)
+        row_dict["downlink"] = downlink
+        row_dict["uplink"] = 0
+        attach_timezone_to_period_start(row_dict, start.tzinfo, dialect)
+        stats.setdefault(node_id_val, []).append(NodeUsageStat(**row_dict))
 
     return NodeUsageStatsList(period=period, start=start, end=end, stats=stats)
 

@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+WebhookScopeAuthorization = Literal["global"]
+
 from app.nats import is_nats_enabled
 from app.notification.nats_queue import InMemoryNotificationQueue, NatsNotificationQueue, NotificationQueue
 from config import nats_settings, runtime_settings
@@ -15,6 +17,11 @@ class TelegramNotification(BaseModel):
     message: str
     chat_id: int | None = Field(default=None)
     topic_id: int | None = Field(default=None)
+    delivery_workspace_id: int | None = Field(default=None)
+    user_subject_id: int | None = Field(default=None)
+    admin_recipient_id: int | None = Field(default=None)
+    channel_event_kind: str | None = Field(default=None)
+    scope_authorization: WebhookScopeAuthorization | None = Field(default=None)
     tries: int = Field(default=0)
 
 
@@ -24,6 +31,11 @@ class DiscordNotification(BaseModel):
     type: Literal["discord"] = Field(default="discord")
     json_data: dict
     webhook: str
+    delivery_workspace_id: int | None = Field(default=None)
+    user_subject_id: int | None = Field(default=None)
+    admin_recipient_id: int | None = Field(default=None)
+    channel_event_kind: str | None = Field(default=None)
+    scope_authorization: WebhookScopeAuthorization | None = Field(default=None)
     tries: int = Field(default=0)
 
 
@@ -33,6 +45,8 @@ class WebhookNotification(BaseModel):
     type: Literal["webhook"] = Field(default="webhook")
     payload: dict  # the jsonable_encoder'd notification (what gets POSTed to webhook URLs)
     send_at: float  # when to send (for delayed retry)
+    delivery_workspace_id: int | None = Field(default=None)
+    scope_authorization: WebhookScopeAuthorization | None = Field(default=None)
     tries: int = Field(default=0)
 
 
@@ -116,25 +130,82 @@ def get_webhook_queue() -> NotificationQueue:
     return webhook_queue_instance
 
 
-async def enqueue_telegram(message: str, chat_id: int | None = None, topic_id: int | None = None) -> None:
+async def enqueue_telegram(
+    message: str,
+    chat_id: int | None = None,
+    topic_id: int | None = None,
+    *,
+    delivery_workspace_id: int | None = None,
+    user_subject_id: int | None = None,
+    admin_recipient_id: int | None = None,
+    channel_event_kind: str | None = None,
+    scope_authorization: WebhookScopeAuthorization | None = None,
+) -> None:
     """Add a Telegram notification to the queue"""
-    notification = TelegramNotification(message=message, chat_id=chat_id, topic_id=topic_id)
+    if delivery_workspace_id is not None:
+        scope_authorization = None
+    elif scope_authorization != "global":
+        scope_authorization = None
+    if user_subject_id is not None and scope_authorization == "global":
+        scope_authorization = None
+    notification = TelegramNotification(
+        message=message,
+        chat_id=chat_id,
+        topic_id=topic_id,
+        delivery_workspace_id=delivery_workspace_id,
+        user_subject_id=user_subject_id,
+        admin_recipient_id=admin_recipient_id,
+        channel_event_kind=channel_event_kind,
+        scope_authorization=scope_authorization,
+    )
     await get_queue().enqueue(notification.model_dump())
 
 
-async def enqueue_discord(json_data: dict, webhook: str) -> None:
+async def enqueue_discord(
+    json_data: dict,
+    webhook: str,
+    *,
+    delivery_workspace_id: int | None = None,
+    user_subject_id: int | None = None,
+    admin_recipient_id: int | None = None,
+    channel_event_kind: str | None = None,
+    scope_authorization: WebhookScopeAuthorization | None = None,
+) -> None:
     """Add a Discord notification to the queue"""
-    notification = DiscordNotification(json_data=json_data, webhook=webhook)
+    if delivery_workspace_id is not None:
+        scope_authorization = None
+    elif scope_authorization != "global":
+        scope_authorization = None
+    if user_subject_id is not None and scope_authorization == "global":
+        scope_authorization = None
+    notification = DiscordNotification(
+        json_data=json_data,
+        webhook=webhook,
+        delivery_workspace_id=delivery_workspace_id,
+        user_subject_id=user_subject_id,
+        admin_recipient_id=admin_recipient_id,
+        channel_event_kind=channel_event_kind,
+        scope_authorization=scope_authorization,
+    )
     await get_queue().enqueue(notification.model_dump())
 
 
-async def enqueue_webhook(payload: dict, send_at: float | None = None, tries: int = 0) -> None:
+async def enqueue_webhook(
+    payload: dict,
+    send_at: float | None = None,
+    tries: int = 0,
+    *,
+    delivery_workspace_id: int | None = None,
+    scope_authorization: WebhookScopeAuthorization | None = None,
+) -> None:
     """Add a webhook notification to the queue"""
     import time
 
     notification = WebhookNotification(
         payload=payload,
         send_at=send_at if send_at is not None else time.time(),
+        delivery_workspace_id=delivery_workspace_id,
+        scope_authorization=scope_authorization,
         tries=tries,
     )
     await get_webhook_queue().enqueue(notification.model_dump())

@@ -60,7 +60,7 @@ class XrayConfiguration(BaseSubscription):
     def add_config(self, remarks, outbounds, template_content: str | None = None):
         json_template = json.loads(template_content) if template_content is not None else self.template.copy()
         json_template["remarks"] = remarks
-        json_template["outbounds"] = outbounds + json_template["outbounds"]
+        json_template["outbounds"] = outbounds + list(json_template.get("outbounds") or [])
         self.config.append(json_template)
 
     def render(self):

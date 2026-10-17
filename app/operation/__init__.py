@@ -19,7 +19,7 @@ from app.db.crud import (
 )
 from app.db.crud.admin import get_admin_by_id
 from app.db.crud.group import get_groups_by_ids
-from app.db.crud.user import get_user_by_id
+from app.db.crud.user import get_user_by_id, get_user_by_sub_token
 from app.db.models import Admin as DBAdmin, ClientTemplate, CoreConfig, Group, Node, ProxyHost, User, UserTemplate
 from app.models.admin import AdminDetails
 from app.models.group import BulkGroup
@@ -133,8 +133,14 @@ class BaseOperation:
         except ValueError as e:
             await self.raise_error(message=f"Invalid date range or format: {e!s}", code=400)
 
-    async def get_validated_host(self, db: AsyncSession, host_id: int) -> ProxyHost:
-        db_host = await get_host_by_id(db, host_id)
+    async def get_validated_host(self, db: AsyncSession, host_id: int, admin=None) -> ProxyHost:
+        tenant_id = None
+        workspace_id = None
+        if admin is not None and not admin.is_owner:
+            from app.services.workspace_scope import resolve_tenant_workspace_scope
+
+            tenant_id, workspace_id = await resolve_tenant_workspace_scope(db, admin)
+        db_host = await get_host_by_id(db, host_id, tenant_id=tenant_id, workspace_id=workspace_id)
         if db_host is None:
             await self.raise_error(message="Host not found", code=404)
         return db_host
@@ -151,31 +157,54 @@ class BaseOperation:
         load_groups: bool = True,
         load_lifetime_used_traffic: bool = False,
     ) -> User:
-        sub = await get_subscription_payload(token)
+        load_kwargs = {
+            "load_admin": load_admin,
+            "load_admin_role": load_admin_role,
+            "load_next_plan": load_next_plan,
+            "load_usage_logs": load_usage_logs,
+            "load_groups": load_groups,
+            "load_lifetime_used_traffic": load_lifetime_used_traffic,
+        }
 
-        db_user = None
+        # First: Attempt stable-token lookup: User.sub_token == token
+        db_user = await get_user_by_sub_token(db, token, **load_kwargs)
+        if db_user:
+            return db_user
+
+        # Second: If the token is not a stable token, preserve existing legacy HMAC token validation behavior
+        sub = await get_subscription_payload(token)
         if sub:
-            load_kwargs = {
-                "load_admin": load_admin,
-                "load_admin_role": load_admin_role,
-                "load_next_plan": load_next_plan,
-                "load_usage_logs": load_usage_logs,
-                "load_groups": load_groups,
-                "load_lifetime_used_traffic": load_lifetime_used_traffic,
-            }
             if sub.get("user_id"):
                 db_user = await get_user_by_id(db, sub["user_id"], **load_kwargs)
             elif sub.get("username"):
                 db_user = await get_user(db, sub["username"], **load_kwargs)
 
-        if (
-            not db_user
-            or db_user.created_at.astimezone(UTC) > sub["created_at"]
-            or (db_user.sub_revoked_at and db_user.sub_revoked_at.astimezone(UTC) > sub["created_at"])
-        ):
-            await self.raise_error(message="Not Found", code=404)
+            if (
+                db_user
+                and db_user.created_at.astimezone(UTC) <= sub["created_at"]
+                and (not db_user.sub_revoked_at or db_user.sub_revoked_at.astimezone(UTC) <= sub["created_at"])
+            ):
+                return db_user
 
-        return db_user
+        await self.raise_error(message="Not Found", code=404)
+
+    async def _resolve_user_query_scope(
+        self,
+        db: AsyncSession,
+        admin: AdminDetails,
+        *,
+        scope_resource: str = "users",
+        scope_action: str = "read",
+    ) -> tuple[int | None, int | None, int | None]:
+        from app.services.tenant_admin_scope import tenant_id_for_actor_queries
+        from app.services.workspace_scope import resolve_admin_workspace_id
+
+        admin_id = get_scope_admin_id(admin, scope_resource, scope_action)
+        tenant_id = await tenant_id_for_actor_queries(db, admin)
+        workspace_id = None
+        if not admin.is_owner:
+            workspace_id = await resolve_admin_workspace_id(db, admin, False)
+        return admin_id, tenant_id, workspace_id
 
     async def get_validated_user(
         self,
@@ -192,6 +221,9 @@ class BaseOperation:
         scope_resource: str = "users",
         scope_action: str = "read",
     ) -> User:
+        admin_id, tenant_id, workspace_id = await self._resolve_user_query_scope(
+            db, admin, scope_resource=scope_resource, scope_action=scope_action
+        )
         db_user = await get_user(
             db,
             username,
@@ -201,7 +233,9 @@ class BaseOperation:
             load_groups=load_groups,
             join_groups=join_groups,
             load_lifetime_used_traffic=load_lifetime_used_traffic,
-            admin_id=get_scope_admin_id(admin, scope_resource, scope_action),
+            admin_id=admin_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
         )
         if not db_user:
             await self.raise_error(message="User not found", code=404)
@@ -222,6 +256,9 @@ class BaseOperation:
         scope_resource: str = "users",
         scope_action: str = "read",
     ) -> User:
+        admin_id, tenant_id, workspace_id = await self._resolve_user_query_scope(
+            db, admin, scope_resource=scope_resource, scope_action=scope_action
+        )
         db_user = await get_user_by_id(
             db,
             user_id,
@@ -231,26 +268,58 @@ class BaseOperation:
             load_groups=load_groups,
             join_groups=join_groups,
             load_lifetime_used_traffic=load_lifetime_used_traffic,
-            admin_id=get_scope_admin_id(admin, scope_resource, scope_action),
+            admin_id=admin_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
         )
         if not db_user:
             await self.raise_error(message="User not found", code=404)
         return db_user
 
-    async def get_validated_admin(self, db: AsyncSession, username: str) -> DBAdmin:
+    async def ensure_admin_tenant_access(
+        self, db: AsyncSession, db_admin: DBAdmin, current_admin: AdminDetails | None
+    ) -> None:
+        """Reject cross-tenant admin access for non-owner callers (404 to avoid leaking existence)."""
+        if current_admin is None or current_admin.is_owner:
+            return
+        from app.services.tenant_admin_scope import resolve_admin_tenant_id
+
+        caller_tenant_id = await resolve_admin_tenant_id(db, current_admin, False)
+        if caller_tenant_id is None or db_admin.tenant_id != caller_tenant_id:
+            await self.raise_error(message="Admin not found", code=404)
+        from app.services.workspace_scope import ensure_actor_admin_workspace_access
+
+        try:
+            await ensure_actor_admin_workspace_access(db, db_admin, current_admin, False)
+        except HTTPException:
+            await self.raise_error(message="Admin not found", code=404)
+
+    async def get_validated_admin(
+        self, db: AsyncSession, username: str, current_admin: AdminDetails | None = None
+    ) -> DBAdmin:
         db_admin = await get_admin(db, username)
         if not db_admin:
             await self.raise_error(message="Admin not found", code=404)
+        await self.ensure_admin_tenant_access(db, db_admin, current_admin)
         return db_admin
 
-    async def get_validated_admin_by_id(self, db: AsyncSession, id: int) -> DBAdmin:
+    async def get_validated_admin_by_id(
+        self, db: AsyncSession, id: int, current_admin: AdminDetails | None = None
+    ) -> DBAdmin:
         db_admin = await get_admin_by_id(db, id)
         if not db_admin:
             await self.raise_error(message="Admin not found", code=404)
+        await self.ensure_admin_tenant_access(db, db_admin, current_admin)
         return db_admin
 
-    async def get_validated_group(self, db: AsyncSession, group_id: int) -> Group:
-        db_group = await get_group_by_id(db, group_id)
+    async def get_validated_group(self, db: AsyncSession, group_id: int, admin: AdminDetails | None = None) -> Group:
+        tenant_id = None
+        workspace_id = None
+        if admin is not None and not admin.is_owner:
+            from app.services.workspace_scope import resolve_tenant_workspace_scope
+
+            tenant_id, workspace_id = await resolve_tenant_workspace_scope(db, admin)
+        db_group = await get_group_by_id(db, group_id, tenant_id=tenant_id, workspace_id=workspace_id)
         if not db_group:
             await self.raise_error("Group not found", 404)
         return db_group
@@ -283,7 +352,20 @@ class BaseOperation:
                     if group_id not in allowed_set and group_id not in grandfathered:
                         await self.raise_error("Group not found", 404)
 
-        groups = await get_groups_by_ids(db, unique_ids, load_users=False, load_inbounds=True)
+        tenant_id = None
+        workspace_id = None
+        if admin is not None and not admin.is_owner:
+            from app.services.workspace_scope import resolve_tenant_workspace_scope
+
+            tenant_id, workspace_id = await resolve_tenant_workspace_scope(db, admin)
+        groups = await get_groups_by_ids(
+            db,
+            unique_ids,
+            load_users=False,
+            load_inbounds=True,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
         groups_by_id = {group.id: group for group in groups}
 
         missing_ids = [group_id for group_id in unique_ids if group_id not in groups_by_id]
@@ -293,8 +375,24 @@ class BaseOperation:
         # Preserve the requested order and duplicate semantics.
         return [groups_by_id[group_id] for group_id in requested_group_ids]
 
-    async def get_validated_user_template(self, db: AsyncSession, template_id: int) -> UserTemplate:
-        dbuser_template = await get_user_template(db, template_id)
+    async def get_validated_user_template(
+        self,
+        db: AsyncSession,
+        template_id: int,
+        admin: AdminDetails | None = None,
+    ) -> UserTemplate:
+        tenant_id = None
+        workspace_id = None
+        if admin is not None and not admin.is_owner:
+            from app.services.workspace_scope import resolve_tenant_workspace_scope
+
+            tenant_id, workspace_id = await resolve_tenant_workspace_scope(db, admin)
+        dbuser_template = await get_user_template(
+            db,
+            template_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
         if not dbuser_template:
             await self.raise_error("User Template not found", 404)
         return dbuser_template
@@ -321,8 +419,21 @@ class BaseOperation:
             await self.raise_error(message="Core config not found", code=404)
         return db_core_config
 
-    async def get_validated_client_template(self, db: AsyncSession, template_id: int) -> ClientTemplate:
+    async def get_validated_client_template(
+        self,
+        db: AsyncSession,
+        template_id: int,
+        admin: AdminDetails | None = None,
+    ) -> ClientTemplate:
         db_client_template = await get_client_template_by_id(db, template_id)
         if not db_client_template:
             await self.raise_error(message="Client template not found", code=404)
+        if admin is not None and not admin.is_owner:
+            from app.services.workspace_scope import require_admin_workspace_id
+
+            workspace_id = await require_admin_workspace_id(db, admin, False)
+            if db_client_template.is_system and db_client_template.workspace_id is None:
+                return db_client_template
+            if db_client_template.workspace_id is None or db_client_template.workspace_id != workspace_id:
+                await self.raise_error(message="Client template not found", code=404)
         return db_client_template

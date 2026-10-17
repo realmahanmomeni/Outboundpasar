@@ -24,43 +24,8 @@ elif workers > 1:
 
 
 def check_and_modify_ip(ip_address: str) -> str:
-    """
-    Check if an IP address is private. If not, return localhost.
-
-    IPv4 Private range = [
-        "192.168.0.0",
-        "192.168.255.255",
-        "10.0.0.0",
-        "10.255.255.255",
-        "172.16.0.0",
-        "172.31.255.255"
-    ]
-
-    Args:
-        ip_address (str): IP address to check
-
-    Returns:
-        str: Original IP if private, otherwise localhost
-
-    Raises:
-        ValueError: If the provided IP address is invalid, return localhost.
-    """
-    try:
-        # Attempt to resolve hostname to IP address
-        resolved_ip = socket.gethostbyname(ip_address)
-
-        # Convert string to IP address object
-        ip = ipaddress.ip_address(resolved_ip)
-
-        if ip == ipaddress.ip_address("0.0.0.0"):
-            return "localhost"
-        elif ip.is_private:
-            return ip_address
-        else:
-            return "localhost"
-
-    except ValueError, socket.gaierror:
-        return "localhost"
+    """Return configured IP address (allows 0.0.0.0 for external reachability)."""
+    return ip_address or "0.0.0.0"
 
 
 def validate_cert_and_key(cert_file_path, key_file_path, ca_type: str = "public"):

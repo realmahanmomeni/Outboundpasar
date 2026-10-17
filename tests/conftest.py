@@ -1,30 +1,22 @@
-import os
-import sys
-import warnings
+"""Shared DB hygiene: drop test/mock OC panels after the pytest session."""
+from __future__ import annotations
+
+import asyncio
 
 import pytest
-from pydantic import PydanticDeprecatedSince20
-
-# Add the project root directory to the Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, project_root)
-
-# Override settings for tests
-from config import auth_settings, runtime_settings, server_settings
-
-runtime_settings.testing = True
-runtime_settings.debug = True
-server_settings.proxy_headers = True
-server_settings.forwarded_allow_ips = "*"
-auth_settings.sudoers["testadmin"] = "testadmin"
 
 
-# Filter out all warnings
-@pytest.fixture(autouse=True)
-def ignore_all_warnings():
-    warnings.filterwarnings("ignore")
-    warnings.filterwarnings("ignore", category=DeprecationWarning)
-    warnings.filterwarnings("ignore", category=PydanticDeprecatedSince20)
-    warnings.filterwarnings("ignore", category=UserWarning)
-    warnings.filterwarnings("ignore", category=FutureWarning)
-    warnings.filterwarnings("ignore", category=RuntimeWarning)
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_test_oc_panels_after_session():
+    yield
+    from tests.pytest_db_guard import assert_safe_for_oc_panel_cleanup, session_local_is_isolated
+
+    try:
+        assert_safe_for_oc_panel_cleanup()
+    except RuntimeError:
+        return
+    if session_local_is_isolated():
+        return
+    from scripts.cleanup_test_oc_panels import run
+
+    asyncio.run(run(apply=True))

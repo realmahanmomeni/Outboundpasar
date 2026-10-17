@@ -16,6 +16,7 @@ class RuntimeSettings(EnvSettings):
     debug: bool = Field(default=False, validation_alias="DEBUG")
     docs: bool = Field(default=False, validation_alias="DOCS")
     role: Role = Field(default=Role.ALL_IN_ONE, validation_alias="ROLE")
+    oc_bot_username: str = Field(default="", validation_alias="OC_BOT_USERNAME")
 
     @field_validator("role", mode="before")
     @classmethod
@@ -182,7 +183,7 @@ class AuthSettings(EnvSettings):
     sudoers: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def build_sudoers(self) -> AuthSettings:
+    def build_sudoers(self) -> "AuthSettings":
         if self.sudo_username and self.sudo_password and not self.sudoers:
             self.sudoers[self.sudo_username] = self.sudo_password
         return self
@@ -195,6 +196,70 @@ class UsageSettings(EnvSettings):
         default=False,
         validation_alias="RESET_USER_USAGE_CLEAN_CHART_DATA",
     )
+
+
+class SubscriptionExperienceSettings(EnvSettings):
+    enabled: bool = Field(default=False, validation_alias="SUBSCRIPTION_EXPERIENCE_TEMPLATES_ENABLED")
+
+
+class SubscriptionBrandingSettings(EnvSettings):
+    enabled: bool = Field(default=False, validation_alias="SUBSCRIPTION_BRANDING_ENABLED")
+
+
+class PanelStatisticsSettings(EnvSettings):
+    enabled: bool = Field(default=False, validation_alias="PANEL_STATISTICS_DASHBOARD_ENABLED")
+
+
+class HwidManagementSettings(EnvSettings):
+    enabled: bool = Field(default=False, validation_alias="HWID_MANAGEMENT_ENABLED")
+
+
+class CustomDomainSettings(EnvSettings):
+    managed_subscription_base_domain: str = Field(
+        default="outboundcenter.ir", validation_alias="MANAGED_SUBSCRIPTION_BASE_DOMAIN"
+    )
+    oc_managed_subdomain_api_enabled: bool = Field(
+        default=False, validation_alias="OC_MANAGED_SUBDOMAIN_API_ENABLED"
+    )
+    oc_managed_subdomain_lookup_path: str = Field(
+        default="/v1/integration/pasarguard/subdomains/{label}",
+        validation_alias="OC_MANAGED_SUBDOMAIN_LOOKUP_PATH",
+    )
+    oc_managed_subdomain_revalidate_seconds: int = Field(
+        default=300, validation_alias="OC_MANAGED_SUBDOMAIN_REVALIDATE_SECONDS"
+    )
+    managed_subdomain_bot_hmac_secret: str = Field(
+        default="", validation_alias="MANAGED_SUBDOMAIN_BOT_HMAC_SECRET"
+    )
+    managed_subdomain_bot_request_max_age_seconds: int = Field(
+        default=300, validation_alias="MANAGED_SUBDOMAIN_BOT_REQUEST_MAX_AGE_SECONDS"
+    )
+    managed_subdomain_bot_nonce_ttl_seconds: int = Field(
+        default=600, validation_alias="MANAGED_SUBDOMAIN_BOT_NONCE_TTL_SECONDS"
+    )
+    dns_enabled: bool = Field(default=False, validation_alias="CUSTOM_DOMAIN_DNS_ENABLED")
+    dns_nameservers: str = Field(default="", validation_alias="CUSTOM_DOMAIN_DNS_NAMESERVERS")
+    dns_timeout_seconds: float = Field(default=5.0, validation_alias="CUSTOM_DOMAIN_DNS_TIMEOUT_SECONDS")
+    ingress_provider: str = Field(default="none", validation_alias="CUSTOM_DOMAIN_INGRESS_PROVIDER")
+    ingress_public_https_ready: bool = Field(
+        default=False, validation_alias="CUSTOM_DOMAIN_INGRESS_PUBLIC_HTTPS_READY"
+    )
+    managed_subscription_hostname_in_urls_enabled: bool = Field(
+        default=False,
+        validation_alias="MANAGED_SUBSCRIPTION_HOSTNAME_IN_URLS_ENABLED",
+    )
+    custom_domain_register_managed_zone_guard_enabled: bool = Field(
+        default=False,
+        validation_alias="CUSTOM_DOMAIN_REGISTER_MANAGED_ZONE_GUARD_ENABLED",
+    )
+    caddy_admin_url: str = Field(default="", validation_alias="CUSTOM_DOMAIN_CADDY_ADMIN_URL")
+    caddy_upstream_dial: str = Field(default="127.0.0.1:8000", validation_alias="CUSTOM_DOMAIN_CADDY_UPSTREAM_DIAL")
+    caddy_ask_secret: str = Field(default="", validation_alias="CUSTOM_DOMAIN_CADDY_ASK_SECRET")
+    certificate_max_attempts: int = Field(default=8, validation_alias="CUSTOM_DOMAIN_CERTIFICATE_MAX_ATTEMPTS")
+    certificate_retry_backoff_seconds: int = Field(
+        default=300, validation_alias="CUSTOM_DOMAIN_CERTIFICATE_RETRY_BACKOFF_SECONDS"
+    )
+    custom_domain_ssl_interval: int = Field(default=300, validation_alias="JOB_CUSTOM_DOMAIN_SSL_INTERVAL")
 
 
 class JobSettings(EnvSettings):
@@ -233,6 +298,11 @@ logging_settings = LoggingSettings()
 auth_settings = AuthSettings()
 usage_settings = UsageSettings()
 job_settings = JobSettings()
+custom_domain_settings = CustomDomainSettings()
+subscription_experience_settings = SubscriptionExperienceSettings()
+subscription_branding_settings = SubscriptionBrandingSettings()
+panel_statistics_settings = PanelStatisticsSettings()
+hwid_management_settings = HwidManagementSettings()
 feature_settings = FeatureSettings()
 
 if not database_settings.is_postgresql:

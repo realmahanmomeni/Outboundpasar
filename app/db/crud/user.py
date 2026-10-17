@@ -1,3 +1,4 @@
+import secrets
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -26,6 +27,7 @@ from app.db.models import (
     users_groups_association,
 )
 from app.models.proxy import ProxyTable
+from app.node.oc_sync import enqueue_oc_user_sync
 from app.models.stats import (
     Period,
     UserCountMetric,
@@ -204,6 +206,8 @@ async def get_user(
     join_groups: bool = False,
     load_lifetime_used_traffic: bool = False,
     admin_id: int | None = None,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> User | None:
     """
     Retrieves a user by username.
@@ -228,6 +232,10 @@ async def get_user(
 
     if admin_id is not None:
         stmt = stmt.where(User.admin_id == admin_id)
+    if tenant_id is not None:
+        stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
 
     return (await db.execute(stmt)).unique().scalar_one_or_none()
 
@@ -244,6 +252,8 @@ async def get_user_by_id(
     join_groups: bool = False,
     load_lifetime_used_traffic: bool = False,
     admin_id: int | None = None,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> User | None:
     """
     Retrieves a user by user ID.
@@ -265,6 +275,50 @@ async def get_user_by_id(
         join_groups=join_groups,
         load_lifetime_used_traffic=load_lifetime_used_traffic,
     ).where(User.id == user_id)
+
+    if admin_id is not None:
+        stmt = stmt.where(User.admin_id == admin_id)
+    if tenant_id is not None:
+        stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
+
+    return (await db.execute(stmt)).unique().scalar_one_or_none()
+
+
+async def get_user_by_sub_token(
+    db: AsyncSession,
+    sub_token: str,
+    *,
+    load_admin: bool = True,
+    load_admin_role: bool = False,
+    load_next_plan: bool = True,
+    load_usage_logs: bool = True,
+    load_groups: bool = True,
+    join_groups: bool = False,
+    load_lifetime_used_traffic: bool = False,
+    admin_id: int | None = None,
+) -> User | None:
+    """
+    Retrieves a user by sub_token.
+
+    Args:
+        db (AsyncSession): Database session.
+        sub_token (str): The persistent subscription token of the user.
+        admin_id: If provided, only return the user if they belong to this admin.
+
+    Returns:
+        Optional[User]: The user object if found, else None.
+    """
+    stmt = _build_user_select_stmt(
+        load_admin=load_admin,
+        load_admin_role=load_admin_role,
+        load_next_plan=load_next_plan,
+        load_usage_logs=load_usage_logs,
+        load_groups=load_groups,
+        join_groups=join_groups,
+        load_lifetime_used_traffic=load_lifetime_used_traffic,
+    ).where(User.sub_token == sub_token)
 
     if admin_id is not None:
         stmt = stmt.where(User.admin_id == admin_id)
@@ -356,6 +410,8 @@ async def get_users(
     load_admin_role: bool = False,
     load_usage_logs: bool = True,
     load_lifetime_used_traffic: bool = False,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> list[User] | tuple[list[User], int]:
     """
     Retrieves users based on various filters.
@@ -367,6 +423,8 @@ async def get_users(
         return_with_count: Whether to return total count.
         load_usage_logs: Whether to materialize reset-history rows.
         load_lifetime_used_traffic: Whether to calculate lifetime usage with an aggregate.
+        tenant_id: Scope users to a specific tenant.
+        workspace_id: Scope users to a specific workspace.
 
     Returns:
         List of users or tuple with (users, count) if return_with_count is True.
@@ -403,8 +461,19 @@ async def get_users(
             filters.append(User.status == query.status)
     if admin:
         filters.append(User.admin_id == admin.id)
-    if query.owner or query.admin_ids:
+
+    join_admin = False
+    if query.owner or query.admin_ids or tenant_id is not None:
         stmt = stmt.join(User.admin)
+        join_admin = True
+
+    if tenant_id is not None:
+        filters.append(Admin.tenant_id == tenant_id)
+
+    if workspace_id is not None:
+        filters.append(User.workspace_id == workspace_id)
+
+    if query.owner or query.admin_ids:
         if query.owner:
             filters.append(Admin.username.in_(query.owner))
         if query.admin_ids:
@@ -482,6 +551,8 @@ async def get_users_simple(
     db: AsyncSession,
     query: UserSimpleListQuery,
     admin: Admin | None = None,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> tuple[list[tuple[int, str]], int]:
     """
     Retrieves lightweight user data with only id and username.
@@ -490,6 +561,8 @@ async def get_users_simple(
         db: Database session.
         query: Structured lightweight user list filters.
         admin: Admin filter (for scope-based authorization).
+        tenant_id: Scope users to a specific tenant.
+        workspace_id: Scope users to a specific workspace.
 
     Returns:
         Tuple of (list of (id, username) tuples, total_count).
@@ -505,6 +578,13 @@ async def get_users_simple(
         filters.append(User.username.ilike(f"%{query.search}%"))
     if admin:
         filters.append(User.admin_id == admin.id)
+
+    if tenant_id is not None:
+        stmt = stmt.join(User.admin)
+        filters.append(Admin.tenant_id == tenant_id)
+
+    if workspace_id is not None:
+        filters.append(User.workspace_id == workspace_id)
 
     if filters:
         stmt = stmt.where(and_(*filters))
@@ -543,9 +623,15 @@ async def get_expired_users(
     db: AsyncSession,
     query: ExpiredUsersQuery,
     admin_id: int | None = None,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ):
     conditions = _cleanup_target_user_conditions(query.expired_after, query.expired_before, admin_id, query.target)
     stmt = select(User).where(*conditions)
+    if tenant_id is not None:
+        stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
 
     return (await db.execute(stmt)).unique().scalars().all()
 
@@ -590,10 +676,18 @@ async def remove_expired_users(
     admin_id: int | None = None,
     target: Literal["expired", "limited", "on_hold", "disabled"] = "expired",
     dry_run: bool = False,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> list[str]:
     conditions = _cleanup_target_user_conditions(expired_after, expired_before, admin_id, target)
 
-    rows = (await db.execute(select(User.id, User.username).where(*conditions))).all()
+    stmt = select(User.id, User.username).where(*conditions)
+    if tenant_id is not None:
+        stmt = stmt.join(Admin, User.admin_id == Admin.id).where(Admin.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
+
+    rows = (await db.execute(stmt)).all()
     if not rows:
         return []
 
@@ -615,13 +709,13 @@ async def remove_expired_users(
 
 
 async def get_active_to_expire_users(db: AsyncSession) -> list[User]:
-    stmt = _review_user_select_stmt().where(User.status == UserStatus.active).where(User.is_expired)
+    stmt = _review_user_select_stmt().where(User.status.in_([UserStatus.active, UserStatus.on_hold])).where(User.is_expired)
 
     return list((await db.execute(stmt)).unique().scalars().all())
 
 
 async def get_active_to_limited_users(db: AsyncSession) -> list[User]:
-    stmt = _review_user_select_stmt().where(User.status == UserStatus.active).where(User.is_limited)
+    stmt = _review_user_select_stmt().where(User.status.in_([UserStatus.active, UserStatus.on_hold])).where(User.is_limited)
 
     return list((await db.execute(stmt)).unique().scalars().all())
 
@@ -672,7 +766,12 @@ async def get_users_to_reset_data_usage(db: AsyncSession) -> list[User]:
     return list((await db.execute(stmt)).unique().scalars().all())
 
 
-async def get_usage_percentage_reached_users(db: AsyncSession, percentage: int) -> list[User]:
+async def get_usage_percentage_reached_users(
+    db: AsyncSession,
+    percentage: int,
+    *,
+    workspace_id: int | None = None,
+) -> list[User]:
     """
     Get active users who have reached or exceeded the specified usage percentage threshold
     and don't have an existing notification reminder for this threshold.
@@ -695,11 +794,20 @@ async def get_usage_percentage_reached_users(db: AsyncSession, percentage: int) 
         .where(User.usage_percentage >= percentage)
         .where(not_(existing_reminder_subq))  # Only users without existing reminders
     )
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
+    else:
+        stmt = stmt.where(User.workspace_id.is_(None))
 
     return list((await db.execute(stmt)).unique().scalars().all())
 
 
-async def get_days_left_reached_users(db: AsyncSession, days: int) -> list[User]:
+async def get_days_left_reached_users(
+    db: AsyncSession,
+    days: int,
+    *,
+    workspace_id: int | None = None,
+) -> list[User]:
     """
     Get active users who have reached or exceeded the specified days left threshold
     and don't have an existing notification reminder for this threshold.
@@ -723,6 +831,10 @@ async def get_days_left_reached_users(db: AsyncSession, days: int) -> list[User]
         .where(User.days_left == days)
         .where(not_(existing_reminder_subq))  # Only users without existing reminders
     )
+    if workspace_id is not None:
+        stmt = stmt.where(User.workspace_id == workspace_id)
+    else:
+        stmt = stmt.where(User.workspace_id.is_(None))
 
     return list((await db.execute(stmt)).unique().scalars().all())
 
@@ -793,6 +905,12 @@ async def get_user_usages(
         stats[node_id_val].append(UserUsageStat(**row_dict))
 
     return UserUsageStatsList(period=period, start=start, end=end, stats=stats)
+
+
+async def get_workspace_used_traffic_total(db: AsyncSession, workspace_id: int) -> int:
+    """Sum current used_traffic for all users in a workspace (dashboard bandwidth scope)."""
+    stmt = select(func.coalesce(func.sum(User.used_traffic), 0)).where(User.workspace_id == workspace_id)
+    return int((await db.execute(stmt)).scalar_one() or 0)
 
 
 async def get_users_count_by_admin(db: AsyncSession, admin_id: int | None) -> int:
@@ -878,13 +996,22 @@ async def get_users_count(db: AsyncSession, status: UserStatus = None, admin_id:
 
 
 def _build_user_count_metrics_query(
-    statuses: list[UserStatus], online_since: datetime, admin_id: int | None = None
+    statuses: list[UserStatus],
+    online_since: datetime,
+    admin_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> Select:
     """Build one index-aware query for dashboard user counts."""
+    scope_filters = []
     if admin_id is not None:
+        scope_filters.append(User.admin_id == admin_id)
+    if workspace_id is not None:
+        scope_filters.append(User.workspace_id == workspace_id)
+
+    if admin_id is not None or workspace_id is not None:
         status_columns = [
             select(func.count(User.id))
-            .where(User.admin_id == admin_id, User.status == status)
+            .where(*scope_filters, User.status == status)
             .scalar_subquery()
             .label(status.value)
             for status in statuses
@@ -892,7 +1019,7 @@ def _build_user_count_metrics_query(
         online_column = (
             select(func.count(User.id))
             .where(
-                User.admin_id == admin_id,
+                *scope_filters,
                 User.online_at.isnot(None),
                 User.online_at >= online_since,
             )
@@ -913,13 +1040,16 @@ async def get_users_count_metrics(
     statuses: list[UserStatus],
     online_window: timedelta,
     admin_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> tuple[dict[str, int], int]:
     """Return per-status, total, and recent-online user counts in one SELECT.
 
     The ``total`` value includes only the requested statuses. Pass every
     ``UserStatus`` value when a complete user count is required.
     """
-    stmt = _build_user_count_metrics_query(statuses, datetime.now(UTC) - online_window, admin_id)
+    stmt = _build_user_count_metrics_query(
+        statuses, datetime.now(UTC) - online_window, admin_id, workspace_id=workspace_id
+    )
     row = (await db.execute(stmt)).one()
 
     status_counts = {status.value: int(getattr(row, status.value) or 0) for status in statuses}
@@ -943,9 +1073,11 @@ async def create_user(
         User: Created user object.
     """
     db_user = User(
-        **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout"})
+        **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout"}),
+        sub_token=secrets.token_hex(16),
     )
     db_user.admin = admin
+    db_user.workspace_id = admin.workspace_id
     db_user.groups = groups
     db_user.expire = new_user.expire or None
     db_user.on_hold_timeout = new_user.on_hold_timeout or None
@@ -962,6 +1094,9 @@ async def create_user(
     if new_user.next_plan:
         db_user.next_plan = NextPlan(user_id=db_user.id, **new_user.next_plan.model_dump())
         db.add(db_user.next_plan)
+
+    await enqueue_oc_user_sync(db, db_user)
+
     if commit:
         await db.commit()
         await refresh_and_load_user(db, db_user)
@@ -980,9 +1115,11 @@ async def create_users_bulk(
     db_users: list[User] = []
     for new_user in new_users:
         db_user = User(
-            **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout"})
+            **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout"}),
+            sub_token=secrets.token_hex(16),
         )
         db_user.admin = admin
+        db_user.workspace_id = admin.workspace_id
         db_user.groups = list(groups)
         db_user.expire = new_user.expire or None
         db_user.on_hold_timeout = new_user.on_hold_timeout or None
@@ -1003,6 +1140,9 @@ async def create_users_bulk(
     if next_plans:
         db.add_all(next_plans)
         await db.flush()
+
+    for db_user in db_users:
+        await enqueue_oc_user_sync(db, db_user)
 
     if commit:
         await db.commit()
@@ -1033,6 +1173,8 @@ async def remove_user(db: AsyncSession, db_user: User) -> User:
     """
     await release_users_allocations(db, [db_user])
     await _delete_user_dependencies(db, [db_user.id])
+    db_user.status = UserStatus.disabled  # Force status disabled to queue OC DELETE
+    await enqueue_oc_user_sync(db, db_user)
     await db.execute(delete(User).where(User.id == db_user.id))
     await db.commit()
     return db_user
@@ -1053,6 +1195,9 @@ async def remove_users(db: AsyncSession, db_users: list[User]):
 
     await release_users_allocations(db, db_users)
     await _delete_user_dependencies(db, user_ids)
+    for db_user in db_users:
+        db_user.status = UserStatus.disabled
+        await enqueue_oc_user_sync(db, db_user)
     await db.execute(delete(User).where(User.id.in_(user_ids)))
     await db.commit()
 
@@ -1063,6 +1208,8 @@ async def modify_user(
     modify: UserModify,
     *,
     groups: list[Group] | None = None,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
     commit: bool = True,
 ) -> User:
     """
@@ -1082,7 +1229,14 @@ async def modify_user(
     if modify.proxy_settings is not None:
         db_user.proxy_settings = modify.proxy_settings.dict()
     if modify.group_ids is not None:
-        db_user.groups = groups or await get_groups_by_ids(db, modify.group_ids, load_users=False, load_inbounds=True)
+        db_user.groups = groups or await get_groups_by_ids(
+            db,
+            modify.group_ids,
+            load_users=False,
+            load_inbounds=True,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
         await sync_user_allocations(db, db_user, accessible_tags=await tags_from_groups(db_user.groups))
 
     if modify.status is not None:
@@ -1139,6 +1293,7 @@ async def modify_user(
     if modify.hwid_limit is not None:
         db_user.hwid_limit = modify.hwid_limit
 
+    await db_user.awaitable_attrs.next_plan
     if modify.next_plan is not None:
         db_user.next_plan = NextPlan(
             user_id=db_user.id,
@@ -1161,6 +1316,8 @@ async def modify_user(
         await delete_user_passed_notification_reminders(db, id, ReminderType.data_usage, usage_percentage)
     if remove_expiration_reminder:
         await delete_user_passed_notification_reminders(db, id, ReminderType.expiration_date, days_left)
+
+    await enqueue_oc_user_sync(db, db_user)
 
     if commit:
         await db.commit()
@@ -1212,6 +1369,8 @@ async def reset_user_data_usage(
     if db_user.status == UserStatus.limited:
         db_user.status = UserStatus.active
 
+    await enqueue_oc_user_sync(db, db_user)
+
     if commit:
         await db.commit()
         await refresh_and_load_user(db, db_user)
@@ -1238,6 +1397,7 @@ async def bulk_reset_user_data_usage(
             await clear_user_node_usages(db, db_user.id)
         if db_user.status == UserStatus.limited:
             db_user.status = UserStatus.active
+        await enqueue_oc_user_sync(db, db_user)
     if commit:
         await db.commit()
         for user in users:
@@ -1309,6 +1469,8 @@ async def reset_user_by_next(db: AsyncSession, db_user: User, *, clean_chart_dat
         await clear_user_node_usages(db, db_user.id)
     db_user.status = UserStatus.active
 
+    await enqueue_oc_user_sync(db, db_user)
+
     await db.commit()
     await refresh_and_load_user(db, db_user)
     return db_user
@@ -1326,6 +1488,7 @@ async def revoke_user_sub(db: AsyncSession, db_user: User, *, proxy_settings: di
         User: The updated user object.
     """
     db_user.sub_revoked_at = datetime.now(UTC)
+    db_user.sub_token = secrets.token_hex(16)
     db_user.proxy_settings = proxy_settings if proxy_settings is not None else build_revoked_proxy_settings(db_user)
     await db.commit()
     await refresh_and_load_user(db, db_user)
@@ -1348,6 +1511,7 @@ async def bulk_revoke_user_sub(
     revoked_at = datetime.now(UTC)
     for user in users:
         user.sub_revoked_at = revoked_at
+        user.sub_token = secrets.token_hex(16)
         user.proxy_settings = (
             proxy_settings_by_user_id.get(user.id)
             if proxy_settings_by_user_id is not None and user.id in proxy_settings_by_user_id
@@ -1415,6 +1579,7 @@ async def get_users_sub_update_list(
 def _subscription_update_from_clause(
     user_id: int | None = None,
     admin_id: int | None = None,
+    workspace_id: int | None = None,
 ):
     conditions = []
     if user_id is not None:
@@ -1424,6 +1589,8 @@ def _subscription_update_from_clause(
         from_clause = UserSubscriptionUpdate.__table__.join(User, UserSubscriptionUpdate.user_id == User.id)
         if admin_id:
             conditions.append(User.admin_id == admin_id)
+        if workspace_id is not None:
+            conditions.append(User.workspace_id == workspace_id)
     return from_clause, conditions
 
 
@@ -1434,9 +1601,12 @@ async def get_users_subscription_agent_counts(
     start: datetime | None = None,
     end: datetime | None = None,
     period: Period | None = None,
+    workspace_id: int | None = None,
 ) -> list[tuple[str, int]]:
     stmt = select(UserSubscriptionUpdate.user_agent, func.count().label("count"))
-    from_clause, conditions = _subscription_update_from_clause(user_id=user_id, admin_id=admin_id)
+    from_clause, conditions = _subscription_update_from_clause(
+        user_id=user_id, admin_id=admin_id, workspace_id=workspace_id
+    )
 
     if start is not None:
         start_utc = (
@@ -1463,12 +1633,15 @@ async def get_users_subscription_agent_stats(
     period: Period = Period.hour,
     user_id: int | None = None,
     admin_id: int | None = None,
+    workspace_id: int | None = None,
 ) -> list[dict]:
     """Retrieve subscription update counts grouped by agent and period."""
     trunc_expr = _build_trunc_expression(db, period, UserSubscriptionUpdate.created_at, start)
     start_utc = get_complete_period_start_for_filter(start, period)
     end_utc = to_utc_for_filter(end)
-    from_clause, conditions = _subscription_update_from_clause(user_id=user_id, admin_id=admin_id)
+    from_clause, conditions = _subscription_update_from_clause(
+        user_id=user_id, admin_id=admin_id, workspace_id=workspace_id
+    )
     conditions.extend(
         [
             UserSubscriptionUpdate.created_at >= start_utc,
@@ -1554,6 +1727,7 @@ async def get_all_users_usages(
     period: Period = Period.hour,
     node_id: int | None = None,
     group_by_node: bool = False,
+    workspace_id: int | None = None,
 ) -> UserUsageStatsList:
     """
     Retrieves aggregated usage data for all users of an admin within a specified time range,
@@ -1585,6 +1759,8 @@ async def get_all_users_usages(
     ]
     if admins_filter:
         conditions.append(Admin.username.in_(admins_filter))
+    if workspace_id is not None:
+        conditions.append(User.workspace_id == workspace_id)
 
     if node_id is not None:
         conditions.append(NodeUserUsage.node_id == node_id)
@@ -1643,11 +1819,14 @@ async def get_user_count_metric_stats(
     metric: UserCountMetric = UserCountMetric.online,
     node_id: int | None = None,
     group_by_node: bool = False,
+    workspace_id: int | None = None,
 ) -> UserCountMetricStatsList:
     """Retrieves one distinct user count metric from node_user_usages."""
     validate_user_count_metric_scope(metric, node_id=node_id, group_by_node=group_by_node)
 
-    query_parts = _build_user_count_query_parts(db, admins, start, end, period, node_id)
+    query_parts = _build_user_count_query_parts(
+        db, admins, start, end, period, node_id, workspace_id=workspace_id
+    )
     count_expr = _build_user_count_metric_expression(metric).label("count")
     total_stmt = select(count_expr).select_from(query_parts["from_clause"]).where(and_(*query_parts["conditions"]))
 
@@ -1704,6 +1883,8 @@ def _build_user_count_query_parts(
     end: datetime,
     period: Period,
     node_id: int | None,
+    *,
+    workspace_id: int | None = None,
 ) -> dict:
     admins_filter = admins or None
     trunc_expr = _build_trunc_expression(db, period, NodeUserUsage.created_at, start)
@@ -1716,6 +1897,8 @@ def _build_user_count_query_parts(
 
     if admins_filter:
         conditions.append(Admin.username.in_(admins_filter))
+    if workspace_id is not None:
+        conditions.append(User.workspace_id == workspace_id)
 
     stats_key = node_id
     if node_id is not None:
@@ -1796,6 +1979,7 @@ async def set_owner(db: AsyncSession, db_user: User, admin: Admin) -> User:
     """
     old_admin = db_user.admin
     db_user.admin = admin
+    db_user.workspace_id = admin.workspace_id
 
     # Update admin traffic counters
     if old_admin and old_admin.id != admin.id:
@@ -1831,6 +2015,7 @@ async def bulk_set_owner(db: AsyncSession, users: list[User], admin: Admin) -> l
             admin_traffic_changes[old_admin.id] -= user.used_traffic
         total_traffic_to_add += user.used_traffic
         user.admin = admin
+        user.workspace_id = admin.workspace_id
 
     # Update old admins' traffic
     for admin_id, traffic_change in admin_traffic_changes.items():

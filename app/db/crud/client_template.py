@@ -1,6 +1,6 @@
 from collections import defaultdict
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,16 @@ from app.models.client_template import (
     ClientTemplateSimpleSortOption,
     ClientTemplateType,
 )
+
+def client_template_visibility_clause(workspace_id: int | None):
+    """Templates visible to a workspace: system globals plus workspace-owned rows."""
+    if workspace_id is None:
+        return None
+    return or_(
+        and_(ClientTemplate.is_system.is_(True), ClientTemplate.workspace_id.is_(None)),
+        ClientTemplate.workspace_id == workspace_id,
+    )
+
 
 TEMPLATE_TYPE_TO_LEGACY_KEY: dict[ClientTemplateType, str] = {
     ClientTemplateType.clash_subscription: "CLASH_SUBSCRIPTION_TEMPLATE",
@@ -34,18 +44,25 @@ def _build_client_template_simple_sort_clause(sort_option: ClientTemplateSimpleS
     return column.desc() if sort_option.value.startswith("-") else column.asc()
 
 
-async def get_client_template_values(db: AsyncSession) -> dict[str, str]:
+def _subscription_template_visibility_clause(workspace_id: int | None):
+    """Templates used for subscription output generation (not admin list APIs)."""
+    if workspace_id is None:
+        return and_(ClientTemplate.is_system.is_(True), ClientTemplate.workspace_id.is_(None))
+    return client_template_visibility_clause(workspace_id)
+
+
+async def get_client_template_values(db: AsyncSession, *, workspace_id: int | None = None) -> dict[str, str]:
     try:
-        rows = (
-            await db.execute(
-                select(
-                    ClientTemplate.id,
-                    ClientTemplate.template_type,
-                    ClientTemplate.content,
-                    ClientTemplate.is_default,
-                ).order_by(ClientTemplate.template_type.asc(), ClientTemplate.id.asc())
-            )
-        ).all()
+        stmt = select(
+            ClientTemplate.id,
+            ClientTemplate.template_type,
+            ClientTemplate.content,
+            ClientTemplate.is_default,
+        ).order_by(ClientTemplate.template_type.asc(), ClientTemplate.id.asc())
+        visibility = _subscription_template_visibility_clause(workspace_id)
+        if visibility is not None:
+            stmt = stmt.where(visibility)
+        rows = (await db.execute(stmt)).all()
     except SQLAlchemyError:
         return {}
 
@@ -74,12 +91,19 @@ async def get_client_template_values(db: AsyncSession) -> dict[str, str]:
     return values
 
 
-async def get_client_template_contents_by_type(db: AsyncSession, template_type: ClientTemplateType) -> dict[int, str]:
-    rows = (
-        await db.execute(
-            select(ClientTemplate.id, ClientTemplate.content).where(ClientTemplate.template_type == template_type.value)
-        )
-    ).all()
+async def get_client_template_contents_by_type(
+    db: AsyncSession,
+    template_type: ClientTemplateType,
+    *,
+    workspace_id: int | None = None,
+) -> dict[int, str]:
+    stmt = select(ClientTemplate.id, ClientTemplate.content).where(
+        ClientTemplate.template_type == template_type.value
+    )
+    visibility = _subscription_template_visibility_clause(workspace_id)
+    if visibility is not None:
+        stmt = stmt.where(visibility)
+    rows = (await db.execute(stmt)).all()
     return {row.id: row.content for row in rows}
 
 
@@ -92,8 +116,13 @@ async def get_client_template_by_id(db: AsyncSession, template_id: int) -> Clien
 async def get_client_templates(
     db: AsyncSession,
     query: ClientTemplateListQuery,
+    *,
+    workspace_id: int | None = None,
 ) -> tuple[list[ClientTemplate], int]:
     stmt = select(ClientTemplate)
+    visibility = client_template_visibility_clause(workspace_id)
+    if visibility is not None:
+        stmt = stmt.where(visibility)
     if query.ids:
         stmt = stmt.where(ClientTemplate.id.in_(query.ids))
     if query.template_type is not None:
@@ -114,8 +143,13 @@ async def get_client_templates(
 async def get_client_templates_simple(
     db: AsyncSession,
     query: ClientTemplateSimpleListQuery,
+    *,
+    workspace_id: int | None = None,
 ) -> tuple[list[tuple[int, str, str, bool]], int]:
     stmt = select(ClientTemplate.id, ClientTemplate.name, ClientTemplate.template_type, ClientTemplate.is_default)
+    visibility = client_template_visibility_clause(workspace_id)
+    if visibility is not None:
+        stmt = stmt.where(visibility)
 
     if query.ids:
         stmt = stmt.where(ClientTemplate.id.in_(query.ids))
@@ -144,10 +178,18 @@ async def get_client_templates_simple(
     return rows, total
 
 
-async def count_client_templates_by_type(db: AsyncSession, template_type: ClientTemplateType) -> int:
-    count_stmt = (
-        select(func.count()).select_from(ClientTemplate).where(ClientTemplate.template_type == template_type.value)
+async def count_client_templates_by_type(
+    db: AsyncSession,
+    template_type: ClientTemplateType,
+    *,
+    workspace_id: int | None = None,
+) -> int:
+    count_stmt = select(func.count()).select_from(ClientTemplate).where(
+        ClientTemplate.template_type == template_type.value
     )
+    visibility = client_template_visibility_clause(workspace_id)
+    if visibility is not None:
+        count_stmt = count_stmt.where(visibility)
     return (await db.execute(count_stmt)).scalar() or 0
 
 
@@ -156,12 +198,17 @@ async def get_first_template_by_type(
     template_type: ClientTemplateType,
     exclude_id: int | None = None,
     exclude_ids: list[int] | set[int] | None = None,
+    *,
+    workspace_id: int | None = None,
 ) -> ClientTemplate | None:
     stmt = (
         select(ClientTemplate)
         .where(ClientTemplate.template_type == template_type.value)
         .order_by(ClientTemplate.id.asc())
     )
+    visibility = client_template_visibility_clause(workspace_id)
+    if visibility is not None:
+        stmt = stmt.where(visibility)
     if exclude_id is not None:
         stmt = stmt.where(ClientTemplate.id != exclude_id)
     if exclude_ids:
@@ -169,10 +216,17 @@ async def get_first_template_by_type(
     return (await db.execute(stmt)).scalars().first()
 
 
-async def set_default_template(db: AsyncSession, db_template: ClientTemplate) -> ClientTemplate:
-    await db.execute(
-        update(ClientTemplate).where(ClientTemplate.template_type == db_template.template_type).values(is_default=False)
-    )
+async def set_default_template(
+    db: AsyncSession,
+    db_template: ClientTemplate,
+    *,
+    workspace_id: int | None = None,
+) -> ClientTemplate:
+    clear_stmt = update(ClientTemplate).where(ClientTemplate.template_type == db_template.template_type)
+    visibility = client_template_visibility_clause(workspace_id)
+    if visibility is not None:
+        clear_stmt = clear_stmt.where(visibility)
+    await db.execute(clear_stmt.values(is_default=False))
     db_template.is_default = True
     await db.commit()
     await db.refresh(db_template)
@@ -206,24 +260,35 @@ async def clear_host_subscription_template_overrides(db: AsyncSession, template_
     return updated_count
 
 
-async def create_client_template(db: AsyncSession, client_template: ClientTemplateCreate) -> ClientTemplate:
-    type_count = await count_client_templates_by_type(db, client_template.template_type)
+async def create_client_template(
+    db: AsyncSession,
+    client_template: ClientTemplateCreate,
+    *,
+    tenant_id: int | None = None,
+    workspace_id: int | None = None,
+) -> ClientTemplate:
+    type_count = await count_client_templates_by_type(db, client_template.template_type, workspace_id=workspace_id)
     is_first_for_type = type_count == 0
     should_be_default = client_template.is_default or is_first_for_type
+    is_system = is_first_for_type and workspace_id is None
 
     if should_be_default:
-        await db.execute(
-            update(ClientTemplate)
-            .where(ClientTemplate.template_type == client_template.template_type.value)
-            .values(is_default=False)
+        clear_stmt = update(ClientTemplate).where(
+            ClientTemplate.template_type == client_template.template_type.value
         )
+        visibility = client_template_visibility_clause(workspace_id)
+        if visibility is not None:
+            clear_stmt = clear_stmt.where(visibility)
+        await db.execute(clear_stmt.values(is_default=False))
 
     db_template = ClientTemplate(
         name=client_template.name,
         template_type=client_template.template_type.value,
         content=client_template.content,
         is_default=should_be_default,
-        is_system=is_first_for_type,
+        is_system=is_system,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
     )
     db.add(db_template)
     try:
@@ -243,11 +308,11 @@ async def modify_client_template(
     template_data = modified_template.model_dump(exclude_none=True)
 
     if modified_template.is_default is True:
-        await db.execute(
-            update(ClientTemplate)
-            .where(ClientTemplate.template_type == db_template.template_type)
-            .values(is_default=False)
-        )
+        clear_stmt = update(ClientTemplate).where(ClientTemplate.template_type == db_template.template_type)
+        visibility = client_template_visibility_clause(db_template.workspace_id)
+        if visibility is not None:
+            clear_stmt = clear_stmt.where(visibility)
+        await db.execute(clear_stmt.values(is_default=False))
         db_template.is_default = True
 
     if "name" in template_data:

@@ -60,6 +60,20 @@ class StandardLinks(BaseSubscription):
     def add_link(self, link):
         self.links.append(link)
 
+    def add_informational_remark(self, remark: str) -> None:
+        from app.subscription.native_info_display import build_native_informational_display_link
+
+        text = (remark or "").strip()
+        if not text:
+            return
+        for line in text.replace("\r\n", "\n").split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            display_link = build_native_informational_display_link(stripped)
+            if display_link:
+                self.add_link(display_link)
+
     def render(self):
         if subscription_env_settings.external_config:
             self.links.append(subscription_env_settings.external_config)

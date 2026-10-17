@@ -1,0 +1,23 @@
+# Phase 3-B.2 — Caddy edge configuration for custom subscription hostnames
+#
+# Prerequisites:
+# - PasarGuard API reachable at the upstream dial (default 127.0.0.1:8000) with UVICORN_PROXY_HEADERS=1
+# - CUSTOM_DOMAIN_CADDY_ADMIN_URL points at this Caddy admin listener (default 127.0.0.1:2019)
+# - CUSTOM_DOMAIN_CADDY_ASK_SECRET set to a long random value when admin is not strictly localhost-only
+#
+# The application registers per-hostname routes on server id `pasarguard_custom_domains` via the admin API.
+# Do not enable permissive on-demand TLS without the ask endpoint below.
+
+{
+	admin 127.0.0.1:2019
+}
+
+# Primary site (example — keep your existing outboundcenter.shop block)
+outboundcenter.shop {
+	reverse_proxy 127.0.0.1:8000
+}
+
+# Optional safety hook if you use on_demand_tls elsewhere:
+# on_demand_tls {
+# 	ask http://127.0.0.1:8000/internal/caddy-tls-permission?secret=YOUR_SECRET
+# }

@@ -36,12 +36,23 @@ from app.subscription.client_templates import refresh_client_templates_cache
 from app.templates import render_template_string
 from app.utils.logger import get_logger
 
+from app.services.workspace_scope import resolve_tenant_workspace_scope
+
 from . import BaseOperation
 
 logger = get_logger("client-template-operation")
 
 
 class ClientTemplateOperation(BaseOperation):
+    async def _resource_scope(self, db: AsyncSession, admin: AdminDetails) -> tuple[int | None, int | None]:
+        if admin.is_owner:
+            return None, None
+        return await resolve_tenant_workspace_scope(db, admin)
+
+    async def _get_template_with_access(
+        self, db: AsyncSession, template_id: int, admin: AdminDetails
+    ) -> ClientTemplate:
+        return await self.get_validated_client_template(db, template_id, admin=admin)
     @staticmethod
     async def _sync_client_template_cache() -> None:
         await refresh_client_templates_cache()
@@ -95,8 +106,14 @@ class ClientTemplateOperation(BaseOperation):
     ) -> ClientTemplateResponse:
         await self._validate_template_content(new_template.template_type, new_template.content)
 
+        tenant_id, workspace_id = await self._resource_scope(db, admin)
         try:
-            db_template = await create_client_template(db, new_template)
+            db_template = await create_client_template(
+                db,
+                new_template,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
         except IntegrityError:
             await self.raise_error("Template with this name already exists for this type", 409, db=db)
 
@@ -110,14 +127,17 @@ class ClientTemplateOperation(BaseOperation):
         self,
         db: AsyncSession,
         query: ClientTemplateListQuery,
+        admin: AdminDetails,
     ) -> ClientTemplateResponseList:
-        templates, count = await get_client_templates(db, query=query)
+        _, workspace_id = await self._resource_scope(db, admin)
+        templates, count = await get_client_templates(db, query=query, workspace_id=workspace_id)
         return ClientTemplateResponseList(templates=templates, count=count)
 
     async def get_client_templates_simple(
-        self, db: AsyncSession, query: ClientTemplateSimpleListQuery
+        self, db: AsyncSession, query: ClientTemplateSimpleListQuery, admin: AdminDetails
     ) -> ClientTemplatesSimpleResponse:
-        rows, total = await get_client_templates_simple(db=db, query=query)
+        _, workspace_id = await self._resource_scope(db, admin)
+        rows, total = await get_client_templates_simple(db=db, query=query, workspace_id=workspace_id)
 
         templates = [
             ClientTemplateSimple(id=row[0], name=row[1], template_type=row[2], is_default=row[3]) for row in rows
@@ -131,7 +151,9 @@ class ClientTemplateOperation(BaseOperation):
         modified_template: ClientTemplateModify,
         admin: AdminDetails,
     ) -> ClientTemplateResponse:
-        db_template = await self.get_validated_client_template(db, template_id)
+        db_template = await self._get_template_with_access(db, template_id, admin)
+        if db_template.is_system and not admin.is_owner:
+            await self.raise_error(message="Cannot modify system template", code=403)
 
         if modified_template.content is not None:
             await self._validate_template_content(
@@ -156,25 +178,28 @@ class ClientTemplateOperation(BaseOperation):
         return ClientTemplateResponse.model_validate(db_template)
 
     async def remove_client_template(self, db: AsyncSession, template_id: int, admin: AdminDetails) -> None:
-        db_template = await self.get_validated_client_template(db, template_id)
+        db_template = await self._get_template_with_access(db, template_id, admin)
         template_type = ClientTemplateType(db_template.template_type)
+        ws_scope = db_template.workspace_id
 
         if db_template.is_system:
             await self.raise_error(message="Cannot delete system template", code=403)
 
-        template_count = await count_client_templates_by_type(db, template_type)
+        template_count = await count_client_templates_by_type(db, template_type, workspace_id=ws_scope)
         if template_count <= 1:
             await self.raise_error(message="Cannot delete the last template for this type", code=403)
 
         replacement = None
         if db_template.is_default:
-            replacement = await get_first_template_by_type(db, template_type, exclude_id=db_template.id)
+            replacement = await get_first_template_by_type(
+                db, template_type, exclude_id=db_template.id, workspace_id=ws_scope
+            )
 
         cleared_hosts = await clear_host_subscription_template_overrides(db, {db_template.id})
         await remove_client_template(db, db_template)
 
         if replacement is not None:
-            await set_default_template(db, replacement)
+            await set_default_template(db, replacement, workspace_id=ws_scope)
 
         logger.info(
             f'Client template "{db_template.name}" ({template_type.value}) deleted by admin "{admin.username}"'
@@ -187,8 +212,11 @@ class ClientTemplateOperation(BaseOperation):
     ) -> RemoveClientTemplatesResponse:
         """Remove multiple client templates by ID - fast batch delete"""
         ids_list = list(bulk_templates.ids)
+        _, workspace_id = await self._resource_scope(db, admin)
         db_templates_list, _ = await get_client_templates(
-            db, ClientTemplateListQuery(ids=ids_list, limit=len(ids_list))
+            db,
+            ClientTemplateListQuery(ids=ids_list, limit=len(ids_list)),
+            workspace_id=workspace_id,
         )
 
         found_ids = {t.id for t in db_templates_list}
@@ -213,7 +241,8 @@ class ClientTemplateOperation(BaseOperation):
 
         # Validate we won't leave any type without templates
         for template_type, templates_of_type in templates_by_type.items():
-            total_count = await count_client_templates_by_type(db, template_type)
+            ws_scope = templates_of_type[0].workspace_id
+            total_count = await count_client_templates_by_type(db, template_type, workspace_id=ws_scope)
             if total_count <= len(templates_of_type):
                 await self.raise_error(
                     message=f"Cannot delete the last template for type {template_type.value}", code=403
@@ -224,9 +253,12 @@ class ClientTemplateOperation(BaseOperation):
             defaults_to_replace = [t for t in templates_of_type if t.is_default]
             if defaults_to_replace:
                 exclude_ids = {t.id for t in templates_of_type}
-                replacement = await get_first_template_by_type(db, template_type, exclude_ids=exclude_ids)
+                ws_scope = templates_of_type[0].workspace_id
+                replacement = await get_first_template_by_type(
+                    db, template_type, exclude_ids=exclude_ids, workspace_id=ws_scope
+                )
                 if replacement:
-                    await set_default_template(db, replacement)
+                    await set_default_template(db, replacement, workspace_id=ws_scope)
 
         # Batch delete using CRUD function (single query)
         template_ids = [t.id for t in db_templates]

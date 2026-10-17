@@ -4,11 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.crud.settings import get_settings, modify_settings
 from app.db.models import Settings
+from app.models.admin import AdminDetails
 from app.models.settings import General, SettingsSchema, Subscription
 from app.nats.message import MessageTopic
 from app.nats.router import router
 from app.notification.client import define_client
 from app.settings import refresh_caches
+from app.services.workspace_scope import resolve_tenant_workspace_scope
 from app.telegram import startup_telegram_bot
 
 from . import BaseOperation
@@ -17,18 +19,33 @@ from . import BaseOperation
 class SettingsOperation(BaseOperation):
     @staticmethod
     async def reset_services(old_settings: SettingsSchema, new_settings: SettingsSchema):
+        """Restart deployment-wide services only for platform-global settings changes."""
         if new_settings.telegram != old_settings.telegram:
             await startup_telegram_bot()
-        # When webhooks are disabled, send_notifications() already returns early
-        # Pending webhook notifications will be processed when webhooks are re-enabled
-        if old_settings.notification_settings.proxy_url != new_settings.notification_settings.proxy_url:
+        if (
+            old_settings.notification_settings
+            and new_settings.notification_settings
+            and old_settings.notification_settings.proxy_url != new_settings.notification_settings.proxy_url
+        ):
             await define_client()
 
-    async def get_settings(self, db: AsyncSession) -> Settings:
-        return await get_settings(db)
+    async def _resolve_settings_row(self, db: AsyncSession, admin: AdminDetails, *, ensure: bool) -> Settings:
+        if admin.is_owner:
+            return await get_settings(db, workspace_id=None)
+        tenant_id, workspace_id = await resolve_tenant_workspace_scope(db, admin)
+        return await get_settings(
+            db,
+            workspace_id=workspace_id,
+            tenant_id=tenant_id,
+            ensure_workspace=ensure,
+        )
 
-    async def modify_settings(self, db: AsyncSession, modify: SettingsSchema) -> SettingsSchema:
-        db_settings = await get_settings(db)
+    async def get_settings(self, db: AsyncSession, admin: AdminDetails) -> SettingsSchema:
+        db_settings = await self._resolve_settings_row(db, admin, ensure=True)
+        return SettingsSchema.model_validate(db_settings)
+
+    async def modify_settings(self, db: AsyncSession, modify: SettingsSchema, admin: AdminDetails) -> SettingsSchema:
+        db_settings = await self._resolve_settings_row(db, admin, ensure=True)
         old_settings = SettingsSchema.model_validate(db_settings)
 
         if modify.general and modify.general.custom_variables is not None:
@@ -41,15 +58,23 @@ class SettingsOperation(BaseOperation):
         if new_settings.general and new_settings.subscription:
             new_settings.general.custom_variables = new_settings.subscription.custom_variables
 
-        await refresh_caches()
-        # Publish settings update via NATS (all workers will refresh their caches)
-        await router.publish(MessageTopic.SETTING, {"action": "refresh"})
-        asyncio.create_task(self.reset_services(old_settings, new_settings))
+        is_global_scope = admin.is_owner
+        if is_global_scope:
+            await refresh_caches(workspace_id=None)
+            await router.publish(MessageTopic.SETTING, {"action": "refresh"})
+            asyncio.create_task(self.reset_services(old_settings, new_settings))
+        else:
+            _, workspace_id = await resolve_tenant_workspace_scope(db, admin)
+            await refresh_caches(workspace_id=workspace_id)
+            await router.publish(
+                MessageTopic.SETTING,
+                {"action": "refresh", "workspace_id": workspace_id},
+            )
 
         return new_settings
 
-    async def get_general_settings(self, db: AsyncSession):
-        settings = await self.get_settings(db)
-        general = General.model_validate(settings.general)
-        subscription = Subscription.model_validate(settings.subscription)
+    async def get_general_settings(self, db: AsyncSession, admin: AdminDetails):
+        db_settings = await self._resolve_settings_row(db, admin, ensure=True)
+        general = General.model_validate(db_settings.general)
+        subscription = Subscription.model_validate(db_settings.subscription)
         return general.model_copy(update={"custom_variables": subscription.custom_variables})

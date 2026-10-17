@@ -1,8 +1,7 @@
 from app.models.admin import AdminDetails
-from app.models.settings import NotificationSettings
 from app.notification.client import send_telegram_message
-from app.notification.helpers import get_telegram_channel
-from app.settings import notification_settings
+from app.notification.helpers import admin_dm_queue_scope, get_telegram_channel, trusted_global_channel_scope
+from app.notification.delivery_scope import notification_settings_for_delivery
 from app.utils.helpers import escape_tg_html
 from app.utils.system import readable_size
 
@@ -11,7 +10,7 @@ from . import messages
 ENTITY = "admin"
 
 
-async def create_admin(admin: AdminDetails, by: str):
+async def create_admin(admin: AdminDetails, by: str, *, delivery_workspace_id: int | None = None):
     username, by = escape_tg_html((admin.username, by))
     role = admin.role.name if admin.role else "unknown"
     data = messages.CREATE_ADMIN.format(
@@ -21,13 +20,13 @@ async def create_admin(admin: AdminDetails, by: str):
         used_traffic=readable_size(admin.used_traffic),
         by=by,
     )
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
 
 
-async def modify_admin(admin: AdminDetails, by: str):
+async def modify_admin(admin: AdminDetails, by: str, *, delivery_workspace_id: int | None = None):
     username, by = escape_tg_html((admin.username, by))
     role = admin.role.name if admin.role else "unknown"
     data = messages.MODIFY_ADMIN.format(
@@ -37,31 +36,37 @@ async def modify_admin(admin: AdminDetails, by: str):
         used_traffic=readable_size(admin.used_traffic),
         by=by,
     )
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
 
 
-async def remove_admin(username: str, by: str):
+async def remove_admin(username: str, by: str, *, delivery_workspace_id: int | None = None):
     username, by = escape_tg_html((username, by))
     data = messages.REMOVE_ADMIN.format(username=username, by=by)
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
 
 
-async def admin_reset_usage(admin: AdminDetails, by: str):
+async def admin_reset_usage(admin: AdminDetails, by: str, *, delivery_workspace_id: int | None = None):
     username, by = escape_tg_html((admin.username, by))
     data = messages.ADMIN_RESET_USAGE.format(username=username, by=by)
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(data, chat_id, topic_id, delivery_workspace_id=delivery_workspace_id)
 
 
-async def admin_usage_limit_reached(admin: AdminDetails, usage_percentage: int, threshold: int):
+async def admin_usage_limit_reached(
+    admin: AdminDetails,
+    usage_percentage: int,
+    threshold: int,
+    *,
+    delivery_workspace_id: int | None = None,
+):
     username = escape_tg_html((admin.username,))[0]
     data = messages.ADMIN_USAGE_LIMIT_REACHED.format(
         username=username,
@@ -70,12 +75,18 @@ async def admin_usage_limit_reached(admin: AdminDetails, usage_percentage: int, 
         usage_percentage=usage_percentage,
         threshold=threshold,
     )
-    settings: NotificationSettings = await notification_settings()
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
     if settings.notify_telegram and admin.telegram_id:
-        await send_telegram_message(data, chat_id=admin.telegram_id)
+        await send_telegram_message(
+            data,
+            chat_id=admin.telegram_id,
+            delivery_workspace_id=delivery_workspace_id,
+            **trusted_global_channel_scope(delivery_workspace_id, "admin_usage_limit_reached"),
+            **admin_dm_queue_scope(admin.id),
+        )
 
 
-async def admin_login(username: str, password: str, client_ip: str, success: bool):
+async def admin_login(username: str, password: str, client_ip: str, success: bool, *, delivery_workspace_id: int | None = None):
     username, password = escape_tg_html((username, password))
     data = messages.ADMIN_LOGIN.format(
         status="Successful" if success else "Failed",
@@ -83,7 +94,13 @@ async def admin_login(username: str, password: str, client_ip: str, success: boo
         password="🔒" if success else password,
         client_ip=client_ip,
     )
-    settings: NotificationSettings = await notification_settings()
-    if settings.notify_telegram:
+    settings = await notification_settings_for_delivery(delivery_workspace_id)
+    if settings and settings.notify_telegram:
         chat_id, topic_id = get_telegram_channel(settings, ENTITY)
-        await send_telegram_message(data, chat_id, topic_id)
+        await send_telegram_message(
+            data,
+            chat_id,
+            topic_id,
+            delivery_workspace_id=delivery_workspace_id,
+            **trusted_global_channel_scope(delivery_workspace_id, "admin_login"),
+        )

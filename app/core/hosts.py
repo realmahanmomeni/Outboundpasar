@@ -73,6 +73,8 @@ def _normalize_finalmask_link(final_mask_settings: FinalMask | dict | str | None
 async def _prepare_subscription_inbound_data(
     host: BaseHost,
     down_settings: SubscriptionInboundData | None = None,
+    oc_config: Any | None = None,
+    proxies: dict | None = None,
 ) -> SubscriptionInboundData:
     """
     Prepare host data - creates small config instances ONCE.
@@ -81,6 +83,54 @@ async def _prepare_subscription_inbound_data(
     """
     # Get inbound configuration
     inbound_config = await core_manager.get_inbound_by_tag(host.inbound_tag)
+    if not inbound_config:
+        source_payload = oc_config.source_payload if (oc_config and isinstance(oc_config.source_payload, dict)) else {}
+        sub_parsed = source_payload.get("subscription_parsed") if isinstance(source_payload.get("subscription_parsed"), dict) else {}
+        protocol = (
+            sub_parsed.get("protocol")
+            or (oc_config.protocol if oc_config else None)
+            or source_payload.get("protocol")
+            or source_payload.get("type")
+        )
+        if not protocol and oc_config and oc_config.source_name:
+            name_lower = oc_config.source_name.lower()
+            for p in ("vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria"):
+                if p in name_lower or (p == "shadowsocks" and "ss" in name_lower):
+                    protocol = p
+                    break
+        if not protocol and proxies:
+            for p in ("vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria"):
+                if p in proxies:
+                    protocol = p
+                    break
+        protocol = protocol or "vless"
+
+        network = (
+            sub_parsed.get("network")
+            or (oc_config.network if (oc_config and oc_config.network) else None)
+            or source_payload.get("network")
+            or source_payload.get("transport")
+            or "tcp"
+        )
+        inbound_port = sub_parsed.get("port") or (oc_config.port if (oc_config and oc_config.port) else source_payload.get("port"))
+        inbound_path = host.path or source_payload.get("path") or ""
+        inbound_tls = source_payload.get("tls") or ("tls" if (host.port or inbound_port) == 443 else "none")
+
+        inbound_config = {
+            "protocol": protocol.lower(),
+            "network": network.lower(),
+            "port": inbound_port or host.port or 443,
+            "path": inbound_path,
+            "tls": inbound_tls,
+            "sni": source_payload.get("sni") or [],
+            "host": source_payload.get("host") or [],
+            "pbk": source_payload.get("pbk", ""),
+            "sid": source_payload.get("sid", ""),
+            "sids": source_payload.get("sids", []),
+            "spx": source_payload.get("spx", ""),
+            "alpn": source_payload.get("alpn", []),
+        }
+
     protocol = inbound_config["protocol"]
 
     ts = host.transport_settings
@@ -145,6 +195,10 @@ async def _prepare_subscription_inbound_data(
     sni_list = _string_list(host.sni) if host.sni else _string_list(inbound_config.get("sni", []))
     host_list = _string_list(host.host) if host.host else _string_list(inbound_config.get("host", []))
     address_list = _string_list(host.address) if host.address else []
+    if not address_list and oc_config and isinstance(oc_config.source_payload, dict):
+        sp = oc_config.source_payload.get("subscription_parsed") or {}
+        if isinstance(sp, dict) and sp.get("address"):
+            address_list = [str(sp["address"])]
 
     # Get Reality fields from inbound if applicable
     reality_pbk = inbound_config.get("pbk", "")

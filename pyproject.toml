@@ -28,6 +28,7 @@ dependencies = [
     "uvicorn==0.52.4",
     "sse-starlette>=3.4.11",
     "aiohttp>=3.14.3",
+    "httpx>=0.28.1",
     "packaging>=26.3",
     "sqlalchemy[asyncio]>=2.0.52",
     "aiosqlite>=0.21.0",
@@ -41,6 +42,7 @@ dependencies = [
     "typer>=0.27.2",
     "pasarguard-node-bridge>=0.9.1",
     "nats-py>=2.15.0",
+    "dnspython>=2.7.0",
 ]
 
 [tool.ruff]
@@ -72,6 +74,10 @@ quote-style = "double"
 line-ending = "auto"
 docstring-code-format = false
 docstring-code-line-length = "dynamic"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [dependency-groups]
 dev = [

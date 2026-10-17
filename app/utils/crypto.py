@@ -90,7 +90,7 @@ def get_x25519_public_key(private_key_b64: str) -> str:
 
         return public_key_b64
 
-    except ValueError, binascii.Error:
+    except (ValueError, binascii.Error):
         raise ValueError("Invalid private key.")
 
 
@@ -168,3 +168,21 @@ def verify_api_key(raw_api_key: str, stored_hash: str) -> bool:
         return False
 
     return hmac.compare_digest(_sha256_api_key_digest(raw_api_key), hash_hex)
+
+from cryptography.fernet import Fernet
+from app.db import GetDB
+from app.db.crud.general import get_jwt_secret_key
+
+async def _get_fernet() -> Fernet:
+    async with GetDB() as db:
+        secret = await get_jwt_secret_key(db)
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
+    return Fernet(key)
+
+async def encrypt_secret(plain_text: str) -> str:
+    f = await _get_fernet()
+    return f.encrypt(plain_text.encode()).decode()
+
+async def decrypt_secret(cipher_text: str) -> str:
+    f = await _get_fernet()
+    return f.decrypt(cipher_text.encode()).decode()
